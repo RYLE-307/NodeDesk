@@ -4,7 +4,7 @@ version = "0.1.0-alpha.0"
 description = "Offline-first infrastructure workspace"
 edition = "2021"
 publish = false
-# License intentionally deferred until the dependency and bundled-binary review.
+license = "MIT"
 
 [lib]
 name = "nodedesk_lib"

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import logo from './assets/nodedesk-logo.svg';
 
 const labels = {
   ru: { navigation: 'Навигация', connections: 'Подключения', settings: 'Настройки', empty: 'Каталог пока пуст', workspace: 'Рабочая область', tabs: 'Вкладки сессий', stage: 'Основа проекта · подключения ещё не реализованы' },
@@ -12,7 +13,7 @@ export default function App() {
   useEffect(() => { document.documentElement.lang = language; }, [language]);
   return <div className={`app ${expanded ? '' : 'collapsed'}`}>
     <aside aria-label={t.navigation}>
-      <header><span className="logo">N</span>{expanded && <strong>NodeDesk</strong>}
+      <header><img className="logo" src={logo} alt="" aria-hidden="true" />{expanded && <strong>NodeDesk</strong>}
         <button aria-label={t.navigation} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>☰</button>
       </header>
       <div className="catalog"><span title={t.connections}>◈</span>{expanded && <><span>{t.connections}</span><p>{t.empty}</p></>}</div>

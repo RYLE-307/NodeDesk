@@ -9,7 +9,7 @@ button:focus-visible { outline: 2px solid #58beff; outline-offset: 2px; }
 aside { background: #101723; border-right: 1px solid #202b3c; display: flex; flex-direction: column; }
 header { min-height: 66px; display: flex; align-items: center; gap: 12px; padding: 16px; }
 header button { margin-left: auto; }
-.logo { font-weight: 900; font-size: 24px; color: #66c9f9; }
+.logo { display: block; width: 30px; height: 30px; flex: none; }
 .collapsed header { flex-wrap: wrap; justify-content: center; }
 .catalog { padding: 20px; font-size: 14px; }
 .catalog > span + span { margin-left: 12px; }

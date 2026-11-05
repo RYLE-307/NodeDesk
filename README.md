@@ -34,9 +34,3 @@ dependencies, then switch to npm ci. See [validation status](docs/BOOTSTRAP.md).
 See [parity](docs/MOBAXTERM-PARITY.md), [architecture](docs/ARCHITECTURE.md)
 and [roadmap](docs/ROADMAP.md). Monitoring will be optional and off by default.
 
-## License
-
-MIT is preferred but **not granted yet**. There is no LICENSE file pending a
-full dependency and bundled-binary review. Source availability alone does not
-grant MIT rights. Open-source distribution remains the project goal.
-NodeDesk is independent of Mobatek and includes no MobaXterm code or assets.

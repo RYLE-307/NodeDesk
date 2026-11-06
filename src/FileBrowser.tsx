@@ -15,6 +15,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const gate = useRef(new OperationGate()), mounted = useRef(true);
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
   useEffect(() => {
@@ -67,8 +68,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       setStatus(ru ? "Каталог прочитан" : "Directory loaded");
     });
   }
-  function transfer(upload: boolean) {
-    const entry = (upload ? local : remote)?.entries.find(e => e.name === (upload ? localSelection : remoteSelection));
+  function transfer(upload: boolean, draggedName?: string) {
+    const entry = (upload ? local : remote)?.entries.find(e => e.name === (draggedName ?? (upload ? localSelection : remoteSelection)));
     if (!transferAllowed(entry,local,remote,busy) || (interactive && !authReady)) return;
     const name = entry!.name;
     const target = upload ? remote! : local!;
@@ -84,6 +85,64 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       setStatus(ru ? "Передача завершена. Обновите панель назначения." : "Transfer completed. Refresh the destination pane.");
     });
   }
+  function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete") {
+    const listing = isRemote ? remote : local;
+    if (!listing || busy || (isRemote && interactive && !authReady)) return;
+    const nameSelected = isRemote ? remoteSelection : localSelection;
+    const entry = listing.entries.find(e => e.name === nameSelected);
+    if (action !== "mkdir" && (!entry || !portableName(entry.name) || !["file","directory"].includes(entry.kind))) return;
+    if (action === "rename" && !isRemote && entry?.kind === "directory") {
+      setError(ru ? "Безопасное переименование локальной папки ещё не поддерживается." : "Safe local directory rename is not yet supported.");
+      return;
+    }
+    let name = entry?.name ?? "";
+    let newName: string | null = null;
+    if (action === "mkdir") {
+      name = window.prompt(ru ? "Название новой папки:" : "New folder name:", "") ?? "";
+      if (!name) return;
+    } else if (action === "rename") {
+      newName = window.prompt(ru ? "Новое имя:" : "New name:", name);
+      if (newName === null || newName === name) return;
+    } else if (action === "delete") {
+      const confirmText = ru
+        ? `Безвозвратно удалить ${entry!.kind === "directory" ? "ПУСТУЮ папку" : "файл"}?\n${name}\n${listing.path}\nОперацию нельзя отменить.`
+        : `Permanently delete ${entry!.kind === "directory" ? "EMPTY directory" : "file"}?\n${name}\n${listing.path}\nThis cannot be undone.`;
+      if (!window.confirm(confirmText)) return;
+    }
+    if (!portableName(name) || (newName !== null && !portableName(newName))) {
+      setError(ru ? "Недопустимое имя файла или папки." : "Invalid file or directory name."); return;
+    }
+    const existing = newName ?? name;
+    if (action !== "delete" && listing.entries.some(e => e.name === existing)) {
+      setError(ru ? "Имя уже существует. Перезапись запрещена." : "Destination already exists; no overwrite."); return;
+    }
+    void run(id => invoke("files_mutate",{id,request:{
+      destination:isRemote ? destination : null,
+      directory:listing.path, name, action, newName,
+      expectedKind:entry?.kind ?? null,
+    }}), () => {
+      if (isRemote) {setRemote(null); selectRemote("");} else {setLocal(null); selectLocal("");}
+      setStatus(ru ? "Изменение выполнено. Обновите панель." : "Change completed. Refresh the pane.");
+    });
+  }
+  function dragFile(event: React.DragEvent, isRemote: boolean, entry: FileEntry, folder: string) {
+    if (busy || !portableName(entry.name) || entry.kind !== "file") {event.preventDefault();return;}
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-nodedesk-file",JSON.stringify({source:isRemote ? "remote" : "local",name:entry.name,folder}));
+  }
+  function dropFile(event: React.DragEvent, isRemote: boolean) {
+    event.preventDefault(); event.stopPropagation(); setDropTarget(null);
+    const raw = event.dataTransfer.getData("application/x-nodedesk-file");
+    if (!raw || !local || !remote || busy || (interactive && !authReady)) return;
+    try {
+      const payload = JSON.parse(raw) as {source?:unknown;name?:unknown;folder?:unknown};
+      const sourceRemote = payload.source === "remote";
+      if (sourceRemote === isRemote || typeof payload.name !== "string" || !portableName(payload.name)) return;
+      const source = sourceRemote ? remote : local;
+      if (payload.folder !== source.path || !source.entries.some(e => e.name === payload.name && e.kind === "file")) return;
+      transfer(!sourceRemote,payload.name);
+    } catch { /* ignore external and invalid drops */ }
+  }
   async function cancel() {
     const id = gate.current.id; if (!id) return; setCancelling(true);
     try { await invoke("files_cancel",{id}); } catch(e) { setError(String(e)); }
@@ -93,7 +152,15 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const selection = isRemote ? remoteSelection : localSelection, select = isRemote ? selectRemote : selectLocal;
     const title = isRemote ? (ru ? "Удалённая FS" : "Remote filesystem") : (ru ? "Локальная FS" : "Local filesystem");
     const kinds = ru ? {file:"Файл",directory:"Папка",symlink:"Ссылка",other:"Другой"} : {file:"File",directory:"Folder",symlink:"Link",other:"Other"};
-    return <section className="files-panel" aria-label={title}>
+    return <section className={`files-panel ${dropTarget === (isRemote ? "remote" : "local") ? "files-drop-target" : ""}`}
+      aria-label={title}
+      onDragOver={e => {
+        if (busy || !local || !remote || (interactive && !authReady) || !e.dataTransfer.types.includes("application/x-nodedesk-file")) return;
+        e.preventDefault(); e.dataTransfer.dropEffect="copy";
+        setDropTarget(isRemote ? "remote" : "local");
+      }}
+      onDragLeave={e => {if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropTarget(null);}}
+      onDrop={e => dropFile(e,isRemote)}>
       <h3>{title}</h3>
       <form className="files-path" onSubmit={e => {e.preventDefault(); list(isRemote,draft);}}>
         <input aria-label={title + (ru ? ": путь" : ": path")} value={draft} disabled={busy} placeholder={isRemote ? "." : (ru ? "Пусто = домашняя папка" : "Empty = home directory")} onChange={e => isRemote ? setRemotePath(e.target.value) : setLocalPath(e.target.value)}/>
@@ -101,8 +168,18 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         <button disabled={busy || !listing} type="button" onClick={() => listing && list(isRemote,parentPath(listing.path,isRemote))}>{ru ? "Вверх" : "Up"}</button>
       </form>
       <p className="files-current">{listing?.path ?? (ru ? "Панель не загружена" : "Pane not loaded")}</p>
+      <div className="files-ops">
+        <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
+        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind)) || (!isRemote && listing.entries.some(e => e.name===selection && e.kind==="directory"))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
+        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name===selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"delete")}>{ru ? "Удалить" : "Delete"}</button>
+      </div>
       <div className="files-table-scroll"><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
-        <tbody>{listing?.entries.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}>
+        <tbody>{listing?.entries.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
+          draggable={!busy && e.kind === "file" && portableName(e.name)}
+          onDragStart={event => dragFile(event,isRemote,e,listing.path)}
+          onDragEnd={() => setDropTarget(null)}
+          onContextMenu={event => {event.preventDefault();select(e.name);}}
+        >
           <td><button disabled={busy || !portableName(e.name)} aria-pressed={selection === e.name} onClick={() => select(e.name)} onDoubleClick={() => {if (e.kind === "directory") list(isRemote,childPath(listing.path,e.name,isRemote));}} title={e.name}>{e.name}</button>
             {e.kind === "directory" && <button disabled={busy || !portableName(e.name)} aria-label={`${ru ? "Открыть папку" : "Open folder"}: ${e.name}`} onClick={() => list(isRemote,childPath(listing.path,e.name,isRemote))}>↳</button>}</td>
           <td>{kinds[e.kind]}</td><td>{e.size ?? "—"}</td><td>{e.modified == null ? "—" : new Date(e.modified * 1000).toLocaleString(ru ? "ru-RU" : "en-US")}</td><td>{e.permissions == null ? "—" : (e.permissions & 0o7777).toString(8)}</td>

@@ -340,3 +340,7 @@ footer select { padding: 4px 6px; font-size: 12px; }
 
 .workspace { display:flex; }
 .split-workspace { display:flex; }
+
+/* SSH authentication selection is local to an open terminal tab; never persisted. */
+.ssh-auth { display:flex; align-items:center; gap:6px; font-size:12px; }
+.ssh-auth select { padding:4px 6px; max-width:180px; }

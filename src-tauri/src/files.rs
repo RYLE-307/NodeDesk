@@ -17,6 +17,18 @@ fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
 pub struct Entry { name: String, kind: String, size: Option<u64>, modified: Option<u64>, permissions: Option<u32> }
 #[derive(Serialize)]
 pub struct Listing { path: String, entries: Vec<Entry> }
+/** Platform capabilities, rather than user-agent guessing. The Unix OpenSSH
+ * ControlMaster/PTTY bridge is unsupported by native Windows OpenSSH.
+ * The direct key/agent transport is available on both target platforms.
+ */
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct FileCapabilities { interactive_login: bool, key_agent: bool }
+#[tauri::command]
+pub fn files_capabilities() -> FileCapabilities {
+    FileCapabilities { interactive_login: cfg!(unix), key_agent: true }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Progress { bytes: u64, total: Option<u64> }
@@ -410,6 +422,12 @@ mod tests {
         for n in 0..64 { registry.cancel(n.to_string()).unwrap(); }
         assert!(registry.cancel("overflow".into()).is_err());
         assert!(operation_id("../malicious").is_err());
+    }
+    #[test]
+    fn capabilities_match_native_transport_support() {
+        let capabilities=files_capabilities();
+        assert_eq!(capabilities.interactive_login,cfg!(unix));
+        assert!(capabilities.key_agent);
     }
     #[test] fn local_mutations_refuse_overwrite_symlinks_and_nonempty_dirs() {
         let root=std::env::temp_dir().join(format!("nd-mutate-{}",std::process::id()));

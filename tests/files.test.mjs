@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { portableName, childPath, parentPath, transferAllowed, progressPercent, OperationGate } from "../src/filesModel.ts";
+import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, OperationGate } from "../src/filesModel.ts";
 
 test("reject traversal, Windows devices, alternate streams and control characters", () => {
   for (const name of ["", ".", "..", "a/b", "a\\b", "x:y", "NUL.txt", "COM1", "CONOUT$", "file.", "x\n", "\x1b[31m", "x*"]) {
@@ -38,4 +38,22 @@ test("request gate prevents double clicks and ignores stale completion after can
   assert.equal(gate.finish("old"),false); assert.equal(gate.owns("a"),true);
   assert.equal(gate.finish("a"),true); assert.equal(gate.begin("b"),true);
   assert.equal(gate.owns("a"),false); assert.equal(gate.finish("a"),false);
+});
+
+test("directory-first view and localized filename search preserve the source listing", () => {
+  const entries=[
+    {name:"file10.txt",kind:"file"},
+    {name:"файл Б.txt",kind:"file"},
+    {name:"z-dir",kind:"directory"},
+    {name:"file2.txt",kind:"file"},
+    {name:"a-dir",kind:"directory"},
+    {name:"SYMLINK",kind:"symlink"},
+  ];
+  const snapshot=entries.map(e=>e.name);
+  assert.deepEqual(visibleEntries(entries,"").map(e=>e.name),[
+    "a-dir","z-dir","file2.txt","file10.txt","SYMLINK","файл Б.txt",
+  ]);
+  assert.deepEqual(visibleEntries(entries,"ФАЙЛ").map(e=>e.name),["файл Б.txt"]);
+  assert.deepEqual(visibleEntries(entries,"  DIR ").map(e=>e.name),["a-dir","z-dir"]);
+  assert.deepEqual(entries.map(e=>e.name),snapshot,"sorting must not mutate authoritative state");
 });

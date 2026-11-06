@@ -1882,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "nodedesk"
-version = "0.2.0-alpha.0"
+version = "0.3.0-alpha.0"
 dependencies = [
  "portable-pty",
  "serde",

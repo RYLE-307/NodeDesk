@@ -52,3 +52,7 @@ for _ in {1..50}; do
   sleep 0.1
 done
 NODEDESK_SSH_FIXTURE="$fixture" cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
+filename='binary пробел ;$(x).bin'
+cmp "$fixture/gui-local/$filename" "$fixture/gui-local/download.bin"
+cmp "$fixture/gui-local/$filename" "$fixture/gui-remote/$filename"
+sha256sum "$fixture/gui-local/$filename" "$fixture/gui-local/download.bin" "$fixture/gui-remote/$filename"

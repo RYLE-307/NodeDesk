@@ -1,65 +1,64 @@
 # NodeDesk
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux password/PAM via OpenSSH auth bridge; Windows key/agent. No mkdir/rename/delete/DnD.
-> Full scope and acceptance: [V0.5](docs/V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> Текущая версия в разработке: **v0.5.0-alpha.0** (графический SFTP).
+> GUI Linux: SSH-ключ/агент и пароль/PAM через OpenSSH.
+> GUI Windows: SSH-ключ/агент; вход по паролю в GUI пока не готов.
+> PR #10 — **draft, не слит**; финальная проверка на Arch ещё впереди.
 
 **RU** · [English](README.md)
 
-Локальное приложение для работы с инфраструктурой на Windows и Linux.
-Tauri 2 + React + TypeScript + Rust. Версия: **0.2.0-alpha.0**.
+NodeDesk — локальное приложение для системного администратора на Linux и Windows.
+Tauri 2 + Rust + React/TypeScript. Цель — расширяемый аналог MobaXterm.
+Без обязательного аккаунта, облака, телеметрии и автоподключений.
 
-## Реализовано
+## Что уже работает
 
-- Создание, изменение, перемещение и удаление подключений и вложенных групп.
-- Поиск по имени, адресу, пользователю и пути группы; избранное.
-- Локальное сохранение каталога и настроек с проверкой формата и обработкой ошибок.
-- RU/EN, темы dark/light/system, раскрываемая навигация Tech Dark.
-- Пустая область при запуске, закрываемые верхние вкладки и две панели карточек.
-- Опциональная панель мониторинга, выключенная по умолчанию, без источников данных.
+- Компактный каталог с вложенными группами, поиском, избранным, перемещением
+  подключений между папками, правым кликом и изменяемой шириной панели.
+- Русский/английский интерфейс, светлая/тёмная/системная темы, вкладки и split.
+- Настоящие интерактивные SSH и SFTP консоли OpenSSH: ключи/agent, пароль/PAM,
+  проверка host-key по known_hosts и защита от изменённых/отозванных ключей.
+- Графический SFTP v3: локальная и удалённая файловые панели, навигация, бинарная
+  загрузка/скачивание с подтверждением, запретом перезаписи, прогрессом и отменой.
+- В проверяемой ветке v0.5: создание папок, переименование, удаление файлов
+  и пустых папок с подтверждением, Drag & Drop одного файла между панелями,
+  действия правым кликом и Shift+F10. Переименование локальной папки без перезаписи
+  использует системные механизмы Linux/Windows.
+- Локальное хранение каталога без сохранения паролей. Работа каталога офлайн;
+  удалённые SSH/SFTP-сессии, естественно, требуют сети.
 
-Реальные SSH/SFTP/RDP, мониторинг и защищённое хранилище секретов ещё впереди.
-Карточки показывают только параметры. Автоподключений, имитации терминала и
-телеметрии нет. Поля паролей и ключей отсутствуют. Каталог хранится в локальном
-профиле WebView; это не шифрование и не резервная копия.
-[Контракт хранения и сценарии проверки](docs/V0.2.md).
+## Ограничения
 
-## Разработка
+Графический вход по паролю/PAM пока реализован только на Linux; консольный SSH/SFTP
+по паролю работает на обеих целевых ОС. Нет полноценного RDP/VNC/VPN, удалённого
+редактора, массовой передачи, очереди, рекурсивного удаления и Drag & Drop папок.
+Операции над удалёнными путями не являются изоляцией от недоверенного SFTP-сервера.
+При прерванном upload на сервере может остаться `.nodedesk-*.part`.
+Пароли не сохраняются в WebView/localStorage, но временно проходят через PTY/IPC.
 
-Нужен Node 24 LTS и npm. Для desktop также Rust stable и
-[системные зависимости Tauri 2](https://v2.tauri.app/start/prerequisites/).
-На Windows — MSVC Build Tools и WebView2, на Linux — WebKitGTK и инструменты сборки.
+**Перед финальным слиянием PR #10 нужны ручные проверки GUI на Arch и Windows.**
+[Точная спецификация безопасности, тестов и ограничений](docs/V0.5-SFTP-GUI.md).
 
-```sh
+## Сборка
+
+Нужны Node.js 24 LTS, npm, Rust stable, OpenSSH, зависимости Tauri 2:
+[инструкция](https://v2.tauri.app/start/prerequisites/). Arch: WebKitGTK;
+Windows: WebView2 и MSVC Build Tools.
+
+```bash
 npm ci
 npm test
 npm run build
-npm run dev          # веб-интерфейс
-npm run tauri dev    # desktop-окно
-npm run tauri build -- --no-bundle
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+npm run tauri dev
 ```
 
-Сохраняйте `package-lock.json` и используйте `npm ci` на Arch и Windows.
-Перед обновлением проверяйте `git status`: свои изменения закоммитьте или уберите
-в stash, не удаляйте конфликтующие иконки и lock-файлы. Установка зависимостей
-требует интернета, работа каталога — нет. Установщики пока отключены.
+Зависимости фиксируются в `package-lock.json` и `src-tauri/Cargo.lock`.
+При проблемах с официальным npm registry на Arch доступно зеркало:
+`npm ci --registry=https://registry.npmmirror.com/`.
 
-CI проверяет frontend и сборку Tauri на Windows и Ubuntu. Запуск v0.1 на Arch
-подтверждён пользователем; v0.2 требует отдельной проверки desktop на Arch.
-В локальной среде агента Rust отсутствует; Cargo.lock пока не зафиксирован.
-
-[План](docs/ROADMAP.md) · [Архитектура](docs/ARCHITECTURE.md) ·
-[Цели паритета MobaXterm](docs/MOBAXTERM-PARITY.md) · [MIT](LICENSE)
-
-
-## v0.5 SFTP GUI — review slice / срез для проверки
-
-Two panels, real structured SFTP v3 listing/navigation and binary upload/download
-with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. No mkdir, rename,
-delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
-is pending; no merge before verification.
-
-Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
-с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
-
-See [security, limitations and acceptance](docs/V0.5-SFTP-GUI.md).
+[Дорожная карта](docs/ROADMAP.md) ·
+[Архитектура](docs/ARCHITECTURE.md) ·
+[Матрица MobaXterm](docs/MOBAXTERM-PARITY.md) ·
+[Лицензия MIT](LICENSE) ·
+[PR #10](https://github.com/RYLE-307/NodeDesk/pull/10)

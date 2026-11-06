@@ -39,7 +39,13 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
   await page.goto('/');
   await page.getByRole('button',{name:/Fixture SSH/}).dblclick();
   await page.getByRole('tab',{name:language==='en'?'Files':'Файлы',exact:true}).click();
-  return page.getByRole('region',{name:language==='en'?'SFTP file manager':'Файловый менеджер SFTP'});
+  const files=page.getByRole('region',{name:language==='en'?'SFTP file manager':'Файловый менеджер SFTP'});
+  // Wait for the native capability command to resolve before interacting;
+  // Windows has no OpenSSH ControlMaster bridge.
+  const auth=files.getByRole('checkbox',{name:language==='en'?'Password/PAM or key login (Linux)':'Вход по паролю/PAM или ключу (Linux)'});
+  if (caps.interactiveLogin) await expect(auth).toBeChecked();
+  else await expect(auth).toBeDisabled();
+  return files;
 }
 
 test('no automatic connections; local works before login; remote waits for authentication',async({page}) => {

@@ -50,3 +50,8 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 ### Принципы релиза
 
 Единая текущая папка `~/NodeDesk` на Arch; работа через Git ветки/PR, после merge возврат на `main`, без множества локальных копий. Любая feature обязана иметь тесты + статус Windows/Linux. Полная матрица ниже — цель продукта, **не обещание наличия всех функций в v1.0**. Различия реализаций и лицензий Windows/Linux фиксировать до выпуска.
+
+
+### v0.3 SSH password-auth implementation (PR #4, pending verification)
+
+SSH authentication selection Auto/Key/Password-PAM and native OpenSSH password/keyboard-interactive prompts added in review branch; **not yet manually confirmed as successful login**. See [Issue #5](https://github.com/RYLE-307/NodeDesk/issues/5) and [V0.3-SSH.md](V0.3-SSH.md). Verify Arch/Windows against an isolated SSH host and retain key-only and changed-host-key regression tests before merging.

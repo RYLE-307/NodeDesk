@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
-import { childPath, parentPath, portableName, progressPercent, transferAllowed, OperationGate } from "./filesModel";
+import { childPath, parentPath, portableName, progressPercent, transferAllowed, visibleEntries, OperationGate } from "./filesModel";
 import type { FileEntry, Listing, Progress } from "./filesModel";
 
 export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
@@ -16,6 +16,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
+  const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
+  const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
+  const filteredRemote = useMemo(() => visibleEntries(remote?.entries ?? [],remoteFilter),[remote,remoteFilter]);
   const [context, setContext] = useState<{isRemote:boolean;name:string|null;x:number;y:number}|null>(null);
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
@@ -182,6 +185,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   function panel(isRemote: boolean) {
     const listing = isRemote ? remote : local, draft = isRemote ? remotePath : localPath;
     const selection = isRemote ? remoteSelection : localSelection, select = isRemote ? selectRemote : selectLocal;
+    const filter = isRemote ? remoteFilter : localFilter, visible = isRemote ? filteredRemote : filteredLocal;
     const title = isRemote ? (ru ? "Удалённая FS" : "Remote filesystem") : (ru ? "Локальная FS" : "Local filesystem");
     const kinds = ru ? {file:"Файл",directory:"Папка",symlink:"Ссылка",other:"Другой"} : {file:"File",directory:"Folder",symlink:"Link",other:"Other"};
     return <section className={`files-panel ${dropTarget === (isRemote ? "remote" : "local") ? "files-drop-target" : ""}`}
@@ -200,6 +204,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         <button disabled={busy || !listing} type="button" onClick={() => listing && list(isRemote,parentPath(listing.path,isRemote))}>{ru ? "Вверх" : "Up"}</button>
       </form>
       <p className="files-current">{listing?.path ?? (ru ? "Панель не загружена" : "Pane not loaded")}</p>
+      <input className="files-filter" type="search"
+        aria-label={title + (ru ? ": поиск файлов" : ": search files")}
+        placeholder={ru ? "Фильтр по имени…" : "Filter by filename…"}
+        value={filter} disabled={!listing || busy}
+        onChange={event => {
+          if (isRemote) { setRemoteFilter(event.target.value); selectRemote(""); }
+          else { setLocalFilter(event.target.value); selectLocal(""); }
+        }}/>
       <div className="files-ops">
         <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
@@ -209,7 +221,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         if (event.target instanceof Element && event.target.closest("tr")) return;
         event.preventDefault(); showContext(isRemote,null,event.clientX,event.clientY);
       }}><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
-        <tbody>{listing?.entries.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
+        <tbody>{visible.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
           draggable={!busy && e.kind === "file" && portableName(e.name)}
           onDragStart={event => dragFile(event,isRemote,e,listing.path)}
           onDragEnd={() => setDropTarget(null)}
@@ -229,7 +241,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           <td><button disabled={busy || !portableName(e.name)} aria-pressed={selection === e.name} onClick={() => select(e.name)} onDoubleClick={() => {if (e.kind === "directory") list(isRemote,childPath(listing.path,e.name,isRemote));}} title={e.name}>{e.name}</button>
             {e.kind === "directory" && <button disabled={busy || !portableName(e.name)} aria-label={`${ru ? "Открыть папку" : "Open folder"}: ${e.name}`} onClick={() => list(isRemote,childPath(listing.path,e.name,isRemote))}>↳</button>}</td>
           <td>{kinds[e.kind]}</td><td>{e.size ?? "—"}</td><td>{e.modified == null ? "—" : new Date(e.modified * 1000).toLocaleString(ru ? "ru-RU" : "en-US")}</td><td>{e.permissions == null ? "—" : (e.permissions & 0o7777).toString(8)}</td>
-        </tr>)}</tbody></table>{listing && !listing.entries.length && <p>{ru ? "Пустая папка" : "Empty directory"}</p>}</div>
+        </tr>)}</tbody></table>
+        {listing && !listing.entries.length && <p>{ru ? "Пустая папка" : "Empty directory"}</p>}
+        {listing && !!listing.entries.length && !visible.length && <p>{ru ? "Совпадений нет" : "No matches"}</p>}
+      </div>
     </section>;
   }
   return <section className="file-browser" aria-label={ru ? "Файловый менеджер SFTP" : "SFTP file manager"}>

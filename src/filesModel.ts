@@ -45,3 +45,25 @@ export function visibleEntries(entries: FileEntry[], filter: string): FileEntry[
       return a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:"base"});
     });
 }
+
+/** A bounded, immutable queue plan. All files must be valid and collision-free.
+ * The backend rechecks paths and collisions immediately before each operation.
+ * Never silently skip or overwrite a file in a multi-file batch.
+ */
+export function transferBatchPlan(names: readonly string[], source: Listing | null, destination: Listing | null): string[] {
+  if (!source || !destination) throw new Error("Load both filesystem panes first");
+  if (!names.length || names.length > 50 || new Set(names).size !== names.length) {
+    throw new Error("Choose 1–50 distinct files");
+  }
+  const output: string[] = [];
+  for (const name of names) {
+    if (!portableName(name)) throw new Error("Unsupported filename");
+    const item = source.entries.find(entry => entry.name === name);
+    if (!item || item.kind !== "file") throw new Error(`Not a regular file: ${name}`);
+    if (destination.entries.some(entry => entry.name === name)) {
+      throw new Error(`Destination already contains: ${name}; overwrite is disabled`);
+    }
+    output.push(name);
+  }
+  return output;
+}

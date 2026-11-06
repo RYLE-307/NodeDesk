@@ -97,6 +97,9 @@ for (const language of ['ru','en']) test(`visible two-pane layout and preserved 
   await expect(page.locator('.ssh-tool-panel:not([hidden]) .ssh-screen')).toBeVisible();
   await page.getByRole('tab',{name:'SFTP',exact:true}).click();
   await expect(page.locator('.ssh-tool-panel:not([hidden]) .ssh-screen')).toBeVisible();
+  await expect(page.locator('.ssh-tool-panel:not([hidden]) .ssh-help')).toContainText(
+    language==='en' ? 'For the graphical file manager, open the Files tab.' : 'Для графического управления файлами откройте вкладку «Файлы».'
+  );
   const theme=page.getByRole('combobox',{name:language==='en'?'Theme':'Тема',exact:true});
   await theme.selectOption('light'); await expect(page.locator('html')).toHaveAttribute('data-theme','light');
   await theme.selectOption('dark'); await expect(page.locator('html')).toHaveAttribute('data-theme','dark');

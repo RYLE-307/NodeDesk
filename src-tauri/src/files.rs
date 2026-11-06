@@ -174,6 +174,48 @@ fn remote_mutate(c: &mut Sftp, directory: &str, name: &str, action: MutationActi
         }
     }
 }
+
+/**
+ * Rename a *directory* without replacing another entry. Using std::fs::rename
+ * here is unsafe on Unix: it may silently replace an existing empty directory.
+ * Linux renameat2(RENAME_NOREPLACE) and Win32 MoveFileExW without
+ * MOVEFILE_REPLACE_EXISTING both provide fail-on-collision behavior.
+ * Other platforms fail closed until an audited native implementation exists.
+ */
+#[cfg(target_os="linux")]
+fn rename_directory_no_replace(from: &Path, to: &Path) -> Result<()> {
+    use std::{ffi::{CString, c_char}, os::unix::ffi::OsStrExt};
+    unsafe extern "C" {
+        fn renameat2(olddirfd: i32, oldpath: *const c_char, newdirfd: i32, newpath: *const c_char, flags: u32) -> i32;
+    }
+    const AT_FDCWD: i32 = -100;
+    const RENAME_NOREPLACE: u32 = 1;
+    let old = CString::new(from.as_os_str().as_bytes()).map_err(|_| "Invalid source path")?;
+    let new = CString::new(to.as_os_str().as_bytes()).map_err(|_| "Invalid destination path")?;
+    if unsafe { renameat2(AT_FDCWD,old.as_ptr(),AT_FDCWD,new.as_ptr(),RENAME_NOREPLACE) } == 0 {
+        Ok(())
+    } else {
+        Err(format!("Cannot rename directory without overwrite: {}",std::io::Error::last_os_error()))
+    }
+}
+#[cfg(windows)]
+fn rename_directory_no_replace(from: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name="Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+    let old: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let new: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // 0 = neither REPLACE_EXISTING nor COPY_ALLOWED: same-volume only.
+    if unsafe { MoveFileExW(old.as_ptr(),new.as_ptr(),0) } != 0 { Ok(()) }
+    else { Err(format!("Cannot rename directory without overwrite: {}",std::io::Error::last_os_error())) }
+}
+#[cfg(not(any(target_os="linux",windows)))]
+fn rename_directory_no_replace(_from: &Path, _to: &Path) -> Result<()> {
+    Err("Safe directory rename is unsupported on this platform".into())
+}
+
 fn local_mutate(directory: &str, name: &str, action: MutationAction, new_name: Option<&str>, kind: Option<&str>, op: &Operation) -> Result<()> {
     wire::name(name)?;
     let parent = local_dir(directory)?; op.check()?;
@@ -197,8 +239,11 @@ fn local_mutate(directory: &str, name: &str, action: MutationAction, new_name: O
                 MutationAction::Rename => {
                     let new_name = new_name.ok_or("Missing new filename")?; wire::name(new_name)?;
                     if new_name == name { return Err("Choose a different name".into()); }
-                    if kind == "directory" { return Err("Safe no-overwrite local directory rename is not implemented".into()); }
                     let new_path = parent.join(new_name);
+                    if kind == "directory" {
+                        // Atomic on supported filesystems, no hardlink fallback.
+                        return rename_directory_no_replace(&source,&new_path);
+                    }
                     // A hard link is created exclusively; it cannot overwrite an existing name.
                     // Then unlink the old name. If unlink fails both references remain.
                     // Filesystems lacking hardlinks fail without modifying the original.
@@ -378,16 +423,24 @@ mod tests {
         fs::write(root.join("exists.txt"),b"unchanged").unwrap();
         assert!(local_mutate(dir,"file.txt",MutationAction::Rename,Some("exists.txt"),Some("file"),&op).is_err());
         assert_eq!(fs::read(root.join("exists.txt")).unwrap(),b"unchanged");
-        assert!(local_mutate(dir,"newfolder",MutationAction::Rename,Some("renamed"),Some("directory"),&op).is_err());
+        local_mutate(dir,"newfolder",MutationAction::Rename,Some("renamed"),Some("directory"),&op).unwrap();
+        assert!(!root.join("newfolder").exists());
+        assert!(root.join("renamed").is_dir());
+        fs::create_dir(root.join("occupied")).unwrap();
+        fs::write(root.join("occupied").join("protected"),b"keep").unwrap();
+        assert!(local_mutate(dir,"renamed",MutationAction::Rename,Some("occupied"),Some("directory"),&op).is_err());
+        assert_eq!(fs::read(root.join("occupied").join("protected")).unwrap(),b"keep");
         local_mutate(dir,"file.txt",MutationAction::Rename,Some("renamed.txt"),Some("file"),&op).unwrap();
         assert!(!root.join("file.txt").exists());
         assert_eq!(fs::read(root.join("renamed.txt")).unwrap(),b"original");
-        fs::write(root.join("newfolder").join("child"),b"x").unwrap();
-        assert!(local_mutate(dir,"newfolder",MutationAction::Delete,None,Some("directory"),&op).is_err());
+        fs::write(root.join("renamed").join("child"),b"x").unwrap();
+        assert!(local_mutate(dir,"renamed",MutationAction::Delete,None,Some("directory"),&op).is_err());
         assert!(local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("symlink"),&op).is_err());
         local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("file"),&op).unwrap();
-        local_mutate(root.join("newfolder").to_str().unwrap(),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
-        local_mutate(dir,"newfolder",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        local_mutate(root.join("renamed").to_str().unwrap(),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        local_mutate(dir,"renamed",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        fs::remove_file(root.join("occupied").join("protected")).unwrap();
+        fs::remove_dir(root.join("occupied")).unwrap();
         fs::remove_file(root.join("exists.txt")).unwrap();
         fs::remove_dir(root).unwrap();
     }

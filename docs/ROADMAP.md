@@ -83,3 +83,11 @@ See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 ### v0.5 review follow-up: filesystem mutations (not yet accepted)
 
 Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-file cross-pane **internal Drag & Drop** to PR #10. Permanent deletion requires user confirmation. Symlinks, recursive and bulk operations remain unsupported. Local directory rename now uses no-replace OS primitives on Linux/Windows. This is still **draft**, not merged, pending latest CI and manual Arch acceptance. See [v0.5 guide](V0.5-SFTP-GUI.md), [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+
+### v0.5 review update: multi-file selection and bounded transfer queue
+
+Added per-pane regular-file checkboxes, capped at 50 files and a sequential
+upload/download operation. All files must pass preflight collision/type
+checks; any error or user cancellation stops the rest, and prior successful
+files remain. Manual runtime verification pending. This is not a persistent
+background queue. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).

@@ -14,7 +14,7 @@ async function open(page, language='en') {
       unregisterCallback(id) {callbacks.delete(id);},
       async invoke(cmd,args) {
         // Never record terminal input, even in this test harness.
-        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination});
+        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:cmd==='files_mutate'?args?.request:undefined});
         if (cmd==='ssh_connect') {window.fixture.session=args.id; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
@@ -81,4 +81,56 @@ for (const language of ['ru','en']) test(`visible two-pane layout and preserved 
   const theme=page.getByRole('combobox',{name:language==='en'?'Theme':'Тема',exact:true});
   await theme.selectOption('light'); await expect(page.locator('html')).toHaveAttribute('data-theme','light');
   await theme.selectOption('dark'); await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+});
+
+test('CRUD confirmations and no-overwrite are gated in GUI; no network before login',async({page}) => {
+  const files=await open(page);
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  // Local mkdir works while remote Files authentication is not ready.
+  page.once('dialog', dialog => dialog.accept('Safe folder'));
+  await files.getByRole('region',{name:'Local filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  await files.getByRole('region',{name:'Local filesystem',exact:true}).getByRole('button',{name:'New folder'}).click();
+  const localCalls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'));
+  expect(localCalls).toHaveLength(1);
+  expect(localCalls[0].request).toMatchObject({action:'mkdir',name:'Safe folder',destination:null});
+  await remote.getByRole('button',{name:'New folder'}).click({force:true}).catch(()=>{});
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'))).toHaveLength(1);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog', dialog => dialog.accept('Folder with spaces'));
+  await remote.getByRole('button',{name:'New folder'}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'));
+  expect(calls[1].request).toMatchObject({action:'mkdir',name:'Folder with spaces',directory:'/remote'});
+  expect(calls[1].request.destination.authSession).toBeTruthy();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin'}).click();
+  page.once('dialog', dialog=>dialog.accept('sample-renamed.bin'));
+  await remote.getByRole('button',{name:'Rename'}).click();
+  const renames=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'&&c.request?.action==='rename'));
+  expect(renames).toHaveLength(1);
+  expect(renames[0].request).toMatchObject({name:'sample.bin',newName:'sample-renamed.bin',expectedKind:'file'});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin'}).click();
+  page.once('dialog',dialog=>dialog.dismiss());
+  await remote.getByRole('button',{name:'Delete'}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'&&c.request?.action==='delete'))).toHaveLength(0);
+  page.once('dialog',dialog=>dialog.accept());
+  await remote.getByRole('button',{name:'Delete'}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'&&c.request?.action==='delete'))).toHaveLength(1);
+});
+
+test('internal drag/drop cannot bypass duplicate-name guard',async({page}) => {
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('row').filter({hasText:'sample.bin'}).dragTo(remote);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'))).toHaveLength(0);
+  await expect(files.getByRole('alert')).toContainText('Overwrite is disabled');
 });

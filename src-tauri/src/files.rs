@@ -131,6 +131,103 @@ fn remote_list(c: &mut Sftp, path: &str, op: &Operation) -> Result<Listing> {
     let entries = c.list(&path)?.into_iter().map(|(name,a)| Entry { name,kind:a.kind().into(),size:a.size,modified:a.modified.map(u64::from),permissions:a.permissions }).collect();
     op.check()?; Ok(Listing {path,entries})
 }
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum MutationAction { Mkdir, Rename, Delete }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mutation {
+    destination: Option<Destination>,
+    directory: String,
+    name: String,
+    action: MutationAction,
+    #[serde(default)] new_name: Option<String>,
+    #[serde(default)] expected_kind: Option<String>,
+}
+fn expected_kind(kind: &str) -> Result<()> {
+    if kind == "file" || kind == "directory" { Ok(()) }
+    else { Err("Only regular files and directories are supported; symlinks are read-only".into()) }
+}
+fn remote_mutate(c: &mut Sftp, directory: &str, name: &str, action: MutationAction, new_name: Option<&str>, kind: Option<&str>, op: &Operation) -> Result<()> {
+    wire::path(directory)?; wire::name(name)?;
+    let parent = c.realpath(directory)?; op.check()?;
+    let source = wire::join(&parent,name)?;
+    match action {
+        MutationAction::Mkdir => {
+            if !c.missing(&source)? { return Err("Destination already exists".into()); }
+            op.check()?; c.mkdir(&source)
+        },
+        MutationAction::Rename => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            if c.lstat(&source)?.kind() != kind { return Err("Source changed; refresh listing".into()); }
+            let new_name = new_name.ok_or("Missing new filename")?; wire::name(new_name)?;
+            if new_name == name { return Err("Choose a different name".into()); }
+            let new_path = wire::join(&parent,new_name)?;
+            if !c.missing(&new_path)? { return Err("Destination already exists; rename cannot overwrite".into()); }
+            op.check()?; c.rename(&source,&new_path)
+        },
+        MutationAction::Delete => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            if c.lstat(&source)?.kind() != kind { return Err("Source changed; refresh listing".into()); }
+            op.check()?; c.remove(&source,kind == "directory")
+        }
+    }
+}
+fn local_mutate(directory: &str, name: &str, action: MutationAction, new_name: Option<&str>, kind: Option<&str>, op: &Operation) -> Result<()> {
+    wire::name(name)?;
+    let parent = local_dir(directory)?; op.check()?;
+    let source = parent.join(name);
+    match action {
+        MutationAction::Mkdir => {
+            fs::create_dir(&source).map_err(|_| "Cannot create local directory (it may exist or be inaccessible)".into())
+        },
+        MutationAction::Rename | MutationAction::Delete => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            let m = fs::symlink_metadata(&source).map_err(|_| "Source missing; refresh listing")?;
+            if m.is_symlink() || (kind == "file" && !m.is_file()) || (kind == "directory" && !m.is_dir()) {
+                return Err("Source changed or is a symlink; refresh listing".into());
+            }
+            op.check()?;
+            match action {
+                MutationAction::Delete => {
+                    if kind == "directory" { fs::remove_dir(&source).map_err(|_| "Cannot delete directory (must be empty)".into()) }
+                    else { fs::remove_file(&source).map_err(|_| "Cannot delete local file".into()) }
+                },
+                MutationAction::Rename => {
+                    let new_name = new_name.ok_or("Missing new filename")?; wire::name(new_name)?;
+                    if new_name == name { return Err("Choose a different name".into()); }
+                    if kind == "directory" { return Err("Safe no-overwrite local directory rename is not implemented".into()); }
+                    let new_path = parent.join(new_name);
+                    // A hard link is created exclusively; it cannot overwrite an existing name.
+                    // Then unlink the old name. If unlink fails both references remain.
+                    // Filesystems lacking hardlinks fail without modifying the original.
+                    fs::hard_link(&source,&new_path).map_err(|_| "Cannot rename locally: target exists or hardlinks unsupported".to_string())?;
+                    fs::remove_file(&source).map_err(|_| "New hardlink created but old name could not be removed".to_string())
+                },
+                MutationAction::Mkdir => unreachable!(),
+            }
+        }
+    }
+}
+#[tauri::command]
+pub async fn files_mutate(id: String, mut request: Mutation, app: tauri::AppHandle) -> Result<()> {
+    wire::name(&request.name)?;
+    if let Some(name) = &request.new_name { wire::name(name)?; }
+    if let Some(d) = &mut request.destination { resolve_auth(d,&app)?; }
+    let guard = register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = &guard;
+        let kind = request.expected_kind.as_deref();
+        match request.destination {
+            Some(d) => {
+                let mut client = connect(&d,&guard.op)?;
+                remote_mutate(&mut client,&request.directory,&request.name,request.action,request.new_name.as_deref(),kind,&guard.op)
+            },
+            None => local_mutate(&request.directory,&request.name,request.action,request.new_name.as_deref(),kind,&guard.op),
+        }
+    }).await.map_err(|_| "File mutation task failed".to_string())?
+}
 #[tauri::command]
 pub async fn files_list(id: String, mut destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
     if let Some(d)=&mut destination { resolve_auth(d,&app)?; }
@@ -269,6 +366,31 @@ mod tests {
         assert!(registry.cancel("overflow".into()).is_err());
         assert!(operation_id("../malicious").is_err());
     }
+    #[test] fn local_mutations_refuse_overwrite_symlinks_and_nonempty_dirs() {
+        let root=std::env::temp_dir().join(format!("nd-mutate-{}",std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let dir=root.to_str().unwrap();
+        let op=Operation::default();
+        assert!(local_mutate(dir,"..",MutationAction::Mkdir,None,None,&op).is_err());
+        local_mutate(dir,"newfolder",MutationAction::Mkdir,None,None,&op).unwrap();
+        assert!(local_mutate(dir,"newfolder",MutationAction::Mkdir,None,None,&op).is_err());
+        fs::write(root.join("file.txt"),b"original").unwrap();
+        fs::write(root.join("exists.txt"),b"unchanged").unwrap();
+        assert!(local_mutate(dir,"file.txt",MutationAction::Rename,Some("exists.txt"),Some("file"),&op).is_err());
+        assert_eq!(fs::read(root.join("exists.txt")).unwrap(),b"unchanged");
+        assert!(local_mutate(dir,"newfolder",MutationAction::Rename,Some("renamed"),Some("directory"),&op).is_err());
+        local_mutate(dir,"file.txt",MutationAction::Rename,Some("renamed.txt"),Some("file"),&op).unwrap();
+        assert!(!root.join("file.txt").exists());
+        assert_eq!(fs::read(root.join("renamed.txt")).unwrap(),b"original");
+        fs::write(root.join("newfolder").join("child"),b"x").unwrap();
+        assert!(local_mutate(dir,"newfolder",MutationAction::Delete,None,Some("directory"),&op).is_err());
+        assert!(local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("symlink"),&op).is_err());
+        local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        local_mutate(root.join("newfolder").to_str().unwrap(),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        local_mutate(dir,"newfolder",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        fs::remove_file(root.join("exists.txt")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[test] fn local_no_replace_and_partial_cleanup() {
         let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
         let path = root.join("target"); let _ = fs::remove_file(&path);
@@ -313,6 +435,20 @@ mod tests {
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
         assert!(c.lstat(&format!("{remote_path}/missing")).is_err());
+        // Real SFTP v3 CRUD: mkdir, collision refusal, rename without clobber,
+        // non-recursive delete, and type/symlink validation.
+        remote_mutate(&mut c,remote_path,"created folder",MutationAction::Mkdir,None,None,&op).unwrap();
+        assert!(remote.join("created folder").is_dir());
+        assert!(remote_mutate(&mut c,remote_path,"created folder",MutationAction::Mkdir,None,None,&op).is_err());
+        remote_mutate(&mut c,remote_path,"created folder",MutationAction::Rename,Some("renamed folder"),Some("directory"),&op).unwrap();
+        assert!(remote.join("renamed folder").is_dir());
+        assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Rename,Some(filename),Some("directory"),&op).is_err());
+        assert_eq!(fs::read(&dest).unwrap(),bytes);
+        fs::write(remote.join("renamed folder").join("child"),b"x").unwrap();
+        assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).is_err());
+        remote_mutate(&mut c,&format!("{remote_path}/renamed folder"),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        assert!(!remote.join("renamed folder").exists());
         std::os::unix::fs::symlink(&dest,remote.join("link")).unwrap();
         assert!(copy_download(&mut c,&format!("{remote_path}/link"),&local.join("link-copy"),&partial,&op,&events).is_err());
         // Cancel during a real transfer, not just before the command: the first

@@ -76,3 +76,8 @@ is pending; no merge before verification.
 с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
+
+
+### v0.5 review follow-up: filesystem mutations (not yet accepted)
+
+Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-file cross-pane **internal Drag & Drop** to PR #10. Permanent deletion requires user confirmation. Symlinks, recursion, unsafe local directory rename and bulk operations remain unsupported. This is still **draft**, not merged, pending latest CI and manual Arch acceptance. See [v0.5 guide](V0.5-SFTP-GUI.md), [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).

@@ -7,22 +7,29 @@ async function open(page, language='en') {
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
       unregisterCallback(id) {callbacks.delete(id);},
       async invoke(cmd,args) {
         // Never record terminal input, even in this test harness.
-        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:cmd==='files_mutate'?args?.request:undefined});
+        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer'].includes(cmd)?args?.request:undefined});
         if (cmd==='ssh_connect') {window.fixture.session=args.id; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
+        if (cmd==='files_cancel') {window.fixture.rejectPending?.(new Error('cancelled'));window.fixture.rejectPending=null;return;}
         if (cmd==='files_list') return {path:args.destination ? '/remote' : '/local',
           entries:args.destination && window.fixture.emptyRemote ? [] :
-            [{name:'sample.bin',kind:'file',size:128,modified:null,permissions:384}]};
+            [
+              {name:'sample.bin',kind:'file',size:128,modified:null,permissions:384},
+              ...(!args.destination && window.fixture.extraLocal ? [{name:'extra.bin',kind:'file',size:256,modified:null,permissions:384}] : [])
+            ]};
         if (cmd==='files_transfer') {
-          if (window.fixture.allowTransfer) return;
+          if (window.fixture.allowTransfer) {
+            if (window.fixture.pauseTransfers) return new Promise((_,reject)=>{window.fixture.rejectPending=reject;});
+            return;
+          }
           throw new Error('Unexpected transfer without confirmation/collision checks');
         }
       },
@@ -198,4 +205,43 @@ test('file search is independent per pane and clears hidden selection',async({pa
   await search.fill('SAMPLE');
   await expect(local.getByRole('button',{name:'sample.bin',exact:true})).toBeVisible();
   await expect(local.getByRole('button',{name:'sample.bin',exact:true})).toHaveAttribute('aria-pressed','false');
+});
+
+test('selected batch transfers two files sequentially, then refreshes remote only',async({page}) => {
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;window.fixture.emptyRemote=true;window.fixture.extraLocal=true;window.fixture.allowTransfer=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(2);
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').map(c=>c.request.name));
+  expect(calls).toEqual(['sample.bin','extra.bin']);
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).length)).toBe(2);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&!c.destination).length)).toBe(1);
+  await expect(local.getByRole('checkbox',{name:'Select for transfer: sample.bin'})).toBeChecked();
+});
+test('cancelling a blocked first transfer never starts queued files',async({page}) => {
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;window.fixture.emptyRemote=true;window.fixture.extraLocal=true;window.fixture.allowTransfer=true;window.fixture.pauseTransfers=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(1);
+  await files.getByRole('button',{name:'Cancel operation'}).click();
+  await expect(files.getByRole('button',{name:'Upload selected (2)'})).toBeEnabled();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(1);
 });

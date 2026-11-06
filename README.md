@@ -1,7 +1,7 @@
 # NodeDesk
 
 > Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux password/PAM via OpenSSH auth bridge; Windows key/agent. No mkdir/rename/delete/DnD.
+> GUI: Linux password/PAM via OpenSSH auth bridge; Windows key/agent; bounded file CRUD and internal one-file Drag & Drop (draft, pending manual acceptance).
 > Full scope and acceptance: [V0.5](docs/V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
 
 [Русский](README.ru.md) · **EN**
@@ -46,7 +46,7 @@ lock files. Dependency installation needs internet; normal catalog use does not.
 Installers remain disabled pending platform validation and release preparation.
 
 CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. Arch launch of
-v0.1 was confirmed by the user; v0.2 still needs separate Arch desktop acceptance.
+v0.1–v0.4 was confirmed by the user; v0.5 latest GUI still needs manual acceptance.
 Cargo.lock is tracked. Real-server SFTP integration runs in Linux CI; Windows
 runs unit tests and builds Tauri. Desktop GUI acceptance is pending.
 
@@ -56,17 +56,16 @@ runs unit tests and builds Tauri. Desktop GUI acceptance is pending.
 
 ## v0.3 SSH vertical slice (review branch)
 
-Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this branch. Explicit connect/reconnect, resize, tab lifecycle and strict known_hosts trust are included; key/agent/password/PAM authentication is supported in consoles. Arch manual acceptance is required before merge. See [architecture, limits and acceptance steps](docs/V0.3-SSH.md). Windows GUI password/PAM and tunnels remain deferred. See the v0.5 note below.
+Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this branch. Explicit connect/reconnect, resize, tab lifecycle and strict known_hosts trust are included; key/agent/password/PAM authentication is supported in consoles. The v0.3 SSH PR has already merged and was manually tested on Arch. See [architecture, limits and acceptance steps](docs/V0.3-SSH.md). Windows GUI password/PAM and tunnels remain deferred. See the v0.5 note below.
 
 
 ## v0.5 SFTP GUI — review slice / срез для проверки
 
 Two panels, real structured SFTP v3 listing/navigation and binary upload/download
-with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. No mkdir, rename,
-delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
+with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. Nonrecursive mkdir, safe rename, delete and single-file internal drag/drop are implemented. Issue #9 remains open. Arch/Windows manual acceptance
 is pending; no merge before verification.
 
 Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
-с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
+с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через OpenSSH, Windows: ключ/агент. Создание папок, переименование, удаление и DnD одного файла есть, приёмка ещё впереди.
 
 See [security, limitations and acceptance](docs/V0.5-SFTP-GUI.md).

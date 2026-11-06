@@ -217,6 +217,37 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
         } else { copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events) }
     }).await.map_err(|_| "Transfer task failed".to_string())?
 }
+#[cfg(all(test,unix))]
+pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into())};
+    let op=Arc::new(Operation::default());
+    let result=(|| -> Result<()> {
+        // Exercise the production connect/list/copy functions, not a parallel
+        // test-only SSH command. No developer identity or secret is available.
+        let mut c=connect(&d,&op)?;
+        let home=c.realpath(".")?;
+        remote_list(&mut c,&home,&op)?;
+        let local=PathBuf::from(fixture).join(format!("auth-local-{case}")); fs::create_dir(&local).unwrap();
+        let source=local.join("source.bin");
+        let bytes:Vec<u8>=(0..65537).map(|n|(n%256) as u8).collect(); fs::write(&source,&bytes).unwrap();
+        let remote=wire::join(&home,&format!("bridge-{case}.bin"))?;
+        let temp=wire::join(&home,&format!(".bridge-{case}.part"))?;
+        let events=Channel::<Progress>::new(|_|Ok(()));
+        copy_upload(&mut c,&source,&remote,&temp,&op,&events)?;
+        let target=local.join("download.bin"); let partial=local.join(".download.part");
+        copy_download(&mut c,&remote,&target,&partial,&op,&events)?;
+        assert_eq!(fs::read(&target).unwrap(),bytes);
+        assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+        let cancelled=Arc::new(Operation::default()); let mut slave=connect(&d,&cancelled)?;
+        let cancel_op=cancelled.clone(); let cancel_events=Channel::<Progress>::new(move |_|{cancel_op.cancel();Ok(())});
+        assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+        assert!(!partial.exists()); assert!(!local.join("cancelled.bin").exists());
+        // Cancelling a transfer kills only its subsystem child; login survives.
+        assert_eq!(c.realpath(".")?,home);
+        Ok(())
+    })();
+    op.stop(); result.unwrap();
+}
 #[cfg(test)]
 mod tests {
     use super::*;

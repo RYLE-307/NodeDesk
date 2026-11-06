@@ -290,17 +290,7 @@ mod tests {
                 assert!(prompts>0);
                 // No key/password fallback is possible: false proxy fails if the
                 // authenticated master cannot serve a binary subsystem channel.
-                let mut slave=std::process::Command::new("ssh").args(["-F","none","-S",&socket,"-oControlMaster=no","-oBatchMode=yes","-oProxyCommand=false","-T","-s","-p","22229","-l",&user,"127.0.0.1","sftp"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
-                let mut client=crate::sftp_wire::Client::new(slave.stdout.take().unwrap(),slave.stdin.take().unwrap()).unwrap();
-                let home=client.realpath(".").unwrap(); assert!(!home.is_empty());
-                let target=crate::sftp_wire::join(&home,&format!("bridge-{case}.bin")).unwrap();
-                let handle=client.open(&target,2|8|32).unwrap();
-                let bytes:Vec<u8>=(0..65537).map(|n|(n%256) as u8).collect();
-                client.write(&handle,0,&bytes).unwrap(); client.close(&handle).unwrap();
-                let handle=client.open(&target,1).unwrap(); let mut received=vec![];
-                while let Some(part)=client.read(&handle,received.len() as u64).unwrap() {received.extend(part);}
-                client.close(&handle).unwrap(); assert_eq!(bytes,received);
-                drop(client); let _=slave.kill(); let _=slave.wait();
+                crate::files::verify_auth_bridge(&socket,&user,case,&dir);
             }
             drop(session); assert!(!std::path::Path::new(&socket).exists());
             assert!(child.lock().unwrap().try_wait().unwrap().is_some());

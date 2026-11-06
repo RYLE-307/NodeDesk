@@ -33,4 +33,4 @@ for _ in {1..50}; do
   if ssh-keyscan -p 22229 127.0.0.1 >/dev/null 2>&1; then break; fi
   sleep 0.1
 done
-NODEDESK_SSH_FIXTURE="$fixture" cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+NODEDESK_SSH_FIXTURE="$fixture" cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture

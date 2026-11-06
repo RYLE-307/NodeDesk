@@ -37,7 +37,7 @@ jobs:
       - run: npm ci
       - name: Rust tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Rust tests and real OpenSSH host-key integration (Linux)
         if: runner.os == 'Linux'
         run: bash tests/ssh-fixture.sh

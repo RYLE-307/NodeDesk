@@ -1,11 +1,11 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
 use serde::Serialize;
 use std::{collections::HashMap, io::{Read, Write}, sync::{Arc, Mutex}};
-use tauri::{ipc::Channel, State};
+use tauri::{ipc::Channel, State, Manager};
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
 }
 impl Sessions { pub fn shutdown(&self) { if let Ok(mut sessions) = self.0.lock() { sessions.clear(); } } }
@@ -30,7 +30,7 @@ fn arguments(host: &str, port: u16, username: &str) -> Result<Vec<String>, Strin
     Ok(args)
 }
 #[tauri::command]
-pub fn ssh_connect(id: String, host: String, port: u16, username: String, cols: u16, rows: u16, events: Channel<Event>, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_connect(id: String, host: String, port: u16, username: String, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let args = arguments(&host, port, &username)?;
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
@@ -45,7 +45,7 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, cols: 
     let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start OpenSSH: {e}"))?;
     drop(pair.slave);
     let child = Arc::new(Mutex::new(child));
-    sessions.insert(id, Session { master: pair.master, writer, child: child.clone() });
+    sessions.insert(id.clone(), Session { master: pair.master, writer: Arc::new(Mutex::new(writer)), child: child.clone() });
     std::thread::spawn(move || {
         let mut bytes = [0u8; 16384];
         loop { match reader.read(&mut bytes) {
@@ -53,16 +53,18 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, cols: 
             Ok(n) => if events.send(Event::Data(bytes[..n].to_vec())).is_err() { if let Ok(mut child) = child.lock() { let _ = child.kill(); } break; },
             Err(_) => break, // Unix PTYs report EIO at normal child exit.
         }}
-        match child.lock().unwrap().wait() { Ok(status) => { let _ = events.send(Event::Exit(status.exit_code())); }, Err(_) => { let _ = events.send(Event::Error("SSH process wait failed".into())); } }
+        let outcome = child.lock().unwrap().wait();
+        app.state::<Sessions>().0.lock().unwrap().remove(&id);
+        match outcome { Ok(status) => { let _ = events.send(Event::Exit(status.exit_code())); }, Err(_) => { let _ = events.send(Event::Error("SSH process wait failed".into())); } };
     });
     Ok(())
 }
 #[tauri::command]
 pub fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> Result<(), String> {
     if data.len() > 65536 { return Err("Input too large".into()); }
-    let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
-    let session = sessions.get_mut(&id).ok_or("Session closed")?;
-    session.writer.write_all(data.as_bytes()).and_then(|_| session.writer.flush()).map_err(|_| "SSH input failed".into())
+    let writer = state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.writer.clone();
+    let mut writer = writer.lock().map_err(|_| "Input lock failed")?;
+    writer.write_all(data.as_bytes()).and_then(|_| writer.flush()).map_err(|_| "SSH input failed".into())
 }
 #[tauri::command]
 pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>) -> Result<(), String> {
@@ -88,7 +90,7 @@ mod tests {
         #[cfg(windows)] let mut cmd = CommandBuilder::new("cmd.exe");
         #[cfg(windows)] cmd.args(["/c", "ping -n 60 127.0.0.1 >nul"]);
         let child = Arc::new(Mutex::new(pair.slave.spawn_command(cmd).unwrap()));
-        let session = Session { writer: pair.master.take_writer().unwrap(), master: pair.master, child: child.clone() };
+        let session = Session { writer: Arc::new(Mutex::new(pair.master.take_writer().unwrap())), master: pair.master, child: child.clone() };
         drop(pair.slave);
         drop(session);
         for _ in 0..100 {

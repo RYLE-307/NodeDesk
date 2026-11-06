@@ -1,21 +1,297 @@
-:root { font-family: Inter, "Segoe UI", sans-serif; color: #cbd5e1; background: #0b0f17; font-synthesis: none; }
-* { box-sizing: border-box; }
-body { margin: 0; }
-button { color: #aab9cf; background: transparent; border: 1px solid #29364b; border-radius: 6px; padding: 7px 9px; cursor: pointer; }
-button:hover { background: #23304a; }
-button:focus-visible { outline: 2px solid #58beff; outline-offset: 2px; }
-.app { display: grid; grid-template-columns: 250px 1fr; height: 100dvh; min-height: 280px; }
-.app.collapsed { grid-template-columns: 76px 1fr; }
-aside { background: #101723; border-right: 1px solid #202b3c; display: flex; flex-direction: column; }
-header { min-height: 66px; display: flex; align-items: center; gap: 12px; padding: 16px; }
-header button { margin-left: auto; }
-.logo { display: block; width: 30px; height: 30px; flex: none; }
-.collapsed header { flex-wrap: wrap; justify-content: center; }
-.catalog { padding: 20px; font-size: 14px; }
-.catalog > span + span { margin-left: 12px; }
-.catalog p { color: #728198; font-size: 12px; margin-top: 24px; }
-footer { margin-top: auto; padding: 20px; }
-main { min-width: 0; display: flex; flex-direction: column; }
-.tabs { height: 42px; border-bottom: 1px solid #202b3c; background: #0e1420; }
-.workspace { flex: 1; }
-.status { border-top: 1px solid #202b3c; padding: 7px 16px; color: #728198; font-size: 11px; }
+:root {
+  font-family: Inter, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  --bg: #0b0f17;
+  --panel: #101723;
+  --surface: #182233;
+  --line: #29364b;
+  --text: #cbd5e1;
+  --muted: #8c9bb0;
+  --accent: #52d4d0;
+}
+:root[data-theme="light"] {
+  --bg: #f3f6fa;
+  --panel: #fff;
+  --surface: #e7edf6;
+  --line: #b9c6d8;
+  --text: #233047;
+  --muted: #52627a;
+  --accent: #087e84;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: var(--panel);
+  min-width: 0;
+}
+button {
+  cursor: pointer;
+}
+button:hover,
+button.selected,
+button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.app {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 400px;
+}
+.app.collapsed {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+aside {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+header {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+header button {
+  margin-left: auto;
+}
+.logo {
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+.collapsed header {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+h2 {
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  margin: 0 0 16px;
+}
+small,
+.muted,
+.pane p,
+.monitor p {
+  color: var(--muted);
+}
+header small {
+  font-weight: normal;
+  font-size: 11px;
+}
+.catalog-tools {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.actions,
+.group-row {
+  display: flex;
+  gap: 4px;
+}
+.actions > button {
+  flex: 1;
+}
+.group-row {
+  margin-top: 4px;
+}
+.group-row button {
+  padding: 5px;
+}
+.grow {
+  flex: 1;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.connection-list {
+  padding: 0 16px 16px;
+  overflow: auto;
+  flex: 1;
+  min-height: 80px;
+}
+.connection {
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.connection-open {
+  border: 0;
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.protocol {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+.connection .actions {
+  margin-top: 6px;
+}
+footer {
+  margin-top: auto;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.check {
+  display: flex;
+  align-items: center;
+}
+main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tabs {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.tab {
+  display: flex;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.tab button {
+  border: 0;
+  border-radius: 0;
+  min-height: 43px;
+}
+.split {
+  margin: 4px 8px 4px auto;
+  white-space: nowrap;
+}
+.workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.split-workspace {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+}
+.pane {
+  padding: 32px;
+  overflow-wrap: anywhere;
+}
+.pane h1 {
+  font-size: 24px;
+}
+.badge {
+  color: var(--accent);
+  font-size: 12px;
+}
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
+  font-size: 14px;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+}
+.secondary {
+  border-left: 1px solid var(--line);
+  overflow: auto;
+  resize: horizontal;
+}
+.secondary > select {
+  margin: 10px;
+  max-width: calc(100% - 20px);
+}
+.status,
+.monitor {
+  border-top: 1px solid var(--line);
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.monitor {
+  font-size: 13px;
+}
+.error {
+  background: var(--surface);
+  color: var(--text);
+  border-left: 3px solid #ed8b65;
+  padding: 12px;
+  font-size: 13px;
+}
+dialog {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+}
+dialog::backdrop {
+  background: #0009;
+}
+form {
+  display: grid;
+  gap: 16px;
+}
+@media (max-width: 800px) {
+  .app {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+  .pane {
+    padding: 16px;
+  }
+  .split-workspace {
+    grid-template-columns: 1fr;
+  }
+  .secondary {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}

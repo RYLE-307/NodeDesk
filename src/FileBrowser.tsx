@@ -132,11 +132,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       return [...current,name];
     });
   }
-  function transferSelected(upload: boolean) {
+  function transferSelected(upload: boolean, draggedNames?: string[]) {
     if (busy || gate.current.id || (interactive && !authReady)) return;
     const source = upload ? local : remote, target = upload ? remote : local;
     let names: string[];
-    try { names = transferBatchPlan(upload ? batchLocal : batchRemote,source,target); }
+    try { names = transferBatchPlan(draggedNames ?? (upload ? batchLocal : batchRemote),source,target); }
     catch (cause) { setError(String(cause)); return; }
     if (!source || !target) return;
     const label = upload ? (ru ? "Загрузить на сервер" : "Upload to server") : (ru ? "Скачать локально" : "Download locally");
@@ -243,19 +243,29 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   function dragFile(event: React.DragEvent, isRemote: boolean, entry: FileEntry, folder: string) {
     if (busy || !portableName(entry.name) || entry.kind !== "file") {event.preventDefault();return;}
     event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("application/x-nodedesk-file",JSON.stringify({source:isRemote ? "remote" : "local",name:entry.name,folder}));
+    const selection = isRemote ? batchRemote : batchLocal;
+    const names = selection.includes(entry.name) ? selection : [entry.name];
+    event.dataTransfer.setData("application/x-nodedesk-file",JSON.stringify({
+      source:isRemote ? "remote" : "local",name:entry.name,names,folder
+    }));
   }
   function dropFile(event: React.DragEvent, isRemote: boolean) {
     event.preventDefault(); event.stopPropagation(); setDropTarget(null);
     const raw = event.dataTransfer.getData("application/x-nodedesk-file");
     if (!raw || !local || !remote || busy || (interactive && !authReady)) return;
     try {
-      const payload = JSON.parse(raw) as {source?:unknown;name?:unknown;folder?:unknown};
+      const payload = JSON.parse(raw) as {source?:unknown;name?:unknown;names?:unknown;folder?:unknown};
+      if (payload.source !== "remote" && payload.source !== "local") return;
       const sourceRemote = payload.source === "remote";
-      if (sourceRemote === isRemote || typeof payload.name !== "string" || !portableName(payload.name)) return;
+      if (sourceRemote === isRemote) return;
       const source = sourceRemote ? remote : local;
-      if (payload.folder !== source.path || !source.entries.some(e => e.name === payload.name && e.kind === "file")) return;
-      transfer(!sourceRemote,payload.name);
+      const names = Array.isArray(payload.names) ? payload.names : [payload.name];
+      if (payload.folder !== source.path || names.length<1 || names.length>50 ||
+        new Set(names).size !== names.length ||
+        names.some(name => typeof name !== "string" || !portableName(name) ||
+          !source.entries.some(entry => entry.name===name && entry.kind==="file"))) return;
+      if (names.length===1) transfer(!sourceRemote,names[0]);
+      else transferSelected(!sourceRemote,names);
     } catch { /* ignore external and invalid drops */ }
   }
   async function cancel() {
@@ -296,6 +306,12 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         }}/>
       <div className="files-multiselect">
         <span>{ru ? "Выбрано для передачи" : "Selected for transfer"}: {chosen.length}/50</span>
+        <button type="button"
+          disabled={!listing || busy || !visible.some(entry => entry.kind==="file" && portableName(entry.name))}
+          onClick={() => (isRemote ? setBatchRemote : setBatchLocal)(
+            visible.filter(entry => entry.kind==="file" && portableName(entry.name))
+              .slice(0,50).map(entry => entry.name)
+          )}>{ru ? "Выбрать видимые (до 50)" : "Select visible (up to 50)"}</button>
         <button type="button" disabled={!listing || busy || chosen.length===0}
           onClick={() => (isRemote ? setBatchRemote : setBatchLocal)([])}>{ru ? "Снять выделение" : "Clear selection"}</button>
       </div>

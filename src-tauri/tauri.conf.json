@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "NodeDesk", "width": 1280, "height": 800, "minWidth": 640, "minHeight": 400 }],
+    "windows": [{ "title": "NodeDesk", "width": 1280, "height": 800, "minWidth": 640, "minHeight": 400, "dragDropEnabled": false }],
     "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost" }
   },
   "bundle": {

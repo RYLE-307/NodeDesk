@@ -140,3 +140,10 @@ export function removeGroup(data: Catalog, id: string): Catalog {
     ),
   };
 }
+
+export function moveConnection(data: Catalog, id: string, groupId: string | null): Catalog {
+  if (!data.connections.some(c => c.id === id) ||
+      (groupId !== null && !data.groups.some(g => g.id === groupId))) return data;
+  if (data.connections.find(c => c.id === id)!.groupId === groupId) return data;
+  return { ...data, connections: data.connections.map(c => c.id === id ? { ...c, groupId } : c) };
+}

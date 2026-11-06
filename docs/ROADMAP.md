@@ -67,17 +67,19 @@ First real SFTP step: user-initiated native OpenSSH `sftp` process attached to a
 
 ## v0.5 SFTP GUI — review slice / срез для проверки
 
-Two panels, real structured SFTP v3 listing/navigation and binary upload/download
-with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. No mkdir, rename,
-delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
-is pending; no merge before verification.
+Two panels, real structured SFTP v3 listing/navigation, binary upload/download,
+nonrecursive mkdir, rename, delete (with confirmation), and internal single-file
+drag/drop, with no overwrite, progress/cancel. GUI: Linux password/PAM via
+OpenSSH auth bridge; Windows key/agent. Windows password/PAM and bulk operations
+remain planned. Issue #9 remains open pending manual Arch/Windows acceptance.
 
-Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
-с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
+Две панели, настоящий SFTP v3, навигация, бинарная передача без перезаписи,
+создание папок, переименование, удаление с подтверждением и Drag & Drop одного
+файла. GUI Linux: пароль/PAM через OpenSSH. Windows: ключ/агент.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 
 
 ### v0.5 review follow-up: filesystem mutations (not yet accepted)
 
-Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-file cross-pane **internal Drag & Drop** to PR #10. Permanent deletion requires user confirmation. Symlinks, recursion, unsafe local directory rename and bulk operations remain unsupported. This is still **draft**, not merged, pending latest CI and manual Arch acceptance. See [v0.5 guide](V0.5-SFTP-GUI.md), [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-file cross-pane **internal Drag & Drop** to PR #10. Permanent deletion requires user confirmation. Symlinks, recursive and bulk operations remain unsupported. Local directory rename now uses no-replace OS primitives on Linux/Windows. This is still **draft**, not merged, pending latest CI and manual Arch acceptance. See [v0.5 guide](V0.5-SFTP-GUI.md), [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).

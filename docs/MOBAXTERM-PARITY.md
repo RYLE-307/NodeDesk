@@ -78,3 +78,37 @@ RDP/VNC, serial permissions и системные VPN требуют разны�
 ## v0.3 SSH vertical slice (review branch)
 
 Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this branch. Explicit connect/reconnect, resize, tab lifecycle and strict known_hosts trust are included; key/agent authentication only. Arch manual acceptance is required before merge. See [architecture, limits and acceptance steps](V0.3-SSH.md). Passwords, SFTP and tunnels remain deferred.
+
+## Уточнение паритета и UX — 2026-11-06
+
+Источники для сравнения: [официальный перечень функций MobaXterm](https://mobaxterm.mobatek.net/features.html), [документация и конфигурация MobaXterm](https://mobaxterm.mobatek.net/documentation.html), [страница плагинов](https://mobaxterm.mobatek.net/plugins.html). Сравнение должно фиксировать конкретную версию/редакцию MobaXterm; публичные страницы не гарантируют полноту опций и различий Home/Professional. **MobaXterm — Windows-приложение; NodeDesk должен предложить аналогичную практическую функциональность на Windows и Linux, но не копировать код, бренд или интерфейс 1:1.**
+
+Сейчас статус SSH-01 — **частичный key-only MVP** в draft PR #4: в Arch видны подтверждение SHA256 host-key и `Permission denied (publickey,password)`, то есть **вход по SSH ещё не доказан**. В v0.3 отключены password и keyboard-interactive. Проверка пароля и успешной интерактивной сессии требуется отдельно. Пункты UI-02, UI-03 и CAT-01 из ранней таблицы имеют частичную реализацию в v0.2/PR #4, но полный комплекс функций (перестановка вкладок, resize split, дублирование и т.д.) не закрыт.
+
+### Новые строки требований / приоритет
+
+| ID | Приоритет | Возможность, критерий приёмки | Windows | Linux | Задача |
+| --- | --- | --- | --- | --- | --- |
+| SSH-06 | P0 | Password + keyboard-interactive/PAM/2FA, скрытый ввод и отмена, host-key trust до секретов, никаких сохранённых паролей по умолчанию | План | План | [#5](https://github.com/RYLE-307/NodeDesk/issues/5) |
+| UX-01 | P0 | Контекстное меню дерева: right-click пустая область/группа/сессия, новое подключение/группа, edit/duplicate/move/delete, Shift+F10 | План | План | [#6](https://github.com/RYLE-307/NodeDesk/issues/6) |
+| UX-02 | P0 | Resize sidebar мышью за разделитель, пределы ширины, сохранение, keyboard resize | План | План | [#7](https://github.com/RYLE-307/NodeDesk/issues/7) |
+| UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | План | План | UX |
+| UI-07 | P1 | Drag/drop вкладок, упорядочивание, split в 2/4 панели с resize и корректным переносом активной сессии | План | План | Workspace |
+| FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | План | План | Files |
+| TERM-03 | P1 | Прозрачный clipboard, поиск/выделение, zoom/fonts, настройки кодировки, ссылки, colors/themes, safe paste | План | План | Terminal |
+| CAT-04 | P1 | Управление сессиями: recent, duplicate, bulk edit, group import/export, backup/restore, формат MobaXterm где лицензия позволяет | План | План | Catalog |
+| SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | План | План | SSH |
+| SSH-08 | P1 | Tunnels manager, отдельный UI local/remote/dynamic forward, ports/status/reconnect и safety restrictions | План | План | SSH |
+| RDP-03 | P1 | RDP clipboard, multi-monitor, динамический DPI/resize, звук, drive/printer redirection, security profiles | План | План | Remote |
+| VNC-02 | P1 | VNC clipboard, encoding/compression, scaling, fullscreen и gateway | План | План | Remote |
+| AUTO-03 | P2 | Интерактивные макросы, snippets/variables, подтверждение multi-execution и аудит опасных команд | План | План | Tools |
+| SRV-02 | P2 | Встроенные серверы SSH/SFTP/TFTP/FTP/HTTP и др. *только после инвентаризации официальной документации по версии*; start/stop/firewall | План | План | Servers |
+| DIST-02 | P2 | Portable mode и установщик, плагинная архитектура и безопасная установка инструментов, список сторонних notices | План | План | Release |
+
+### Acceptance для цели «как MobaXterm и лучше»
+
+1. Сравнивать не только наличие пункта меню: проверить подключение, шифрование, auth, ошибки, reconnect, входящие и исходящие файлы, resize, keyboard input и настройки.
+2. В UX проверять плотность информации, context menu, resize sidebar, DnD каталога, скорость работы клавиатурой и доступность. Не копировать точные стили/ресурсы MobaXterm.
+3. Windows/Linux тестируются раздельно: Windows OpenSSH/ConPTY, FreeRDP/RDP engine, X server, Unix tools; Linux PTY, X11/Wayland/Xwayland и системные VPN. Наличие библиотеки не равно реализованной функции.
+4. Не сохранять SSH/RDP/VPN пароли, ключи, токены или логи с секретами в WebView storage. Разрешать сохранение только в отдельном защищённом vault после аудита, opt-in и явного управления экспортом.
+5. Перепроверять официальные источники при планировании каждой подсистемы; эта таблица не гарантирует, что перечислены **абсолютно все** настройки каждой редакции MobaXterm.

@@ -91,10 +91,6 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const nameSelected = isRemote ? remoteSelection : localSelection;
     const entry = listing.entries.find(e => e.name === nameSelected);
     if (action !== "mkdir" && (!entry || !portableName(entry.name) || !["file","directory"].includes(entry.kind))) return;
-    if (action === "rename" && !isRemote && entry?.kind === "directory") {
-      setError(ru ? "Безопасное переименование локальной папки ещё не поддерживается." : "Safe local directory rename is not yet supported.");
-      return;
-    }
     let name = entry?.name ?? "";
     let newName: string | null = null;
     if (action === "mkdir") {
@@ -170,7 +166,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       <p className="files-current">{listing?.path ?? (ru ? "Панель не загружена" : "Pane not loaded")}</p>
       <div className="files-ops">
         <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
-        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind)) || (!isRemote && listing.entries.some(e => e.name===selection && e.kind==="directory"))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
+        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name===selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"delete")}>{ru ? "Удалить" : "Delete"}</button>
       </div>
       <div className="files-table-scroll"><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>

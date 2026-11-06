@@ -415,3 +415,10 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-table-scroll tr:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 
 .files-filter { display:block; width:100%; min-width:0; margin:8px 0; font-size:12px; padding:6px 8px; }
+
+/* Bounded one-at-a-time batch transfers; selection is per loaded pane. */
+.files-multiselect { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:11px; color:var(--muted); padding:2px 0 5px; }
+.files-multiselect button { font-size:11px; padding:3px 7px; }
+.files-table-scroll td:first-child, .files-table-scroll th:first-child { width:46px; text-align:center; }
+.files-table-scroll input[type="checkbox"] { accent-color:var(--accent); cursor:pointer; }
+.files-actions { flex-wrap:wrap; }

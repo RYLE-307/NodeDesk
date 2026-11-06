@@ -221,7 +221,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         if (event.target instanceof Element && event.target.closest("tr")) return;
         event.preventDefault(); showContext(isRemote,null,event.clientX,event.clientY);
       }}><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
-        <tbody>{visible.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
+        <tbody>{listing && visible.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
           draggable={!busy && e.kind === "file" && portableName(e.name)}
           onDragStart={event => dragFile(event,isRemote,e,listing.path)}
           onDragEnd={() => setDropTarget(null)}

@@ -196,8 +196,10 @@ mod tests {
         let mut p=Prompter {login:login.clone(),rx,events,deadline:Instant::now()+Duration::from_secs(1),failed:false};
         login.input.send("disposable-X\u{7f}Y\r".into()).unwrap();
         let mut answer=p.answer("\x1b[31mPassword:\n").unwrap();assert_eq!(answer,"disposable-Y");answer.zeroize();
-        let captured=output.lock().unwrap();let captured=String::from_utf8_lossy(&captured);
-        assert!(!captured.contains("disposable"));assert!(!captured.contains('\x1b'));
+        {
+            let captured=output.lock().unwrap();let captured=String::from_utf8_lossy(&captured);
+            assert!(!captured.contains("disposable"));assert!(!captured.contains('\x1b'));
+        }
         login.input.send("\u{3}".into()).unwrap();assert!(p.answer("Password:").is_err());
         login.close();assert!(!login.ready());assert!(p.answer("Password:").is_err());
     }

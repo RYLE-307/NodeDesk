@@ -54,6 +54,16 @@ jobs:
       - name: Rust tests (Windows)
         if: runner.os == 'Windows'
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: '3.12'
+      - name: Isolated Windows native SSH/SFTP integration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install paramiko==4.0.0
+          ./tests/windows-sftp-fixture.ps1
       - name: Rust tests and real OpenSSH host-key integration (Linux)
         if: runner.os == 'Linux'
         run: bash tests/ssh-fixture.sh

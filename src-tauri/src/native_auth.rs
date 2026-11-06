@@ -165,13 +165,18 @@ pub fn subsystem(login:&Arc<Login>)->Result<StreamClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn event_bytes(body:tauri::ipc::InvokeResponseBody)->Vec<u8> {
+        let tauri::ipc::InvokeResponseBody::Json(json)=body else {panic!("Expected JSON event");};
+        let value:serde_json::Value=serde_json::from_str(&json).unwrap();
+        assert_eq!(value["kind"],"data");serde_json::from_value(value["value"].clone()).unwrap()
+    }
     fn login()->(Arc<Login>,Receiver<String>) {
         let (input,rx)=mpsc::sync_channel(32);
         (Arc::new(Login {host:"127.0.0.1".into(),port:22229,user:"fixture".into(),alive:AtomicBool::new(true),socket:Mutex::new(None),session:Mutex::new(None),input}),rx)
     }
     #[test] fn hidden_input_backspace_cancel_and_sanitized_prompt() {
         let (login,rx)=login();let output=Arc::new(Mutex::new(Vec::new()));let capture=output.clone();
-        let events=Channel::new(move |event| {if let Event::Data(bytes)=event {capture.lock().unwrap().extend(bytes);}Ok(())});
+        let events=Channel::new(move |event| {capture.lock().unwrap().extend(event_bytes(event));Ok(())});
         let mut p=Prompter {login:login.clone(),rx,events,deadline:Instant::now()+Duration::from_secs(1),failed:false};
         login.input.send("disposable-X\u{7f}Y\r".into()).unwrap();
         let mut answer=p.answer("\x1b[31mPassword:\n").unwrap();assert_eq!(answer,"disposable-Y");answer.zeroize();
@@ -201,7 +206,8 @@ mod tests {
             let seen=Arc::new(Mutex::new(Vec::new()));let capture=seen.clone();let send=login.input.clone();
             let response=if valid {secret.clone()}else{"incorrect-fixture-password".into()};
             let events=Channel::new(move |event| {
-                if let Event::Data(bytes)=event {
+                {
+                    let bytes=event_bytes(event);
                     if String::from_utf8_lossy(&bytes).to_lowercase().contains("assword:") {let _=send.try_send(format!("{response}\r"));}
                     capture.lock().unwrap().extend(bytes);
                 }Ok(())

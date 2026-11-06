@@ -16,6 +16,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
+  const [context, setContext] = useState<{isRemote:boolean;name:string|null;x:number;y:number}|null>(null);
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
   useEffect(() => {
@@ -33,6 +34,19 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
+  useEffect(() => {
+    if (!context) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Element && !event.target.closest(".files-context-menu")) setContext(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setContext(null); };
+    document.addEventListener("pointerdown",dismiss);
+    document.addEventListener("keydown",escape);
+    return () => {
+      document.removeEventListener("pointerdown",dismiss);
+      document.removeEventListener("keydown",escape);
+    };
+  }, [context]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {}); };
@@ -85,10 +99,19 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       setStatus(ru ? "Передача завершена. Обновите панель назначения." : "Transfer completed. Refresh the destination pane.");
     });
   }
-  function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete") {
+  function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
+    if (name !== null) (isRemote ? selectRemote : selectLocal)(name);
+    setContext({
+      isRemote,name,
+      x:Math.max(8,Math.min(x,window.innerWidth-198)),
+      y:Math.max(8,Math.min(y,window.innerHeight-190)),
+    });
+  }
+  function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete", nameOverride?: string|null) {
+    setContext(null);
     const listing = isRemote ? remote : local;
     if (!listing || busy || (isRemote && interactive && !authReady)) return;
-    const nameSelected = isRemote ? remoteSelection : localSelection;
+    const nameSelected = nameOverride === undefined ? (isRemote ? remoteSelection : localSelection) : (nameOverride ?? "");
     const entry = listing.entries.find(e => e.name === nameSelected);
     if (action !== "mkdir" && (!entry || !portableName(entry.name) || !["file","directory"].includes(entry.kind))) return;
     let name = entry?.name ?? "";
@@ -169,12 +192,26 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name===selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"delete")}>{ru ? "Удалить" : "Delete"}</button>
       </div>
-      <div className="files-table-scroll"><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
+      <div className="files-table-scroll" onContextMenu={event => {
+        if (event.target instanceof Element && event.target.closest("tr")) return;
+        event.preventDefault(); showContext(isRemote,null,event.clientX,event.clientY);
+      }}><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
         <tbody>{listing?.entries.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
           draggable={!busy && e.kind === "file" && portableName(e.name)}
           onDragStart={event => dragFile(event,isRemote,e,listing.path)}
           onDragEnd={() => setDropTarget(null)}
-          onContextMenu={event => {event.preventDefault();select(e.name);}}
+          tabIndex={0}
+          onContextMenu={event => {
+            event.preventDefault();event.stopPropagation();
+            showContext(isRemote,e.name,event.clientX,event.clientY);
+          }}
+          onKeyDown={event => {
+            if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+              event.preventDefault();
+              const rect=event.currentTarget.getBoundingClientRect();
+              showContext(isRemote,e.name,rect.left+24,rect.bottom);
+            }
+          }}
         >
           <td><button disabled={busy || !portableName(e.name)} aria-pressed={selection === e.name} onClick={() => select(e.name)} onDoubleClick={() => {if (e.kind === "directory") list(isRemote,childPath(listing.path,e.name,isRemote));}} title={e.name}>{e.name}</button>
             {e.kind === "directory" && <button disabled={busy || !portableName(e.name)} aria-label={`${ru ? "Открыть папку" : "Open folder"}: ${e.name}`} onClick={() => list(isRemote,childPath(listing.path,e.name,isRemote))}>↳</button>}</td>
@@ -195,5 +232,29 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
     <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>
     <div className="files-panels">{panel(false)}{panel(true)}</div>
+    {context && (() => {
+      const listing=context.isRemote ? remote : local;
+      const entry=listing?.entries.find(e => e.name===context.name);
+      const valid=!!entry && portableName(entry.name) && ["file","directory"].includes(entry.kind);
+      const allowed=!busy && !!listing && (!context.isRemote || !interactive || authReady);
+      return <div className="files-context-menu" role="menu" aria-label={ru ? "Действия с файлом" : "File actions"}
+        style={{left:context.x,top:context.y}}>
+        <button role="menuitem" type="button" disabled={!allowed} onClick={() => mutate(context.isRemote,"mkdir",null)}>{ru ? "Новая папка" : "New folder"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid || entry?.kind!=="directory"}
+          onClick={() => {
+            setContext(null);
+            if (entry && listing) list(context.isRemote,childPath(listing.path,entry.name,context.isRemote));
+          }}>{ru ? "Открыть папку" : "Open folder"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid}
+          onClick={() => mutate(context.isRemote,"rename",context.name)}>{ru ? "Переименовать" : "Rename"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid}
+          onClick={() => mutate(context.isRemote,"delete",context.name)}>{ru ? "Удалить…" : "Delete…"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid || entry?.kind!=="file" || !local || !remote}
+          onClick={() => {
+            setContext(null);
+            if (entry) transfer(!context.isRemote,entry.name);
+          }}>{context.isRemote ? (ru ? "Скачать…" : "Download…") : (ru ? "Загрузить…" : "Upload…")}</button>
+      </div>;
+    })()}
   </section>;
 }

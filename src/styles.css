@@ -383,3 +383,6 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-panel td button { font-size: inherit; }
 .files-panel tr.selected { outline: 1px solid currentColor; outline-offset: -1px; }
 @media (max-width: 1100px) { .files-panels { grid-template-columns: minmax(0, 1fr); } }
+
+.files-login .ssh-screen { height: 160px; min-height: 160px; }
+.files-login .ssh-pane { min-height: 0; }

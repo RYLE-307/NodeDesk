@@ -6,7 +6,12 @@ use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Write}, path
 use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
-pub struct Destination { host: String, port: u16, username: String }
+#[serde(rename_all="camelCase")]
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String> }
+fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if let Some(id)=&d.auth_session { d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?); }
+    Ok(())
+}
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Entry { name: String, kind: String, size: Option<u64>, modified: Option<u64>, permissions: Option<u32> }
@@ -82,7 +87,12 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
 type Sftp = Client<std::process::ChildStdout,std::process::ChildStdin>;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
-    let mut command = Command::new("ssh"); command.args(transport_args(d)?);
+    let mut command = Command::new("ssh");
+    if let Some(socket)=&d.control {
+        // If the master vanished, fail closed instead of reconnecting/falling back.
+        command.args(["-S",socket,"-oProxyCommand=false"]);
+    }
+    command.args(transport_args(d)?);
     spawn_transport(command,op)
 }
 fn spawn_transport(mut command: Command, op: &Operation) -> Result<Sftp> {
@@ -122,7 +132,8 @@ fn remote_list(c: &mut Sftp, path: &str, op: &Operation) -> Result<Listing> {
     op.check()?; Ok(Listing {path,entries})
 }
 #[tauri::command]
-pub async fn files_list(id: String, destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
+pub async fn files_list(id: String, mut destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
+    if let Some(d)=&mut destination { resolve_auth(d,&app)?; }
     let g = register(&id,&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = &g;
@@ -191,7 +202,8 @@ fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Op
 #[serde(rename_all="camelCase")]
 pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool }
 #[tauri::command]
-pub async fn files_transfer(id: String, request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
+pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
+    resolve_auth(&mut request.destination,&app)?;
     wire::name(&request.name)?; wire::path(&request.remote_directory)?;
     let g = register(&id,&app)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -209,7 +221,7 @@ pub async fn files_transfer(id: String, request: Transfer, events: Channel<Progr
 mod tests {
     use super::*;
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into() };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
@@ -237,7 +249,7 @@ mod tests {
     #[test]
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
-        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap()};
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
             cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);

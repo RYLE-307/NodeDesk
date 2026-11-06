@@ -3,11 +3,23 @@ set -euo pipefail
 # Isolated local server. Nothing touches the user's ~/.ssh or known_hosts.
 fixture=$(mktemp -d)
 server_pid=""
+auth_user="ndfixture$$"
 cleanup() {
   if [[ -n "$server_pid" ]]; then sudo kill "$server_pid" 2>/dev/null || true; fi
+  sudo userdel "$auth_user" 2>/dev/null || true
   rm -rf -- "$fixture"
 }
 trap cleanup EXIT
+# Disposable CI account; never alters a developer account or uses user credentials.
+# Secret travels to chpasswd on stdin and is read only by the isolated Rust test.
+umask 077
+openssl rand -hex 24 | tr -d '\n' > "$fixture/auth-secret"
+printf '%s' "$auth_user" > "$fixture/auth-user"
+sudo useradd -M -d "$fixture/auth-home" -s /bin/sh "$auth_user"
+{ printf '%s:' "$auth_user"; cat "$fixture/auth-secret"; printf '\n'; } | sudo chpasswd
+chmod 711 "$fixture"
+sudo mkdir "$fixture/auth-home"
+sudo chown "$auth_user" "$fixture/auth-home"
 ssh-keygen -q -t ed25519 -N '' -f "$fixture/host"
 ssh-keygen -q -t ed25519 -N '' -f "$fixture/other"
 ssh-keygen -q -t ed25519 -N '' -f "$fixture/client"
@@ -21,10 +33,10 @@ HostKey $fixture/host
 PidFile $fixture/pid
 AuthorizedKeysFile $fixture/client.pub
 StrictModes no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
 UsePAM yes
-AllowUsers $(id -un)
+AllowUsers $(id -un) $auth_user
 LogLevel VERBOSE
 Subsystem sftp internal-sftp
 EOF

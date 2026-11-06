@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
 import { childPath, parentPath, portableName, progressPercent, transferAllowed, OperationGate } from "./filesModel";
 import type { FileEntry, Listing, Progress } from "./filesModel";
@@ -12,7 +13,25 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
   const [progress, setProgress] = useState<Progress | null>(null), [cancelling, setCancelling] = useState(false);
   const gate = useRef(new OperationGate()), mounted = useRef(true);
-  const destination = {host:connection.host,port:connection.port,username:connection.username};
+  const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
+  const [interactive, setInteractive] = useState(true);
+  const profile = JSON.stringify([connection.host,connection.port,connection.username]);
+  const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
+  useEffect(() => {
+    setAuthReady(false);
+    if (!authSession || !interactive) return;
+    let alive = true;
+    const check = () => void invoke<boolean>("files_auth_ready",{id:authSession,host:connection.host,port:connection.port,username:connection.username})
+      .then(ready => {if (alive) setAuthReady(ready);}).catch(() => {if (alive) setAuthReady(false);});
+    check(); const timer = setInterval(check,1000);
+    return () => {alive=false; clearInterval(timer);};
+  }, [authSession,interactive,profile]);
+  useEffect(() => {
+    if (interactive && !authReady) {
+      setRemote(null); selectRemote("");
+      const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
+    }
+  }, [interactive,authReady]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {}); };
@@ -24,7 +43,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if (next === previous.current) return;
     previous.current = next; setRemote(null); selectRemote(""); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
-  }, [connection.host, connection.port, connection.username]);
+  }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void) {
     if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return; }
     const id = crypto.randomUUID(); if (!gate.current.begin(id)) return;
@@ -41,6 +60,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     }
   }
   function list(isRemote: boolean, path: string) {
+    if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
     void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
       if (isRemote) { setRemote(listing); setRemotePath(listing.path); selectRemote(""); }
       else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); }
@@ -49,7 +69,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   function transfer(upload: boolean) {
     const entry = (upload ? local : remote)?.entries.find(e => e.name === (upload ? localSelection : remoteSelection));
-    if (!transferAllowed(entry,local,remote,busy)) return;
+    if (!transferAllowed(entry,local,remote,busy) || (interactive && !authReady)) return;
     const name = entry!.name;
     const target = upload ? remote! : local!;
     if (target.entries.some(e => e.name === name)) { setError(ru ? "Имя уже существует. Перезапись отключена." : "Destination name exists. Overwrite is disabled."); return; }
@@ -90,9 +110,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     </section>;
   }
   return <section className="file-browser" aria-label={ru ? "Файловый менеджер SFTP" : "SFTP file manager"}>
-    <p className="ssh-help">{ru
-      ? "SFTP GUI: ключ/агент, только уже доверенный host key. Для первого доверия, пароля/PAM и зашифрованных ключей используйте консоли SSH/SFTP. Ссылки не открываются; перезапись запрещена. Отмена загрузки может оставить .nodedesk-*.part на сервере. Лимит операции 120 секунд."
-      : "SFTP GUI: key/agent, previously trusted host key only. Use SSH/SFTP consoles for first trust, password/PAM and encrypted keys. Links cannot be opened; overwrite is disabled. Cancelled uploads may leave .nodedesk-*.part on the server. Operations time out after 120 seconds."}</p>
+    <label><input type="checkbox" checked={interactive} disabled={busy} onChange={e => setInteractive(e.target.checked)}/>{ru ? "Вход по паролю/PAM или ключу (Linux)" : "Password/PAM or key login (Linux)"}</label>
+    {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
+    <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
     <div className="files-actions">
       <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>
       <button disabled={!transferAllowed(remote?.entries.find(e => e.name === remoteSelection),local,remote,busy)} onClick={() => transfer(false)}>{ru ? "← Скачать локально" : "← Download locally"}</button>

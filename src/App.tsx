@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SshTerminal } from "./SshTerminal";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -17,6 +18,11 @@ import {
 const labels = {
   ru: {
     move: "Переместить в группу…",
+    newGroup: "Новая группа",
+    newConnection: "Новое подключение",
+    openConnection: "Открыть вкладку",
+    duplicate: "Дублировать",
+    sidebarResize: "Ширина панели подключений",
     actions: "Действия",
     moved: "Подключение перемещено",
     navigation: "Навигация",
@@ -67,6 +73,11 @@ const labels = {
   },
   en: {
     move: "Move to group…",
+    newGroup: "New group",
+    newConnection: "New connection",
+    openConnection: "Open tab",
+    duplicate: "Duplicate",
+    sidebarResize: "Connection sidebar width",
     actions: "Actions",
     moved: "Connection moved",
     navigation: "Navigation",
@@ -116,6 +127,14 @@ const labels = {
     stage: "Local catalog · no automatic connections",
   },
 };
+const SIDEBAR_WIDTH_KEY = "nodedesk.sidebar.width.v1";
+function readSidebarWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const value = raw === null ? 310 : Number(raw);
+    return Number.isFinite(value) && value >= 220 && value <= 640 ? value : 310;
+  } catch { return 310; }
+}
 type Editor =
   | { kind: "group"; value: Group }
   | { kind: "connection"; value: Connection };
@@ -133,6 +152,7 @@ export default function App() {
     initial.failed ? "loadError" : null,
   );
   const [expanded, setExpanded] = useState(true),
+    [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("all");
   const [folded, setFolded] = useState<Set<string>>(new Set()),
@@ -142,11 +162,85 @@ export default function App() {
     [active, setActive] = useState(""),
     [secondary, setSecondary] = useState("");
   const [menu, setMenu] = useState<string | null>(null);
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const sidebarWidthRef = useRef(sidebarWidth);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
+  function showMenu(id: string, x: number, y: number) {
+    setMenu(id);
+    setMenuPos({
+      x: Math.max(8, Math.min(x, window.innerWidth - 224)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 242)),
+    });
+  }
+  function contextMenu(event: React.MouseEvent, id: string) {
+    event.preventDefault(); event.stopPropagation();
+    showMenu(id, event.clientX, event.clientY);
+  }
+  function keyboardMenu(event: React.KeyboardEvent, id: string) {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault(); event.stopPropagation();
+    const box = event.currentTarget.getBoundingClientRect();
+    showMenu(id, box.left + 24, box.bottom);
+  }
+  function menuFromButton(event: React.MouseEvent, id: string) {
+    event.stopPropagation();
+    if (menu === id) { setMenu(null); return; }
+    const box = event.currentTarget.getBoundingClientRect();
+    showMenu(id, box.right - 8, box.bottom);
+  }
+  const popupStyle = menuPos ? { left: menuPos.x, top: menuPos.y } : undefined;
+  useEffect(() => {
+    if (menu === null) return;
+    const outside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest(".row-menu, [aria-expanded='true']")) setMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setMenu(null); };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [menu]);
+  function createConnection(groupId: string | null) {
+    edit({kind:"connection",value:{
+      id: crypto.randomUUID(), name:"",host:"",port:22,username:"",protocol:"SSH",groupId,favorite:false
+    }});
+    setMenu(null);
+  }
+  function createGroup(parentId: string | null) {
+    edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
+    setMenu(null);
+  }
+  function sidebarPointerMove(event: React.PointerEvent) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const left = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
+    const wanted = event.clientX - left;
+    if (wanted < 130) { setExpanded(false); return; }
+    const value = Math.max(220, Math.min(640, window.innerWidth - 250, wanted));
+    sidebarWidthRef.current = value;
+    setSidebarWidth(value);
+    setExpanded(true);
+  }
+  function saveSidebarWidth() {
+    try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidthRef.current)); } catch { /* preference only */ }
+  }
+  function sidebarKey(event: React.KeyboardEvent) {
+    if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home") { setExpanded(false); return; }
+    const value = event.key === "End" ? 500 :
+      Math.max(220, Math.min(640, (expanded ? sidebarWidthRef.current : 220) + (event.key === "ArrowRight" ? 20 : -20)));
+    sidebarWidthRef.current = value;
+    setSidebarWidth(value);
+    setExpanded(true);
+    saveSidebarWidth();
+  }
   function clearDrag() {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
     hoverTimer.current = null;
@@ -282,13 +376,15 @@ export default function App() {
         e.dataTransfer.setData("application/x-nodedesk-connection", c.id);
         e.dataTransfer.effectAllowed = "move"; dragActive.current = true; setDragId(c.id); setMenu(null);
       }} onDragEnd={clearDrag}
-      onContextMenu={e => { e.preventDefault(); setMenu(c.id); }}>
+      onContextMenu={e => contextMenu(e,c.id)} onKeyDown={e => keyboardMenu(e,c.id)}>
       <button className="connection-open" title={`${c.name} — ${c.username ? c.username + "@" : ""}${c.host}:${c.port}`} onClick={() => { if (!dragActive.current) open(c.id); }}>
         <Icon name={c.protocol}/><span className="row-name">{c.name}</span><small>{c.protocol}</small>{c.favorite && <Icon name="star"/>}
       </button>
-      <button aria-label={`${t.actions}: ${c.name}`} aria-expanded={menu === c.id} onClick={() => setMenu(menu === c.id ? null : c.id)}><Icon name="more"/></button>
-      {menu === c.id && <div className="row-menu" onKeyDown={e => { if (e.key === "Escape") { setMenu(null); (e.currentTarget.previousElementSibling as HTMLElement)?.focus(); } }}>
+      <button aria-label={`${t.actions}: ${c.name}`} aria-expanded={menu === c.id} onClick={e => menuFromButton(e,c.id)}><Icon name="more"/></button>
+      {menu === c.id && <div className="row-menu context-popup" role="menu" style={popupStyle} onKeyDown={e => { if (e.key === "Escape") { setMenu(null); (e.currentTarget.previousElementSibling as HTMLElement)?.focus(); } }}>
+        <button onClick={() => {open(c.id);setMenu(null);}}>{t.openConnection}</button>
         <button disabled={blocked} onClick={() => { edit({kind:"connection", value:{...c}}); setMenu(null); }}>{t.edit} / {t.move}</button>
+        <button disabled={blocked} onClick={() => {if(commit({...data,connections:[...data.connections,{...c,id:crypto.randomUUID(),name:c.name+" ("+t.duplicate+")"}]}))setMenu(null);}}>{t.duplicate}</button>
         <button disabled={blocked} aria-pressed={c.favorite} onClick={() => { commit({...data, connections:data.connections.map(x => x.id === c.id ? {...x, favorite:!x.favorite} : x)}); setMenu(null); }}>{t.favorites}</button>
         <button disabled={blocked} onClick={() => { if (window.confirm(t.confirmConnection) && commit({...data, connections:data.connections.filter(x => x.id !== c.id)})) close(c.id); setMenu(null); }}>{t.delete}</button>
       </div>}
@@ -297,12 +393,14 @@ export default function App() {
   function tree(parent: string | null, depth = 0): React.ReactNode {
     return <>
       {data.groups.filter(g => g.parentId === parent).map(g => <div key={g.id}>
-        <div className={`group-row ${dropTarget === g.id ? "drop-target" : ""}`} style={{paddingLeft:depth * 14}} {...target(g.id)}>
+        <div className={`group-row ${dropTarget === g.id ? "drop-target" : ""}`} style={{paddingLeft:depth * 14}} {...target(g.id)} onContextMenu={e => contextMenu(e,g.id)} onKeyDown={e => keyboardMenu(e,g.id)}>
           <button aria-label={g.name} aria-expanded={!folded.has(g.id)} onClick={() => setFolded(prev => { const n = new Set(prev); n.has(g.id) ? n.delete(g.id) : n.add(g.id); return n; })}><span className={!folded.has(g.id) ? "turned" : ""}><Icon name="chevron"/></span></button>
           <button className="grow" title={path(g.id)} onClick={() => { setFilter(g.id); setFolded(prev => { const n = new Set(prev); n.delete(g.id); return n; }); }}><Icon name="folder"/><span className="row-name">{g.name}</span></button>
-          <button aria-label={`${t.actions}: ${g.name}`} aria-expanded={menu === g.id} onClick={() => setMenu(menu === g.id ? null : g.id)}><Icon name="more"/></button>
+          <button aria-label={`${t.actions}: ${g.name}`} aria-expanded={menu === g.id} onClick={e => menuFromButton(e,g.id)}><Icon name="more"/></button>
         </div>
-        {menu === g.id && <div className="row-menu" onKeyDown={e => { if (e.key === "Escape") setMenu(null); }}>
+        {menu === g.id && <div className="row-menu context-popup" role="menu" style={popupStyle} onKeyDown={e => { if (e.key === "Escape") setMenu(null); }}>
+          <button disabled={blocked} onClick={() => createConnection(g.id)}>{t.newConnection}</button>
+          <button disabled={blocked} onClick={() => createGroup(g.id)}>{t.newGroup}</button>
           <button disabled={blocked} onClick={() => {edit({kind:"group",value:{...g}});setMenu(null);}}>{t.edit}</button>
           <button disabled={blocked} onClick={() => {if(window.confirm(t.confirmGroup) && commit(removeGroup(data,g.id))) setFilter("all");setMenu(null);}}>{t.delete}</button>
         </div>}
@@ -313,7 +411,7 @@ export default function App() {
   }
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
-    return c ? (
+    return c?.protocol === "SSH" ? <SshTerminal connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}
@@ -340,13 +438,13 @@ export default function App() {
     ) : null;
   }
   return (
-    <div className={`app ${expanded ? "" : "collapsed"}`}>
+    <div className={`app ${expanded ? "" : "collapsed"}`} style={{"--sidebar-width": `${sidebarWidth}px`} as React.CSSProperties}>
       <aside aria-label={t.navigation}>
         <header>
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.2</small>
+              NodeDesk <small>0.3</small>
             </strong>
           )}
           <button
@@ -423,13 +521,17 @@ export default function App() {
               </button>
 
             </div>
-            <div className="connection-list" onDragOver={e => {
+            <div className="connection-list" onContextMenu={e => {if(!(e.target as HTMLElement).closest(".group-row, .connection-row, .root-target, .row-menu")) contextMenu(e,"catalog");}} onDragOver={e => {
               if (!dragId) return;
               const bounds = e.currentTarget.getBoundingClientRect();
               if (e.clientY < bounds.top + 40) e.currentTarget.scrollTop -= 14;
               if (e.clientY > bounds.bottom - 40) e.currentTarget.scrollTop += 14;
             }}>
-              <div className={`root-target ${dropTarget === "root" ? "drop-target" : ""}`} {...target(null)}><Icon name="folder"/>{t.root}</div>
+              <div className={`root-target ${dropTarget === "root" ? "drop-target" : ""}`} {...target(null)} onContextMenu={e => contextMenu(e,"catalog")} onKeyDown={e => keyboardMenu(e,"catalog")} tabIndex={0}><Icon name="folder"/>{t.root}</div>
+              {menu === "catalog" && <div className="row-menu context-popup" role="menu" style={popupStyle} onKeyDown={e => {if(e.key==="Escape") setMenu(null);}}>
+                <button disabled={blocked} onClick={() => createConnection(null)}>{t.newConnection}</button>
+                <button disabled={blocked} onClick={() => createGroup(null)}>{t.newGroup}</button>
+              </div>}
               {tree(null)}
               {!connections.length && (
                 <p className="muted">
@@ -493,6 +595,16 @@ export default function App() {
           )}
         </footer>
       </aside>
+      <div role="separator" className="sidebar-resize-handle" tabIndex={0}
+        aria-orientation="vertical" aria-label={t.sidebarResize}
+        aria-valuemin={76} aria-valuemax={640} aria-valuenow={expanded ? sidebarWidth : 76}
+        onPointerDown={e => { if(e.button!==0) return; e.currentTarget.setPointerCapture(e.pointerId); e.preventDefault(); }}
+        onPointerMove={sidebarPointerMove}
+        onPointerUp={e => { if(e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); saveSidebarWidth(); }}
+        onPointerCancel={e => { if(e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); saveSidebarWidth(); }}
+        onKeyDown={sidebarKey}
+        onDoubleClick={() => { sidebarWidthRef.current=310; setSidebarWidth(310); setExpanded(true); saveSidebarWidth(); }}
+      />
       <main aria-label={t.workspace}>
         {error && (
           <div role="alert" className="error">
@@ -526,9 +638,9 @@ export default function App() {
           )}
         </div>
         <div className={`workspace ${secondary ? "split-workspace" : ""}`}>
-          {pane(active)}
+          {tabs.map(id => <div className="tab-pane" key={id} hidden={id !== active && id !== secondary}>{pane(id)}</div>)}
           {secondary && (
-            <div className="secondary">
+            <div className="secondary-selector">
               <select
                 aria-label={t.tabs}
                 value={secondary}
@@ -540,7 +652,7 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              {pane(secondary)}
+
             </div>
           )}
         </div>

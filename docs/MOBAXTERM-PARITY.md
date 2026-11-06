@@ -141,3 +141,10 @@ See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 ### FS-01 / FS-04 follow-up in draft PR #10 (pending acceptance)
 
 Native SFTP v3 mkdir, rename, remove file, rmdir empty directory and internal single-file cross-pane drag/drop added, with explicit delete/transfer confirmation and backend type checks. Portable name validation, no-overwrite checks and cancellation remain. Local regular files can be renamed via exclusive hardlink/unlink on supporting filesystems; local directory rename now uses native no-replace on Linux/Windows. Context menus support right-click and Shift+F10. No recursive operations, multi-select, external OS drag/drop or transfer queue. **Not marked complete** until latest CI and real Arch/Windows GUI tests pass.
+
+### FS-04 review update: multi-file batch (not full parity)
+
+Checkbox multi-selection with a 50-file cap and one-at-a-time upload/download
+added in draft PR #10. Entire preflight fails on collision or invalid name,
+backend still prevents overwrite, and cancel stops later jobs. No recursive
+folder transfers, resume, progress across sessions or background queue.

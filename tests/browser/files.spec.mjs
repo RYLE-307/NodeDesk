@@ -134,3 +134,27 @@ test('internal drag/drop cannot bypass duplicate-name guard',async({page}) => {
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'))).toHaveLength(0);
   await expect(files.getByRole('alert')).toContainText('Overwrite is disabled');
 });
+
+test('right click and keyboard context menu are non-destructive until confirmed',async({page}) => {
+  const files=await open(page);
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  const row=local.getByRole('row').filter({hasText:'sample.bin'});
+  await row.click({button:'right'});
+  const menu=page.getByRole('menu',{name:'File actions'});
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem',{name:'Open folder'})).toBeDisabled();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'))).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(menu).not.toBeVisible();
+  await row.focus();
+  await row.press('Shift+F10');
+  await expect(menu).toBeVisible();
+  page.once('dialog',dialog=>dialog.accept('renamed-from-menu.bin'));
+  await menu.getByRole('menuitem',{name:'Rename'}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].request).toMatchObject({
+    action:'rename',name:'sample.bin',newName:'renamed-from-menu.bin',expectedKind:'file',destination:null,
+  });
+});

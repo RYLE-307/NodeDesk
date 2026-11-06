@@ -5,6 +5,7 @@ use tauri::{ipc::Channel, State, Manager};
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
+    bridge: Option<Bridge>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
 }
@@ -16,10 +17,62 @@ pub enum AuthMode { Auto, Key, Password }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum TerminalKind { Ssh, Sftp }
+pub enum TerminalKind { Ssh, Sftp, FilesAuth }
 
 #[derive(Default)]
 pub struct Sessions(Mutex<HashMap<String, Session>>);
+
+// A capability, never a password. Only the owning application session may select
+// the private socket; callers cannot supply arbitrary paths or other destinations.
+struct Bridge { directory: std::path::PathBuf, host: String, port: u16, username: String }
+impl Bridge {
+    fn new(id: &str, host: &str, port: u16, username: &str) -> Result<Self,String> {
+        arguments(host,port,username,AuthMode::Auto)?;
+        if id.len()!=36 || !id.chars().all(|c| c.is_ascii_hexdigit() || c=='-') { return Err("Invalid bridge ID".into()); }
+        #[cfg(not(unix))] { return Err("Interactive Files login currently requires Linux OpenSSH; Windows supports key/agent Files and password/PAM consoles".into()); }
+        #[cfg(unix)] {
+            use std::os::unix::fs::DirBuilderExt;
+            // Short absolute path avoids AF_UNIX length limits. Exclusive creation
+            // refuses pre-existing paths/symlinks; 0700 protects the auth capability.
+            let directory=std::path::PathBuf::from(format!("/tmp/nd-{id}"));
+            std::fs::DirBuilder::new().mode(0o700).create(&directory).map_err(|_| "Cannot create private auth directory")?;
+            Ok(Self {directory,host:host.into(),port,username:username.into()})
+        }
+    }
+    fn socket(&self) -> String { self.directory.join("s").to_string_lossy().into_owned() }
+    fn arguments(&self, auth: AuthMode) -> Result<Vec<String>,String> {
+        let mut args=arguments(&self.host,self.port,&self.username,auth)?;
+        args.retain(|a| a!="-tt" && a!="-oControlMaster=no");
+        let mut result=vec!["-N".into(),"-T".into(),"-oControlMaster=yes".into(),"-oControlPersist=no".into(),"-S".into(),self.socket()];
+        result.extend(args); Ok(result)
+    }
+}
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        // Only our fixed socket and empty exclusive directory, never recursive.
+        let _=std::fs::remove_file(self.directory.join("s"));
+        let _=std::fs::remove_dir(&self.directory);
+    }
+}
+pub(crate) fn files_socket(sessions: &Sessions, id: &str, host: &str, port: u16, username: &str) -> Result<String,String> {
+    let sessions=sessions.0.lock().map_err(|_| "Session lock failed")?;
+    let session=sessions.get(id).ok_or("Files login closed; reconnect")?;
+    let bridge=session.bridge.as_ref().ok_or("Not a Files login session")?;
+    if bridge.host!=host || bridge.port!=port || bridge.username!=username { return Err("Files login destination changed; reconnect".into()); }
+    if session.child.lock().map_err(|_| "Process lock failed")?.try_wait().map_err(|_| "Cannot inspect login")?.is_some() { return Err("Files login exited; reconnect".into()); }
+    #[cfg(unix)] {
+        use std::os::unix::fs::FileTypeExt;
+        if !std::fs::symlink_metadata(bridge.socket()).map(|m|m.file_type().is_socket()).unwrap_or(false) { return Err("Complete Files login first (host trust/password/PAM)".into()); }
+    }
+    Ok(bridge.socket())
+}
+#[tauri::command]
+pub fn files_auth_ready(id: String, host: String, port: u16, username: String, state: State<'_,Sessions>, app: tauri::AppHandle) -> bool {
+    #[cfg(windows)] return app.state::<crate::native_auth::Logins>().ready(&id,&host,port,&username);
+    #[cfg(not(windows))] let _=app;
+    #[cfg(not(windows))]
+    files_socket(&state,&id,&host,port,&username).is_ok()
+}
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum Event { Data(Vec<u8>), Exit(u32), Error(String) }
@@ -27,7 +80,7 @@ fn size(cols: u16, rows: u16) -> Result<PtySize, String> {
     if !(2..=500).contains(&cols) || !(2..=300).contains(&rows) { return Err("Invalid terminal size".into()); }
     Ok(PtySize { cols, rows, pixel_width: 0, pixel_height: 0 })
 }
-fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
+pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
     if host.is_empty() || host.len() > 253 || host.starts_with('-') || !host.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)) || port == 0
         || username.is_empty() || username.len() > 200 || !username.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || username.starts_with('-') {
         return Err("Invalid SSH destination / username".into());
@@ -79,10 +132,13 @@ fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Resu
 }
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+    #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
+    let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
         TerminalKind::Ssh => ("ssh", arguments(&host, port, &username, auth)?),
         TerminalKind::Sftp => ("sftp", sftp_arguments(&host, port, &username, auth)?),
+        TerminalKind::FilesAuth => ("ssh", bridge.as_ref().unwrap().arguments(auth)?),
     };
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
     if sessions.contains_key(&id) || sessions.len() >= 16 { return Err("Session already exists or limit reached".into()); }
@@ -96,7 +152,20 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start OpenSSH: {e}"))?;
     drop(pair.slave);
     let child = Arc::new(Mutex::new(child));
-    sessions.insert(id.clone(), Session { master: pair.master, writer: Arc::new(Mutex::new(writer)), child: child.clone() });
+    if let Some(auth_bridge)=&bridge {
+        let socket=auth_bridge.socket(); let weak=Arc::downgrade(&child);
+        // An abandoned prompt must not leave a login process alive indefinitely.
+        std::thread::spawn(move || {
+            for _ in 0..1200 {
+                let Some(child)=weak.upgrade() else {return;};
+                if std::path::Path::new(&socket).exists() {return;}
+                if let Ok(mut c)=child.lock() {if !matches!(c.try_wait(),Ok(None)) {return;}}
+                drop(child); std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if let Some(child)=weak.upgrade() {if let Ok(mut c)=child.lock() {let _=c.kill();}}
+        });
+    }
+    sessions.insert(id.clone(), Session { bridge, master: pair.master, writer: Arc::new(Mutex::new(writer)), child: child.clone() });
     std::thread::spawn(move || {
         let mut bytes = [0u8; 16384];
         loop { match reader.read(&mut bytes) {
@@ -111,7 +180,9 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     Ok(())
 }
 #[tauri::command]
-pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> Result<(), String> {
+pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)] if app.state::<crate::native_auth::Logins>().contains(&id) {return app.state::<crate::native_auth::Logins>().write(&id,data);}
+    #[cfg(not(windows))] let _=app;
     if data.len() > 65536 { return Err("Input too large".into()); }
     let writer = state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.writer.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -120,11 +191,14 @@ pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> 
     }).await.map_err(|_| "Input task failed".to_string())?
 }
 #[tauri::command]
-pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)] if app.state::<crate::native_auth::Logins>().contains(&id) {return Ok(());}
+    #[cfg(not(windows))] let _=app;
     state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.master.resize(size(cols, rows)?).map_err(|_| "SSH resize failed".into())
 }
 #[tauri::command]
-pub fn ssh_disconnect(id: String, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<crate::native_auth::Logins>().disconnect(&id);
     state.0.lock().map_err(|_| "Session lock failed")?.remove(&id);
     Ok(())
 }
@@ -176,6 +250,61 @@ mod tests {
     }
     #[test] fn dimensions() { assert!(size(0,24).is_err()); assert!(size(80,24).is_ok()); }
     #[test] fn close_is_idempotent() { let sessions = Sessions::default(); assert!(sessions.0.lock().unwrap().remove("missing").is_none()); }
+    #[cfg(unix)]
+    #[test]
+    fn real_files_password_pam_bridge() {
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
+        let user=std::fs::read_to_string(format!("{dir}/auth-user")).unwrap().trim().to_string();
+        let secret=std::fs::read(format!("{dir}/auth-secret")).unwrap();
+        for (case,method,known,valid) in [
+            (0,"password","trusted-gui",true),
+            (1,"keyboard-interactive","trusted-gui",true),
+            (2,"password","trusted-gui",false),
+            (3,"password","changed",true),
+            (4,"keyboard-interactive","revoked",true),
+            (5,"password","unknown-auth",true),
+        ] {
+            let id=format!("{:08x}-0000-0000-0000-{case:012x}",std::process::id());
+            let bridge=Bridge::new(&id,"127.0.0.1",22229,&user).unwrap();
+            let socket=bridge.socket();
+            let pair=native_pty_system().openpty(size(100,30).unwrap()).unwrap();
+            let mut cmd=CommandBuilder::new("ssh");
+            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oStrictHostKeyChecking=yes".into(),format!("-oPreferredAuthentications={method}")]);
+            cmd.args(bridge.arguments(AuthMode::Password).unwrap());
+            cmd.env("SSH_ASKPASS_REQUIRE","never");
+            let mut reader=pair.master.try_clone_reader().unwrap();
+            let writer=pair.master.take_writer().unwrap();
+            let child=Arc::new(Mutex::new(pair.slave.spawn_command(cmd).unwrap())); drop(pair.slave);
+            let session=Session {bridge:Some(bridge),master:pair.master,writer:Arc::new(Mutex::new(writer)),child:child.clone()};
+            let (tx,rx)=std::sync::mpsc::channel();
+            std::thread::spawn(move || { let mut b=[0;4096]; while let Ok(n)=reader.read(&mut b) {if n==0 || tx.send(b[..n].to_vec()).is_err() {break;}} });
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(20);
+            let mut output=String::new(); let mut prompts=0;
+            while std::time::Instant::now()<deadline {
+                if let Ok(bytes)=rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    output.push_str(&String::from_utf8_lossy(&bytes));
+                    assert!(!output.as_bytes().windows(secret.len()).any(|w|w==secret),"secret echoed");
+                    if output.to_lowercase().contains("assword:") {
+                        prompts+=1; assert!(prompts<=3);
+                        let mut w=session.writer.lock().unwrap();
+                        w.write_all(if valid {&secret} else {b"incorrect-fixture-password"}).unwrap(); w.write_all(b"\n").unwrap(); w.flush().unwrap(); output.clear();
+                    }
+                }
+                if std::path::Path::new(&socket).exists() || child.lock().unwrap().try_wait().unwrap().is_some() {break;}
+            }
+            let expect=valid && known=="trusted-gui";
+            assert_eq!(std::path::Path::new(&socket).exists(),expect,"auth case {case}");
+            if known!="trusted-gui" { assert_eq!(prompts,0,"must reject trust before requesting secrets"); }
+            if expect {
+                assert!(prompts>0);
+                // No key/password fallback is possible: false proxy fails if the
+                // authenticated master cannot serve a binary subsystem channel.
+                crate::files::verify_auth_bridge(&socket,&user,case,&dir);
+            }
+            drop(session); assert!(!std::path::Path::new(&socket).exists());
+            assert!(child.lock().unwrap().try_wait().unwrap().is_some());
+        }
+    }
     #[test]
     fn dropping_session_terminates_and_reaps_child() {
         let pair = native_pty_system().openpty(size(80,24).unwrap()).unwrap();
@@ -184,7 +313,7 @@ mod tests {
         #[cfg(windows)] let mut cmd = CommandBuilder::new("cmd.exe");
         #[cfg(windows)] cmd.args(["/c", "ping -n 60 127.0.0.1 >nul"]);
         let child = Arc::new(Mutex::new(pair.slave.spawn_command(cmd).unwrap()));
-        let session = Session { writer: Arc::new(Mutex::new(pair.master.take_writer().unwrap())), master: pair.master, child: child.clone() };
+        let session = Session { bridge: None, writer: Arc::new(Mutex::new(pair.master.take_writer().unwrap())), master: pair.master, child: child.clone() };
         drop(pair.slave);
         drop(session);
         for _ in 0..100 {

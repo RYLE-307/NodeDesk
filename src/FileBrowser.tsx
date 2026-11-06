@@ -1,0 +1,438 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { SshTerminal } from "./SshTerminal";
+import type { Connection } from "./catalog";
+import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, startBatch, updateBatchItem, finishBatch, visibleEntries, OperationGate } from "./filesModel";
+import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
+
+export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
+  const ru = language === "ru";
+  const [local, setLocal] = useState<Listing | null>(null), [remote, setRemote] = useState<Listing | null>(null);
+  const [localPath, setLocalPath] = useState(""), [remotePath, setRemotePath] = useState(".");
+  const [localSelection, selectLocal] = useState(""), [remoteSelection, selectRemote] = useState("");
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
+  const [progress, setProgress] = useState<Progress | null>(null), [cancelling, setCancelling] = useState(false);
+  const gate = useRef(new OperationGate()), mounted = useRef(true);
+  const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
+  const [interactive, setInteractive] = useState(false);
+  const [capabilities, setCapabilities] = useState<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}|null>(null);
+  useEffect(() => {
+    let alive=true;
+    if (!isTauri()) return;
+    void invoke<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}>("files_capabilities")
+      .then(value => {
+        if (!alive) return;
+        setCapabilities(value);
+        setInteractive(value.interactiveLogin);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setCapabilities({interactiveLogin:false,keyAgent:false});
+        setInteractive(false);
+      });
+    return () => {alive=false;};
+  }, []);
+  const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
+  const [batchLocal,setBatchLocal] = useState<string[]>([]), [batchRemote,setBatchRemote] = useState<string[]>([]);
+  const [queueProgress,setQueueProgress] = useState<{index:number;total:number;name:string}|null>(null);
+  const [batchReport,setBatchReport] = useState<BatchItem[]>([]);
+  const [batchFinished,setBatchFinished] = useState(false);
+  const stopQueue = useRef(false);
+  const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
+  const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
+  const filteredRemote = useMemo(() => visibleEntries(remote?.entries ?? [],remoteFilter),[remote,remoteFilter]);
+  const [context, setContext] = useState<{isRemote:boolean;name:string|null;x:number;y:number}|null>(null);
+  const profile = JSON.stringify([connection.host,connection.port,connection.username]);
+  const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
+  useEffect(() => {
+    setAuthReady(false);
+    if (!authSession || !interactive) return;
+    let alive = true;
+    const check = () => void invoke<boolean>("files_auth_ready",{id:authSession,host:connection.host,port:connection.port,username:connection.username})
+      .then(ready => {if (alive) setAuthReady(ready);}).catch(() => {if (alive) setAuthReady(false);});
+    check(); const timer = setInterval(check,1000);
+    return () => {alive=false; clearInterval(timer);};
+  }, [authSession,interactive,profile]);
+  useEffect(() => {
+    if (interactive && !authReady) {
+      stopQueue.current = true;
+      setRemote(null); selectRemote(""); setBatchRemote([]);
+      const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
+    }
+  }, [interactive,authReady]);
+  useEffect(() => {
+    if (!context) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Element && !event.target.closest(".files-context-menu")) setContext(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setContext(null); };
+    document.addEventListener("pointerdown",dismiss);
+    document.addEventListener("keydown",escape);
+    return () => {
+      document.removeEventListener("pointerdown",dismiss);
+      document.removeEventListener("keydown",escape);
+    };
+  }, [context]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; stopQueue.current = true; const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {}); };
+  }, []);
+  // Profile edits invalidate the previous host's listing. No automatic reconnect.
+  const previous = useRef(JSON.stringify(destination));
+  useEffect(() => {
+    const next = JSON.stringify(destination);
+    if (next === previous.current) return;
+    previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
+    setRemote(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
+  }, [connection.host, connection.port, connection.username, authSession, interactive]);
+  async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
+    if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return false; }
+    const id = crypto.randomUUID(); if (!gate.current.begin(id)) return false;
+    const host = JSON.stringify(destination);
+    let completed = false;
+    setBusy(true); setError(""); setStatus(""); setProgress(null); setCancelling(false);
+    try {
+      const result = await task(id);
+      if (mounted.current && gate.current.owns(id) && previous.current === host) {
+        success(result);
+        completed = true;
+      }
+    } catch (e) { if (mounted.current && gate.current.owns(id)) setError(String(e)); }
+    finally {
+      // Close a late registration too if the component was destroyed during invoke.
+      if (!mounted.current) void invoke("files_cancel",{id}).catch(() => {});
+      if (gate.current.finish(id) && mounted.current) { setBusy(false); setCancelling(false); }
+    }
+    return completed;
+  }
+  function list(isRemote: boolean, path: string) {
+    if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
+    void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
+      if (isRemote) { setRemote(listing); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
+      else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); setBatchLocal([]); }
+      setStatus(ru ? "Каталог прочитан" : "Directory loaded");
+    });
+  }
+  function transfer(upload: boolean, draggedName?: string) {
+    const entry = (upload ? local : remote)?.entries.find(e => e.name === (draggedName ?? (upload ? localSelection : remoteSelection)));
+    if (!transferAllowed(entry,local,remote,busy) || (interactive && !authReady)) return;
+    const name = entry!.name;
+    const target = upload ? remote! : local!;
+    if (target.entries.some(e => e.name === name)) { setError(ru ? "Имя уже существует. Перезапись отключена." : "Destination name exists. Overwrite is disabled."); return; }
+    if (!window.confirm(`${upload ? (ru ? "Загрузить на сервер" : "Upload to remote") : (ru ? "Скачать локально" : "Download locally")}\n${name}\n→ ${target.path}\n${ru ? "Без перезаписи" : "No overwrite"}?`)) return;
+    const targetPath = target.path;
+    void run(id => {
+      const events = new Channel<Progress>();
+      events.onmessage = p => { if (mounted.current && gate.current.owns(id)) setProgress(p); };
+      return invoke("files_transfer",{id,request:{destination,localDirectory:local!.path,remoteDirectory:remote!.path,name,upload},events});
+    }, () => {
+      // Clear stale destination before reloading it from the backend.
+      if (upload) { setRemote(null); selectRemote(""); setBatchRemote([]); } else { setLocal(null); selectLocal(""); setBatchLocal([]); }
+      setStatus(ru ? "Передача завершена" : "Transfer completed");
+    }).then(ok => {
+      // The first operation has released its gate before scheduling a refresh.
+      // Never refresh after a cancellation, closed tab or changed connection.
+      if (ok && mounted.current) list(upload,targetPath);
+    });
+  }
+  function toggleBatch(isRemote: boolean, name: string, checked: boolean) {
+    if (busy) return;
+    const set = isRemote ? setBatchRemote : setBatchLocal;
+    set(current => {
+      if (!checked) return current.filter(item => item !== name);
+      if (current.includes(name)) return current;
+      if (current.length >= 50) {
+        setError(ru ? "Можно выбрать максимум 50 файлов." : "Select no more than 50 files.");
+        return current;
+      }
+      return [...current,name];
+    });
+  }
+  function transferSelected(upload: boolean, draggedNames?: string[]) {
+    if (busy || gate.current.id || (interactive && !authReady)) return;
+    const source = upload ? local : remote, target = upload ? remote : local;
+    let names: string[];
+    try { names = transferBatchPlan(draggedNames ?? (upload ? batchLocal : batchRemote),source,target); }
+    catch (cause) { setError(String(cause)); return; }
+    if (!source || !target) return;
+    const label = upload ? (ru ? "Загрузить на сервер" : "Upload to server") : (ru ? "Скачать локально" : "Download locally");
+    const preview = names.slice(0,12).join("\n");
+    if (!window.confirm(`${label}: ${names.length} ${ru ? "файлов" : "files"}\n→ ${target.path}\n${preview}${names.length>12?"\n…":""}\n${ru ? "Без перезаписи. Продолжить?" : "No overwrite. Continue?"}`)) return;
+    stopQueue.current = false;
+    setBatchReport(startBatch(names)); setBatchFinished(false);
+    const mark = (index:number, state:BatchItemState) => {
+      if (mounted.current) setBatchReport(items => updateBatchItem(items,index,state));
+    };
+    let completed = 0;
+    const targetPath = target.path;
+    const request = {destination,localDirectory:local!.path,remoteDirectory:remote!.path,upload};
+    void run(async id => {
+      for (let index=0; index<names.length; index++) {
+        if (stopQueue.current || !mounted.current || previous.current !== JSON.stringify(destination)) {
+          throw new Error(ru ? "Очередь отменена." : "Transfer queue cancelled.");
+        }
+        const name = names[index];
+        mark(index,"active");
+        setQueueProgress({index:index+1,total:names.length,name});
+        setProgress(null);
+        const events = new Channel<Progress>();
+        events.onmessage = value => {
+          if (mounted.current && gate.current.owns(id) && !stopQueue.current) setProgress(value);
+        };
+        try {
+          await invoke("files_transfer",{id,request:{...request,name},events});
+        } catch (cause) {
+          mark(index,stopQueue.current ? "cancelled" : "failed");
+          throw new Error(`${name}: ${String(cause)}`);
+        }
+        mark(index,"done");
+        completed++;
+        // The same backend operation ID is registered/released per file.
+        // No concurrent file transfers, no retry and no continuation after error.
+      }
+    }, () => {
+      if (upload) {setRemote(null);selectRemote("");setBatchRemote([]);}
+      else {setLocal(null);selectLocal("");setBatchLocal([]);}
+      setStatus(ru ? `Передано файлов: ${completed}/${names.length}` : `Files transferred: ${completed}/${names.length}`);
+    }).then(ok => {
+      if (!mounted.current) return;
+      setQueueProgress(null);
+      setBatchReport(items => finishBatch(items));
+      setBatchFinished(true);
+      if (!completed) return;
+      if (ok) list(upload,targetPath);
+      else {
+        // Some files were committed before the error/cancel; do not present an outdated listing.
+        if (upload) {setRemote(null);selectRemote("");setBatchRemote([]);}
+        else {setLocal(null);selectLocal("");setBatchLocal([]);}
+      }
+    });
+  }
+  function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
+    if (name !== null) (isRemote ? selectRemote : selectLocal)(name);
+    setContext({
+      isRemote,name,
+      x:Math.max(8,Math.min(x,window.innerWidth-198)),
+      y:Math.max(8,Math.min(y,window.innerHeight-190)),
+    });
+  }
+  function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete", nameOverride?: string|null) {
+    setContext(null);
+    const listing = isRemote ? remote : local;
+    if (!listing || busy || (isRemote && interactive && !authReady)) return;
+    const nameSelected = nameOverride === undefined ? (isRemote ? remoteSelection : localSelection) : (nameOverride ?? "");
+    const entry = listing.entries.find(e => e.name === nameSelected);
+    if (action !== "mkdir" && (!entry || !portableName(entry.name) || !["file","directory"].includes(entry.kind))) return;
+    let name = entry?.name ?? "";
+    let newName: string | null = null;
+    if (action === "mkdir") {
+      name = window.prompt(ru ? "Название новой папки:" : "New folder name:", "") ?? "";
+      if (!name) return;
+    } else if (action === "rename") {
+      newName = window.prompt(ru ? "Новое имя:" : "New name:", name);
+      if (newName === null || newName === name) return;
+    } else if (action === "delete") {
+      const confirmText = ru
+        ? `Безвозвратно удалить ${entry!.kind === "directory" ? "ПУСТУЮ папку" : "файл"}?\n${name}\n${listing.path}\nОперацию нельзя отменить.`
+        : `Permanently delete ${entry!.kind === "directory" ? "EMPTY directory" : "file"}?\n${name}\n${listing.path}\nThis cannot be undone.`;
+      if (!window.confirm(confirmText)) return;
+    }
+    if (!portableName(name) || (newName !== null && !portableName(newName))) {
+      setError(ru ? "Недопустимое имя файла или папки." : "Invalid file or directory name."); return;
+    }
+    const existing = newName ?? name;
+    if (action !== "delete" && listing.entries.some(e => e.name === existing)) {
+      setError(ru ? "Имя уже существует. Перезапись запрещена." : "Destination already exists; no overwrite."); return;
+    }
+    const currentFolder = listing.path;
+    void run(id => invoke("files_mutate",{id,request:{
+      destination:isRemote ? destination : null,
+      directory:currentFolder, name, action, newName,
+      expectedKind:entry?.kind ?? null,
+    }}), () => {
+      if (isRemote) {setRemote(null); selectRemote(""); setBatchRemote([]);} else {setLocal(null); selectLocal(""); setBatchLocal([]);}
+      setStatus(ru ? "Изменение выполнено" : "Change completed");
+    }).then(ok => {
+      if (ok && mounted.current) list(isRemote,currentFolder);
+    });
+  }
+  function dragFile(event: React.DragEvent, isRemote: boolean, entry: FileEntry, folder: string) {
+    if (busy || !portableName(entry.name) || entry.kind !== "file") {event.preventDefault();return;}
+    event.dataTransfer.effectAllowed = "copy";
+    const selection = isRemote ? batchRemote : batchLocal;
+    const names = selection.includes(entry.name) ? selection : [entry.name];
+    event.dataTransfer.setData("application/x-nodedesk-file",JSON.stringify({
+      source:isRemote ? "remote" : "local",name:entry.name,names,folder
+    }));
+  }
+  function dropFile(event: React.DragEvent, isRemote: boolean) {
+    event.preventDefault(); event.stopPropagation(); setDropTarget(null);
+    const raw = event.dataTransfer.getData("application/x-nodedesk-file");
+    if (!raw || !local || !remote || busy || (interactive && !authReady)) return;
+    try {
+      const payload = JSON.parse(raw) as {source?:unknown;name?:unknown;names?:unknown;folder?:unknown};
+      if (payload.source !== "remote" && payload.source !== "local") return;
+      const sourceRemote = payload.source === "remote";
+      if (sourceRemote === isRemote) return;
+      const source = sourceRemote ? remote : local;
+      const names = Array.isArray(payload.names) ? payload.names : [payload.name];
+      if (payload.folder !== source.path || names.length<1 || names.length>50 ||
+        new Set(names).size !== names.length ||
+        names.some(name => typeof name !== "string" || !portableName(name) ||
+          !source.entries.some(entry => entry.name===name && entry.kind==="file"))) return;
+      if (names.length===1) transfer(!sourceRemote,names[0]);
+      else transferSelected(!sourceRemote,names);
+    } catch { /* ignore external and invalid drops */ }
+  }
+  async function cancel() {
+    stopQueue.current = true;
+    const id = gate.current.id; if (!id) return; setCancelling(true);
+    try { await invoke("files_cancel",{id}); } catch(e) { if (!queueProgress) setError(String(e)); }
+  }
+  function panel(isRemote: boolean) {
+    const listing = isRemote ? remote : local, draft = isRemote ? remotePath : localPath;
+    const selection = isRemote ? remoteSelection : localSelection, select = isRemote ? selectRemote : selectLocal;
+    const filter = isRemote ? remoteFilter : localFilter, visible = isRemote ? filteredRemote : filteredLocal;
+    const chosen = isRemote ? batchRemote : batchLocal;
+    const title = isRemote ? (ru ? "Удалённая FS" : "Remote filesystem") : (ru ? "Локальная FS" : "Local filesystem");
+    const kinds = ru ? {file:"Файл",directory:"Папка",symlink:"Ссылка",other:"Другой"} : {file:"File",directory:"Folder",symlink:"Link",other:"Other"};
+    return <section className={`files-panel ${dropTarget === (isRemote ? "remote" : "local") ? "files-drop-target" : ""}`}
+      aria-label={title}
+      onDragOver={e => {
+        if (busy || !local || !remote || (interactive && !authReady) || !e.dataTransfer.types.includes("application/x-nodedesk-file")) return;
+        e.preventDefault(); e.dataTransfer.dropEffect="copy";
+        setDropTarget(isRemote ? "remote" : "local");
+      }}
+      onDragLeave={e => {if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropTarget(null);}}
+      onDrop={e => dropFile(e,isRemote)}>
+      <h3>{title}</h3>
+      <form className="files-path" onSubmit={e => {e.preventDefault(); list(isRemote,draft);}}>
+        <input aria-label={title + (ru ? ": путь" : ": path")} value={draft} disabled={busy} placeholder={isRemote ? "." : (ru ? "Пусто = домашняя папка" : "Empty = home directory")} onChange={e => isRemote ? setRemotePath(e.target.value) : setLocalPath(e.target.value)}/>
+        <button disabled={busy} type="submit">{ru ? "Открыть / обновить" : "Open / refresh"}</button>
+        <button disabled={busy || !listing} type="button" onClick={() => listing && list(isRemote,parentPath(listing.path,isRemote))}>{ru ? "Вверх" : "Up"}</button>
+      </form>
+      <p className="files-current">{listing?.path ?? (ru ? "Панель не загружена" : "Pane not loaded")}</p>
+      <input className="files-filter" type="search"
+        aria-label={title + (ru ? ": поиск файлов" : ": search files")}
+        placeholder={ru ? "Фильтр по имени…" : "Filter by filename…"}
+        value={filter} disabled={!listing || busy}
+        onChange={event => {
+          if (isRemote) { setRemoteFilter(event.target.value); selectRemote(""); setBatchRemote([]); }
+          else { setLocalFilter(event.target.value); selectLocal(""); setBatchLocal([]); }
+        }}/>
+      <div className="files-multiselect">
+        <span>{ru ? "Выбрано для передачи" : "Selected for transfer"}: {chosen.length}/50</span>
+        <button type="button"
+          disabled={!listing || busy || !visible.some(entry => entry.kind==="file" && portableName(entry.name))}
+          onClick={() => (isRemote ? setBatchRemote : setBatchLocal)(
+            visible.filter(entry => entry.kind==="file" && portableName(entry.name))
+              .slice(0,50).map(entry => entry.name)
+          )}>{ru ? "Выбрать видимые (до 50)" : "Select visible (up to 50)"}</button>
+        <button type="button" disabled={!listing || busy || chosen.length===0}
+          onClick={() => (isRemote ? setBatchRemote : setBatchLocal)([])}>{ru ? "Снять выделение" : "Clear selection"}</button>
+      </div>
+      <div className="files-ops">
+        <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
+        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
+        <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name===selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"delete")}>{ru ? "Удалить" : "Delete"}</button>
+      </div>
+      <div className="files-table-scroll" onContextMenu={event => {
+        if (event.target instanceof Element && event.target.closest("tr")) return;
+        event.preventDefault(); showContext(isRemote,null,event.clientX,event.clientY);
+      }}><table><thead><tr><th>{ru ? "Выбор" : "Select"}</th><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
+        <tbody>{listing && visible.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
+          draggable={!busy && e.kind === "file" && portableName(e.name)}
+          onDragStart={event => dragFile(event,isRemote,e,listing.path)}
+          onDragEnd={() => setDropTarget(null)}
+          tabIndex={0}
+          onContextMenu={event => {
+            event.preventDefault();event.stopPropagation();
+            showContext(isRemote,e.name,event.clientX,event.clientY);
+          }}
+          onKeyDown={event => {
+            if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+              event.preventDefault();
+              const rect=event.currentTarget.getBoundingClientRect();
+              showContext(isRemote,e.name,rect.left+24,rect.bottom);
+            }
+          }}
+        >
+          <td><input type="checkbox"
+            aria-label={`${ru ? "Выбрать для передачи" : "Select for transfer"}: ${e.name}`}
+            checked={chosen.includes(e.name)}
+            disabled={busy || e.kind !== "file" || !portableName(e.name)}
+            onChange={event => toggleBatch(isRemote,e.name,event.target.checked)}/></td>
+          <td><button disabled={busy || !portableName(e.name)} aria-pressed={selection === e.name} onClick={() => select(e.name)} onDoubleClick={() => {if (e.kind === "directory") list(isRemote,childPath(listing.path,e.name,isRemote));}} title={e.name}>{e.name}</button>
+            {e.kind === "directory" && <button disabled={busy || !portableName(e.name)} aria-label={`${ru ? "Открыть папку" : "Open folder"}: ${e.name}`} onClick={() => list(isRemote,childPath(listing.path,e.name,isRemote))}>↳</button>}</td>
+          <td>{kinds[e.kind]}</td><td>{e.size ?? "—"}</td><td>{e.modified == null ? "—" : new Date(e.modified * 1000).toLocaleString(ru ? "ru-RU" : "en-US")}</td><td>{e.permissions == null ? "—" : (e.permissions & 0o7777).toString(8)}</td>
+        </tr>)}</tbody></table>
+        {listing && !listing.entries.length && <p>{ru ? "Пустая папка" : "Empty directory"}</p>}
+        {listing && !!listing.entries.length && !visible.length && <p>{ru ? "Совпадений нет" : "No matches"}</p>}
+      </div>
+    </section>;
+  }
+  return <section className="file-browser" aria-label={ru ? "Файловый менеджер SFTP" : "SFTP file manager"}>
+    <label><input type="checkbox" checked={interactive} disabled={busy || !capabilities?.interactiveLogin}
+      onChange={e => setInteractive(e.target.checked)}/>{ru ? "Интерактивный вход для файлов (пароль/PAM)" : "Interactive Files login (password/PAM)"}</label>
+    {capabilities && !capabilities.interactiveLogin && <p className="ssh-help" role="status">
+      {ru
+        ? "Графический пароль/PAM на этой платформе пока недоступен. Используйте SSH-ключ/агент для файлов или SSH/SFTP-терминал для входа по паролю. Проверка ключа сервера обязательна."
+        : "GUI password/PAM is not available on this platform yet. Use SSH key/agent for files, or the SSH/SFTP console for password login. Host-key verification remains required."}
+    </p>}
+    {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" passwordOnly={!!capabilities?.nativeLogin} onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
+    {interactive && capabilities?.nativeLogin && <p className="ssh-help">{ru ? "Windows: только пароль/PAM и заранее доверенный host key. Новый ключ сначала сверьте и примите в SSH-консоли. Отмена передачи закрывает файловую сессию; затем подключитесь повторно. Для ключа/агента снимите галочку." : "Windows: password/PAM and a previously trusted host key only. Verify and accept new keys in the SSH console first. Cancelling a transfer closes the Files session; reconnect afterwards. For key/agent, uncheck interactive login."}</p>}
+    <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
+    <div className="files-actions">
+      <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>
+      <button disabled={!transferAllowed(remote?.entries.find(e => e.name === remoteSelection),local,remote,busy)} onClick={() => transfer(false)}>{ru ? "← Скачать локально" : "← Download locally"}</button>
+      <button disabled={!batchLocal.length || busy || (interactive && !authReady) || !local || !remote}
+        onClick={() => transferSelected(true)}>{ru ? `Загрузить выбранные (${batchLocal.length})` : `Upload selected (${batchLocal.length})`}</button>
+      <button disabled={!batchRemote.length || busy || (interactive && !authReady) || !local || !remote}
+        onClick={() => transferSelected(false)}>{ru ? `Скачать выбранные (${batchRemote.length})` : `Download selected (${batchRemote.length})`}</button>
+      <button disabled={!busy || cancelling} onClick={() => void cancel()}>{cancelling ? (ru ? "Отменяется…" : "Cancelling…") : (ru ? "Отменить операцию" : "Cancel operation")}</button>
+    </div>
+    {queueProgress && <p role="status">{ru ? "Очередь" : "Queue"}: {queueProgress.index}/{queueProgress.total} — {queueProgress.name}</p>}
+    {batchReport.length>0 && <section className="files-batch-report" aria-label={ru ? "Отчёт о передаче" : "Transfer report"}>
+      <div className="files-batch-heading">
+        <strong>{ru ? "Передача файлов" : "File transfers"}: {batchReport.filter(item => item.state==="done").length}/{batchReport.length}</strong>
+        {batchFinished && !busy && <button type="button" onClick={() => {setBatchReport([]);setBatchFinished(false);}}>
+          {ru ? "Очистить отчёт" : "Clear report"}</button>}
+      </div>
+      <ol>{batchReport.map((item,index) => <li key={index} className={`files-batch-${item.state}`}>
+        <span>{item.name}</span>
+        <span>{ru
+          ? ({queued:"Ожидает",active:"Передаётся",done:"Готово",failed:"Ошибка",cancelled:"Отменён",skipped:"Не запускался"} as const)[item.state]
+          : ({queued:"Queued",active:"Transferring",done:"Done",failed:"Failed",cancelled:"Cancelled",skipped:"Not started"} as const)[item.state]}</span>
+      </li>)}</ol>
+    </section>}
+    {progress && <div className="files-progress"><progress aria-label={ru ? "Передано" : "Transferred"} max={100} value={progressPercent(progress)}/><span>{progress.bytes} / {progress.total ?? "?"} {ru ? "байт" : "bytes"}</span></div>}
+    {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
+    <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>
+    <div className="files-panels">{panel(false)}{panel(true)}</div>
+    {context && (() => {
+      const listing=context.isRemote ? remote : local;
+      const entry=listing?.entries.find(e => e.name===context.name);
+      const valid=!!entry && portableName(entry.name) && ["file","directory"].includes(entry.kind);
+      const allowed=!busy && !!listing && (!context.isRemote || !interactive || authReady);
+      return <div className="files-context-menu" role="menu" aria-label={ru ? "Действия с файлом" : "File actions"}
+        style={{left:context.x,top:context.y}}>
+        <button role="menuitem" type="button" disabled={!allowed} onClick={() => mutate(context.isRemote,"mkdir",null)}>{ru ? "Новая папка" : "New folder"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid || entry?.kind!=="directory"}
+          onClick={() => {
+            setContext(null);
+            if (entry && listing) list(context.isRemote,childPath(listing.path,entry.name,context.isRemote));
+          }}>{ru ? "Открыть папку" : "Open folder"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid}
+          onClick={() => mutate(context.isRemote,"rename",context.name)}>{ru ? "Переименовать" : "Rename"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid}
+          onClick={() => mutate(context.isRemote,"delete",context.name)}>{ru ? "Удалить…" : "Delete…"}</button>
+        <button role="menuitem" type="button" disabled={!allowed || !valid || entry?.kind!=="file" || !local || !remote}
+          onClick={() => {
+            setContext(null);
+            if (entry) transfer(!context.isRemote,entry.name);
+          }}>{context.isRemote ? (ru ? "Скачать…" : "Download…") : (ru ? "Загрузить…" : "Upload…")}</button>
+      </div>;
+    })()}
+  </section>;
+}

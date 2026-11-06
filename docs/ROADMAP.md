@@ -1,5 +1,10 @@
 # План разработки
 
+> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
+> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive; direct key/agent on both.
+> mkdir/rename/delete, context menus and a bounded 50-file transfer queue are implemented; manual acceptance pending.
+> Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+
 ## v0.2 alpha
 
 Каталог с CRUD, вложенными группами, поиском, избранным и локальным хранением
@@ -59,3 +64,57 @@ SSH authentication selection Auto/Key/Password-PAM and native OpenSSH password/k
 ## v0.4 SFTP transport slice (draft PR)
 
 First real SFTP step: user-initiated native OpenSSH `sftp` process attached to a PTY and rendered inside NodeDesk, next to the existing SSH terminal. Key, agent, password/PAM modes use the existing strict OpenSSH trust policy. Users can run `pwd`, `ls`, `cd`, `get`, `put` and `help` in the embedded SFTP console. This does **not** yet include a two-pane graphical browser or file drag/drop. Track full file manager acceptance in [MOBAXTERM-PARITY.md](MOBAXTERM-PARITY.md). Manual test on Arch and Windows required before merge.
+
+
+## v0.5 SFTP GUI — review slice / срез для проверки
+
+Two panels, real structured SFTP v3 listing/navigation, binary upload/download,
+nonrecursive mkdir, rename, delete (with confirmation), and internal single-file
+drag/drop, with no overwrite, progress/cancel. GUI: Linux password/PAM via
+OpenSSH auth bridge; Windows native password/keyboard-interactive. Recursive and
+background operations remain planned. Issue #9 remains open pending manual Arch/Windows acceptance.
+
+Две панели, настоящий SFTP v3, навигация, бинарная передача без перезаписи,
+создание папок, переименование, удаление с подтверждением и Drag & Drop одного
+файла. GUI Linux: пароль/PAM через OpenSSH. Windows: native пароль/PAM или ключ/агент.
+
+See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
+
+
+### v0.5 review follow-up: filesystem mutations (not yet accepted)
+
+Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-file cross-pane **internal Drag & Drop** to PR #10. Permanent deletion requires user confirmation. Symlinks, recursive and bulk operations remain unsupported. Local directory rename now uses no-replace OS primitives on Linux/Windows. This is still **draft**, not merged, pending latest CI and manual Arch acceptance. See [v0.5 guide](V0.5-SFTP-GUI.md), [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+
+### v0.5 review update: multi-file selection and bounded transfer queue
+
+Added per-pane regular-file checkboxes, capped at 50 files and a sequential
+upload/download operation. All files must pass preflight collision/type
+checks; any error or user cancellation stops the rest, and prior successful
+files remain. Manual runtime verification pending. This is not a persistent
+background queue. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+
+### v0.5 review addition: transfer visibility
+
+An ephemeral per-file transfer report, live queue position, and "Select visible
+(up to 50)" were added to the same draft PR. A selected group of files can be
+dragged between loaded panels using the same confirmation and no-overwrite
+backend as the sequential transfer buttons. This is **not** a persistent
+background queue, and transfers that finished before cancellation are not
+rolled back. Pending newest CI and manual desktop testing.
+
+
+### Windows native GUI authentication — implemented review slice
+
+Rust ssh2/libssh2 now provides password and keyboard-interactive for Windows
+Files, with strict previously trusted host-key verification before credentials,
+hidden bounded input, destination-bound sessions and socket cancellation.
+OpenSSH consoles, Linux ControlMaster login and direct key/agent are retained.
+Native cancellation closes the Windows Files login and requires reconnect.
+Unknown/changed/revoked keys fail closed; new trust uses the OpenSSH console.
+No saved secrets, shell/askpass or credentials in argv/environment/logs.
+
+Linux CI uses real isolated sshd/PAM; Windows CI uses an independent loopback
+SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates,
+password-change and mixed-method MFA chains remain unsupported. GUI acceptance
+on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
+accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).

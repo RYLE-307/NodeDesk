@@ -22,3 +22,6 @@ Thumbs.db
 *.db-wal
 coverage/
 # Commit package-lock.json and Cargo.lock for reproducible application builds.
+
+/test-results/
+/playwright-report/

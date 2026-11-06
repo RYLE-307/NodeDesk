@@ -1,6 +1,6 @@
 [package]
 name = "nodedesk"
-version = "0.3.0-alpha.0"
+version = "0.5.0-alpha.0"
 description = "Offline-first infrastructure workspace"
 edition = "2021"
 publish = false
@@ -18,3 +18,9 @@ tauri = { version = "2", features = [] }
 
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
+ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
+base64 = "0.22"
+zeroize = "1"
+
+[dev-dependencies]
+serde_json = "1"

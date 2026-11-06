@@ -1,0 +1,588 @@
+//! User-initiated file operations. OpenSSH supplies authentication and host trust;
+//! SFTP packets supply filesystem semantics. No shell, CLI listing or secret input.
+use crate::{sftp_wire::{self as wire, Client, Result, CHUNK}, ssh::{self, AuthMode}};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use tauri::{ipc::Channel, Manager, State};
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
+fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if let Some(id)=&d.auth_session {
+        #[cfg(windows)] {d.native=Some(app.state::<crate::native_auth::Logins>().get(id,&d.host,d.port,&d.username)?);}
+        #[cfg(not(windows))] {d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?);}
+    }
+    Ok(())
+}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct Entry { name: String, kind: String, size: Option<u64>, modified: Option<u64>, permissions: Option<u32> }
+#[derive(Serialize)]
+pub struct Listing { path: String, entries: Vec<Entry> }
+/** Platform capabilities, rather than user-agent guessing. The Unix OpenSSH
+ * ControlMaster/PTTY bridge is unsupported by native Windows OpenSSH.
+ * The direct key/agent transport is available on both target platforms.
+ */
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct FileCapabilities { interactive_login: bool, key_agent: bool, native_login: bool }
+#[tauri::command]
+pub fn files_capabilities() -> FileCapabilities {
+    FileCapabilities { interactive_login: cfg!(any(unix,windows)), key_agent: true, native_login: cfg!(windows) }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct Progress { bytes: u64, total: Option<u64> }
+#[derive(Default)]
+struct Operation { cancelled: AtomicBool, child: Mutex<Option<Child>>, native: Mutex<Option<Arc<crate::native_auth::Login>>> }
+impl Operation {
+    fn check(&self) -> Result<()> { if self.cancelled.load(Ordering::SeqCst) { Err("Operation cancelled or timed out".into()) } else { Ok(()) } }
+    fn cancel(&self) { self.cancelled.store(true,Ordering::SeqCst); if let Ok(login)=self.native.lock() {if let Some(login)=login.as_ref() {login.close();}} self.stop(); }
+    fn stop(&self) { if let Ok(mut c) = self.child.lock() { if let Some(mut child) = c.take() { let _ = child.kill(); let _ = child.wait(); } } }
+}
+#[derive(Default)]
+struct Registry { active: HashMap<String,Arc<Operation>>, cancelled: HashMap<String,Instant> }
+impl Registry {
+    fn prune(&mut self) { self.cancelled.retain(|_,time| time.elapsed() < Duration::from_secs(120)); }
+    fn insert(&mut self, id: &str, op: Arc<Operation>) -> Result<()> {
+        self.prune();
+        if self.cancelled.remove(id).is_some() { return Err("Operation cancelled before start".into()); }
+        if self.active.len() >= 16 || self.active.contains_key(id) { return Err("Operation limit or duplicate ID".into()); }
+        self.active.insert(id.into(),op); Ok(())
+    }
+    fn cancel(&mut self, id: String) -> Result<()> {
+        self.prune();
+        if let Some(op) = self.active.get(&id) { op.cancel(); }
+        else {
+            if self.cancelled.len() >= 64 { return Err("Pending cancellation limit".into()); }
+            self.cancelled.insert(id,Instant::now());
+        }
+        Ok(())
+    }
+}
+#[derive(Default)]
+pub struct Operations(Mutex<Registry>);
+impl Operations { pub fn shutdown(&self) { if let Ok(mut ops) = self.0.lock() { for (_,op) in ops.active.drain() { op.cancel(); } ops.cancelled.clear(); } } }
+struct Guard { id: String, op: Arc<Operation>, app: tauri::AppHandle, done: Arc<AtomicBool> }
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.done.store(true,Ordering::SeqCst); self.op.stop();
+        if let Ok(mut ops) = self.app.state::<Operations>().0.lock() { ops.active.remove(&self.id); }
+    }
+}
+fn operation_id(id: &str) -> Result<()> {
+    if id.len() != 36 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') { return Err("Invalid operation ID".into()); }
+    Ok(())
+}
+fn register(id: &str, app: &tauri::AppHandle) -> Result<Guard> {
+    operation_id(id)?;
+    let state = app.state::<Operations>(); let mut ops = state.0.lock().map_err(|_| "Operation lock failed")?;
+    let op = Arc::new(Operation::default()); ops.insert(id,op.clone())?;
+    let done = Arc::new(AtomicBool::new(false));
+    let weak = Arc::downgrade(&op); let finished = done.clone();
+    // A bounded watchdog also interrupts a blocked pipe read/write on both platforms.
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while !finished.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline { if let Some(op) = weak.upgrade() { op.cancel(); } break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    Ok(Guard { id:id.into(),op,app:app.clone(),done })
+}
+fn transport_args(d: &Destination) -> Result<Vec<String>> {
+    let mut args = ssh::arguments(&d.host,d.port,&d.username,AuthMode::Key)?;
+    args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
+    // Insert before destination/options end. First value wins in OpenSSH.
+    let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
+    strict.extend(args); strict.push("sftp".into()); Ok(strict)
+}
+type Sftp = crate::native_auth::StreamClient;
+fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
+    op.check()?;
+    if let Some(login)=&d.native {
+        *op.native.lock().map_err(|_|"Operation lock failed")?=Some(login.clone());
+        op.check()?;
+        return crate::native_auth::subsystem(login);
+    }
+    let mut command = Command::new("ssh");
+    if let Some(socket)=&d.control {
+        // If the master vanished, fail closed instead of reconnecting/falling back.
+        command.args(["-S",socket,"-oProxyCommand=false"]);
+    }
+    command.args(transport_args(d)?);
+    spawn_transport(command,op)
+}
+fn spawn_transport(mut command: Command, op: &Operation) -> Result<Sftp> {
+    command.env("SSH_ASKPASS_REQUIRE","never").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+    let mut slot = op.child.lock().map_err(|_| "Process lock failed")?; op.check()?;
+    let mut child = command.spawn().map_err(|_| "Cannot start OpenSSH".to_string())?;
+    let reader = child.stdout.take().ok_or("Missing SSH output")?; let writer = child.stdin.take().ok_or("Missing SSH input")?;
+    *slot = Some(child); drop(slot); Client::new(Box::new(reader) as Box<dyn Read+Send>,Box::new(writer) as Box<dyn Write+Send>)
+}
+fn local_dir(path: &str) -> Result<PathBuf> {
+    let p = if path.is_empty() {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).ok_or("Home directory unavailable")?
+    } else { PathBuf::from(path) };
+    if !p.is_absolute() || p.components().any(|c| matches!(c,std::path::Component::ParentDir)) { return Err("Absolute local path required; no parent traversal".into()); }
+    let p = fs::canonicalize(p).map_err(|_| "Local directory unavailable")?;
+    if !p.is_dir() { return Err("Not a local directory".into()); } Ok(p)
+}
+fn local_list(path: &str, op: &Operation) -> Result<Listing> {
+    let p = local_dir(path)?; let mut entries = vec![];
+    for e in fs::read_dir(&p).map_err(|_| "Cannot read local directory")? {
+        op.check()?;
+        let e = e.map_err(|_| "Cannot read local entry")?; let m = fs::symlink_metadata(e.path()).map_err(|_| "Cannot inspect local entry")?;
+        let name = e.file_name().into_string().map_err(|_| "Non-UTF-8 filename is unsupported")?;
+        let kind = if m.is_symlink() { "symlink" } else if m.is_dir() { "directory" } else if m.is_file() { "file" } else { "other" };
+        #[cfg(unix)] let permissions = { use std::os::unix::fs::PermissionsExt; Some(m.permissions().mode()) };
+        #[cfg(not(unix))] let permissions = None;
+        entries.push(Entry { name,kind:kind.into(),size:Some(m.len()), modified:m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_secs()),permissions });
+        if entries.len() > wire::MAX_ENTRIES { return Err("Directory entry limit (10000)".into()); }
+    }
+    let path = p.to_str().ok_or("Non-UTF-8 local path")?.to_string();
+    Ok(Listing { path,entries })
+}
+fn remote_list(c: &mut Sftp, path: &str, op: &Operation) -> Result<Listing> {
+    wire::path(path)?; let path = c.realpath(path)?; op.check()?;
+    let entries = c.list(&path)?.into_iter().map(|(name,a)| Entry { name,kind:a.kind().into(),size:a.size,modified:a.modified.map(u64::from),permissions:a.permissions }).collect();
+    op.check()?; Ok(Listing {path,entries})
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum MutationAction { Mkdir, Rename, Delete }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mutation {
+    destination: Option<Destination>,
+    directory: String,
+    name: String,
+    action: MutationAction,
+    #[serde(default)] new_name: Option<String>,
+    #[serde(default)] expected_kind: Option<String>,
+}
+fn expected_kind(kind: &str) -> Result<()> {
+    if kind == "file" || kind == "directory" { Ok(()) }
+    else { Err("Only regular files and directories are supported; symlinks are read-only".into()) }
+}
+fn remote_mutate(c: &mut Sftp, directory: &str, name: &str, action: MutationAction, new_name: Option<&str>, kind: Option<&str>, op: &Operation) -> Result<()> {
+    wire::path(directory)?; wire::name(name)?;
+    let parent = c.realpath(directory)?; op.check()?;
+    let source = wire::join(&parent,name)?;
+    match action {
+        MutationAction::Mkdir => {
+            if !c.missing(&source)? { return Err("Destination already exists".into()); }
+            op.check()?; c.mkdir(&source)
+        },
+        MutationAction::Rename => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            if c.lstat(&source)?.kind() != kind { return Err("Source changed; refresh listing".into()); }
+            let new_name = new_name.ok_or("Missing new filename")?; wire::name(new_name)?;
+            if new_name == name { return Err("Choose a different name".into()); }
+            let new_path = wire::join(&parent,new_name)?;
+            if !c.missing(&new_path)? { return Err("Destination already exists; rename cannot overwrite".into()); }
+            op.check()?; c.rename(&source,&new_path)
+        },
+        MutationAction::Delete => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            if c.lstat(&source)?.kind() != kind { return Err("Source changed; refresh listing".into()); }
+            op.check()?; c.remove(&source,kind == "directory")
+        }
+    }
+}
+
+/**
+ * Rename a *directory* without replacing another entry. Using std::fs::rename
+ * here is unsafe on Unix: it may silently replace an existing empty directory.
+ * Linux renameat2(RENAME_NOREPLACE) and Win32 MoveFileExW without
+ * MOVEFILE_REPLACE_EXISTING both provide fail-on-collision behavior.
+ * Other platforms fail closed until an audited native implementation exists.
+ */
+#[cfg(target_os="linux")]
+fn rename_directory_no_replace(from: &Path, to: &Path) -> Result<()> {
+    use std::{ffi::{CString, c_char}, os::unix::ffi::OsStrExt};
+    unsafe extern "C" {
+        fn renameat2(olddirfd: i32, oldpath: *const c_char, newdirfd: i32, newpath: *const c_char, flags: u32) -> i32;
+    }
+    const AT_FDCWD: i32 = -100;
+    const RENAME_NOREPLACE: u32 = 1;
+    let old = CString::new(from.as_os_str().as_bytes()).map_err(|_| "Invalid source path")?;
+    let new = CString::new(to.as_os_str().as_bytes()).map_err(|_| "Invalid destination path")?;
+    if unsafe { renameat2(AT_FDCWD,old.as_ptr(),AT_FDCWD,new.as_ptr(),RENAME_NOREPLACE) } == 0 {
+        Ok(())
+    } else {
+        Err(format!("Cannot rename directory without overwrite: {}",std::io::Error::last_os_error()))
+    }
+}
+#[cfg(windows)]
+fn rename_directory_no_replace(from: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name="Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+    let old: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let new: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // 0 = neither REPLACE_EXISTING nor COPY_ALLOWED: same-volume only.
+    if unsafe { MoveFileExW(old.as_ptr(),new.as_ptr(),0) } != 0 { Ok(()) }
+    else { Err(format!("Cannot rename directory without overwrite: {}",std::io::Error::last_os_error())) }
+}
+#[cfg(not(any(target_os="linux",windows)))]
+fn rename_directory_no_replace(_from: &Path, _to: &Path) -> Result<()> {
+    Err("Safe directory rename is unsupported on this platform".into())
+}
+
+fn local_mutate(directory: &str, name: &str, action: MutationAction, new_name: Option<&str>, kind: Option<&str>, op: &Operation) -> Result<()> {
+    wire::name(name)?;
+    let parent = local_dir(directory)?; op.check()?;
+    let source = parent.join(name);
+    match action {
+        MutationAction::Mkdir => {
+            fs::create_dir(&source).map_err(|_| "Cannot create local directory (it may exist or be inaccessible)".into())
+        },
+        MutationAction::Rename | MutationAction::Delete => {
+            let kind = kind.ok_or("Missing expected entry type")?; expected_kind(kind)?;
+            let m = fs::symlink_metadata(&source).map_err(|_| "Source missing; refresh listing")?;
+            if m.is_symlink() || (kind == "file" && !m.is_file()) || (kind == "directory" && !m.is_dir()) {
+                return Err("Source changed or is a symlink; refresh listing".into());
+            }
+            op.check()?;
+            match action {
+                MutationAction::Delete => {
+                    if kind == "directory" { fs::remove_dir(&source).map_err(|_| "Cannot delete directory (must be empty)".into()) }
+                    else { fs::remove_file(&source).map_err(|_| "Cannot delete local file".into()) }
+                },
+                MutationAction::Rename => {
+                    let new_name = new_name.ok_or("Missing new filename")?; wire::name(new_name)?;
+                    if new_name == name { return Err("Choose a different name".into()); }
+                    let new_path = parent.join(new_name);
+                    if kind == "directory" {
+                        // Atomic on supported filesystems, no hardlink fallback.
+                        return rename_directory_no_replace(&source,&new_path);
+                    }
+                    // A hard link is created exclusively; it cannot overwrite an existing name.
+                    // Then unlink the old name. If unlink fails both references remain.
+                    // Filesystems lacking hardlinks fail without modifying the original.
+                    fs::hard_link(&source,&new_path).map_err(|_| "Cannot rename locally: target exists or hardlinks unsupported".to_string())?;
+                    fs::remove_file(&source).map_err(|_| "New hardlink created but old name could not be removed".to_string())
+                },
+                MutationAction::Mkdir => unreachable!(),
+            }
+        }
+    }
+}
+#[tauri::command]
+pub async fn files_mutate(id: String, mut request: Mutation, app: tauri::AppHandle) -> Result<()> {
+    wire::name(&request.name)?;
+    if let Some(name) = &request.new_name { wire::name(name)?; }
+    if let Some(d) = &mut request.destination { resolve_auth(d,&app)?; }
+    let guard = register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = &guard;
+        let kind = request.expected_kind.as_deref();
+        match request.destination {
+            Some(d) => {
+                let mut client = connect(&d,&guard.op)?;
+                remote_mutate(&mut client,&request.directory,&request.name,request.action,request.new_name.as_deref(),kind,&guard.op)
+            },
+            None => local_mutate(&request.directory,&request.name,request.action,request.new_name.as_deref(),kind,&guard.op),
+        }
+    }).await.map_err(|_| "File mutation task failed".to_string())?
+}
+#[tauri::command]
+pub async fn files_list(id: String, mut destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
+    if let Some(d)=&mut destination { resolve_auth(d,&app)?; }
+    let g = register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = &g;
+        match destination { Some(d) => { let mut c = connect(&d,&g.op)?; remote_list(&mut c,&path,&g.op) }, None => local_list(&path,&g.op) }
+    }).await.map_err(|_| "File task failed".to_string())?
+}
+#[tauri::command]
+pub fn files_cancel(id: String, state: State<'_,Operations>) -> Result<()> {
+    operation_id(&id)?;
+    state.0.lock().map_err(|_| "Operation lock failed")?.cancel(id)
+}
+fn private_new(path: &Path) -> Result<fs::File> {
+    let mut options = OpenOptions::new(); options.write(true).create_new(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    options.open(path).map_err(|_| "Cannot create local file (destination may exist)".into())
+}
+struct PartialLocal(PathBuf);
+impl Drop for PartialLocal { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
+fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>) -> Result<()> {
+    let before = fs::symlink_metadata(source).map_err(|_| "Local source unavailable")?;
+    if !before.is_file() || before.is_symlink() { return Err("Only regular files can be uploaded".into()); }
+    let mut options = OpenOptions::new(); options.read(true);
+    #[cfg(windows)] { use std::os::windows::fs::OpenOptionsExt; options.custom_flags(0x00200000); } // OPEN_REPARSE_POINT
+    let mut f = options.open(source).map_err(|_| "Cannot open local source")?;
+    let opened = f.metadata().map_err(|_| "Cannot inspect local file")?;
+    if !opened.is_file() || opened.is_symlink() { return Err("Source is not a regular file".into()); }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() { return Err("Local source changed before open".into()); }
+    }
+    let size = opened.len();
+    // EXCL|CREAT|WRITE; never opens/clobbers an existing remote path.
+    let h = c.open(temp,2|8|32)?;
+    let mut offset = 0; let mut bytes = vec![0;CHUNK];
+    loop {
+        op.check()?;
+        let n = f.read(&mut bytes).map_err(|_| "Local read failed")?; if n == 0 { break; }
+        c.write(&h,offset,&bytes[..n])?; offset += n as u64;
+        events.send(Progress { bytes:offset,total:Some(size) }).map_err(|_| "Transfer view closed")?;
+    }
+    if offset != size || f.metadata().map_err(|_| "Cannot inspect source")?.len() != size { return Err("Source changed during upload".into()); }
+    c.close(&h)?; op.check()?;
+    let mut b = vec![]; wire::string(&mut b,temp.as_bytes()); wire::string(&mut b,remote.as_bytes());
+    // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
+    Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
+}
+fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>) -> Result<()> {
+    let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
+    if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
+    let mut f = private_new(temp)?; let _partial = PartialLocal(temp.into()); let h = c.open(remote,1)?;
+    let mut offset = 0;
+    loop {
+        op.check()?;
+        let Some(bytes) = c.read(&h,offset)? else { break; };
+        f.write_all(&bytes).map_err(|_| "Local write failed")?; offset += bytes.len() as u64;
+        events.send(Progress {bytes:offset,total:a.size}).map_err(|_| "Transfer view closed")?;
+    }
+    c.close(&h)?;
+    if a.size.is_some_and(|size| size != offset) { return Err("Remote source changed during download".into()); }
+    f.sync_all().map_err(|_| "Local sync failed")?; drop(f); op.check()?;
+    // Atomic no-replace publication (rename would overwrite on Unix).
+    fs::hard_link(temp,target).map_err(|_| "Cannot publish download: destination exists or filesystem lacks hard links".to_string())?;
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool }
+#[tauri::command]
+pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
+    resolve_auth(&mut request.destination,&app)?;
+    wire::name(&request.name)?; wire::path(&request.remote_directory)?;
+    let g = register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = &g; let local = local_dir(&request.local_directory)?;
+        let target = local.join(&request.name); let mut c = connect(&request.destination,&g.op)?;
+        let parent = c.realpath(&request.remote_directory)?; let remote = wire::join(&parent,&request.name)?;
+        let partial = format!(".nodedesk-{id}.part");
+        if request.upload {
+            let temp = wire::join(&parent,&partial)?;
+            copy_upload(&mut c,&target,&remote,&temp,&g.op,&events).map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
+        } else { copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events) }
+    }).await.map_err(|_| "Transfer task failed".to_string())?
+}
+#[cfg(all(test,unix))]
+pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into()),native:None};
+    let op=Arc::new(Operation::default());
+    let result=(|| -> Result<()> {
+        // Exercise the production connect/list/copy functions, not a parallel
+        // test-only SSH command. No developer identity or secret is available.
+        let mut c=connect(&d,&op)?;
+        let home=c.realpath(".")?;
+        remote_list(&mut c,&home,&op)?;
+        let local=PathBuf::from(fixture).join(format!("auth-local-{case}")); fs::create_dir(&local).unwrap();
+        let source=local.join("source.bin");
+        let bytes:Vec<u8>=(0..65537).map(|n|(n%256) as u8).collect(); fs::write(&source,&bytes).unwrap();
+        let remote=wire::join(&home,&format!("bridge-{case}.bin"))?;
+        let temp=wire::join(&home,&format!(".bridge-{case}.part"))?;
+        let events=Channel::<Progress>::new(|_|Ok(()));
+        copy_upload(&mut c,&source,&remote,&temp,&op,&events)?;
+        let target=local.join("download.bin"); let partial=local.join(".download.part");
+        copy_download(&mut c,&remote,&target,&partial,&op,&events)?;
+        assert_eq!(fs::read(&target).unwrap(),bytes);
+        assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+        let cancelled=Arc::new(Operation::default()); let mut slave=connect(&d,&cancelled)?;
+        let cancel_op=cancelled.clone(); let cancel_events=Channel::<Progress>::new(move |_|{cancel_op.cancel();Ok(())});
+        assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+        assert!(!partial.exists()); assert!(!local.join("cancelled.bin").exists());
+        // Cancelling a transfer kills only its subsystem child; login survives.
+        assert_eq!(c.realpath(".")?,home);
+        Ok(())
+    })();
+    op.stop(); result.unwrap();
+}
+#[cfg(test)]
+pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:None,native:Some(login)};
+    let op=Arc::new(Operation::default());
+    let mut c=connect(&d,&op).unwrap();
+    let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
+    let local=PathBuf::from(fixture).join(format!("native-{case}"));fs::create_dir(&local).unwrap();
+    let source=local.join("source.bin");let bytes:Vec<u8>=(0..65537).map(|n|(n%256)as u8).collect();fs::write(&source,&bytes).unwrap();
+    let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
+    let events=Channel::<Progress>::new(|_|Ok(()));
+    copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    let target=local.join("download.bin");let partial=local.join(".download.part");
+    copy_download(&mut c,&remote,&target,&partial,&op,&events).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
+    assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+    assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
+    let folder=format!("native-folder-{case}");
+    remote_mutate(&mut c,&home,&folder,MutationAction::Mkdir,None,None,&op).unwrap();
+    assert!(remote_mutate(&mut c,&home,&folder,MutationAction::Mkdir,None,None,&op).is_err());
+    remote_mutate(&mut c,&home,&folder,MutationAction::Delete,None,Some("directory"),&op).unwrap();
+    let name=format!("native-{case}.bin");let renamed=format!("renamed-{case}.bin");
+    remote_mutate(&mut c,&home,&name,MutationAction::Rename,Some(&renamed),Some("file"),&op).unwrap();
+    remote_mutate(&mut c,&home,&renamed,MutationAction::Rename,Some(&name),Some("file"),&op).unwrap();
+    let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
+    let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
+    assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+    assert!(!partial.exists());assert!(!local.join("cancelled.bin").exists());
+    // Windows cancellation interrupts the TCP socket and requires a fresh login.
+    assert!(connect(&d,&Operation::default()).is_err());
+    assert!(c.realpath(".").is_err());
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn strict_transport_no_password_or_shell() {
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None,native:None };
+        let a = transport_args(&d).unwrap();
+        for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
+        assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
+        assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
+        assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
+    }
+    #[test] fn cancellation_is_idempotent() { let op = Operation::default(); assert!(op.check().is_ok()); op.cancel(); op.cancel(); assert!(op.check().is_err()); }
+    #[test] fn cancel_before_registration_and_limits() {
+        let mut registry = Registry::default(); registry.cancel("late".into()).unwrap();
+        assert!(registry.insert("late",Arc::new(Operation::default())).is_err());
+        let op = Arc::new(Operation::default()); registry.insert("active",op.clone()).unwrap();
+        registry.cancel("active".into()).unwrap(); assert!(op.check().is_err());
+        for n in 0..64 { registry.cancel(n.to_string()).unwrap(); }
+        assert!(registry.cancel("overflow".into()).is_err());
+        assert!(operation_id("../malicious").is_err());
+    }
+    #[test]
+    fn capabilities_match_native_transport_support() {
+        let capabilities=files_capabilities();
+        assert_eq!(capabilities.interactive_login,cfg!(any(unix,windows)));
+        assert!(capabilities.key_agent);
+    }
+    #[test] fn local_mutations_refuse_overwrite_symlinks_and_nonempty_dirs() {
+        let root=std::env::temp_dir().join(format!("nd-mutate-{}",std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let dir=root.to_str().unwrap();
+        let op=Operation::default();
+        assert!(local_mutate(dir,"..",MutationAction::Mkdir,None,None,&op).is_err());
+        local_mutate(dir,"newfolder",MutationAction::Mkdir,None,None,&op).unwrap();
+        assert!(local_mutate(dir,"newfolder",MutationAction::Mkdir,None,None,&op).is_err());
+        fs::write(root.join("file.txt"),b"original").unwrap();
+        fs::write(root.join("exists.txt"),b"unchanged").unwrap();
+        assert!(local_mutate(dir,"file.txt",MutationAction::Rename,Some("exists.txt"),Some("file"),&op).is_err());
+        assert_eq!(fs::read(root.join("exists.txt")).unwrap(),b"unchanged");
+        local_mutate(dir,"newfolder",MutationAction::Rename,Some("renamed"),Some("directory"),&op).unwrap();
+        assert!(!root.join("newfolder").exists());
+        assert!(root.join("renamed").is_dir());
+        fs::create_dir(root.join("occupied")).unwrap();
+        fs::write(root.join("occupied").join("protected"),b"keep").unwrap();
+        assert!(local_mutate(dir,"renamed",MutationAction::Rename,Some("occupied"),Some("directory"),&op).is_err());
+        assert_eq!(fs::read(root.join("occupied").join("protected")).unwrap(),b"keep");
+        local_mutate(dir,"file.txt",MutationAction::Rename,Some("renamed.txt"),Some("file"),&op).unwrap();
+        assert!(!root.join("file.txt").exists());
+        assert_eq!(fs::read(root.join("renamed.txt")).unwrap(),b"original");
+        fs::write(root.join("renamed").join("child"),b"x").unwrap();
+        assert!(local_mutate(dir,"renamed",MutationAction::Delete,None,Some("directory"),&op).is_err());
+        assert!(local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("symlink"),&op).is_err());
+        local_mutate(dir,"renamed.txt",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        local_mutate(root.join("renamed").to_str().unwrap(),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        local_mutate(dir,"renamed",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        fs::remove_file(root.join("occupied").join("protected")).unwrap();
+        fs::remove_dir(root.join("occupied")).unwrap();
+        fs::remove_file(root.join("exists.txt")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+    #[test] fn local_no_replace_and_partial_cleanup() {
+        let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
+        let path = root.join("target"); let _ = fs::remove_file(&path);
+        let f = private_new(&path).unwrap(); drop(f); assert!(private_new(&path).is_err());
+        drop(PartialLocal(path.clone())); assert!(!path.exists()); fs::remove_dir(root).unwrap();
+        assert!(local_dir("../").is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn real_structured_sftp_binary_trust_and_cancel() {
+        let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None,native:None};
+        let open = |known: &str, op: &Operation| {
+            let mut cmd = Command::new("ssh");
+            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+            cmd.args(transport_args(&d).unwrap()); spawn_transport(cmd,op)
+        };
+        for known in ["unknown-gui","changed","revoked"] {
+            let op = Operation::default(); assert!(open(known,&op).is_err(),"trust must reject {known}"); op.stop();
+        }
+        // real_host_key_checks separately verifies first trust via the existing console.
+        let op = Arc::new(Operation::default());
+        let weak = Arc::downgrade(&op);
+        let timer = std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(20)); if let Some(op)=weak.upgrade() { op.cancel(); } });
+        let mut c = open("trusted-gui",&op).unwrap();
+        let local = PathBuf::from(&dir).join("gui-local"); let remote = PathBuf::from(&dir).join("gui-remote");
+        fs::create_dir(&local).unwrap(); fs::create_dir(&remote).unwrap();
+        let remote_path = remote.to_str().unwrap();
+        let filename = "binary пробел ;$(x).bin";
+        let bytes: Vec<u8> = (0..131_077).map(|n| (n % 256) as u8).collect();
+        let source = local.join(filename); fs::write(&source,&bytes).unwrap();
+        let dest = wire::join(remote_path,filename).unwrap(); let temp = wire::join(remote_path,".upload.part").unwrap();
+        let events = Channel::<Progress>::new(|_| Ok(()));
+        copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(),bytes);
+        let listing = remote_list(&mut c,remote_path,&op).unwrap();
+        assert!(listing.entries.iter().any(|e|e.name==filename && e.kind=="file"));
+        let downloaded = local.join("download.bin"); let partial = local.join(".download.part");
+        copy_download(&mut c,&dest,&downloaded,&partial,&op,&events).unwrap();
+        assert_eq!(fs::read(&downloaded).unwrap(),bytes); assert!(!partial.exists());
+        assert!(copy_download(&mut c,&dest,&downloaded,&partial,&op,&events).is_err());
+        assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
+        assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
+        assert!(c.lstat(&format!("{remote_path}/missing")).is_err());
+        // Real SFTP v3 CRUD: mkdir, collision refusal, rename without clobber,
+        // non-recursive delete, and type/symlink validation.
+        remote_mutate(&mut c,remote_path,"created folder",MutationAction::Mkdir,None,None,&op).unwrap();
+        assert!(remote.join("created folder").is_dir());
+        assert!(remote_mutate(&mut c,remote_path,"created folder",MutationAction::Mkdir,None,None,&op).is_err());
+        remote_mutate(&mut c,remote_path,"created folder",MutationAction::Rename,Some("renamed folder"),Some("directory"),&op).unwrap();
+        assert!(remote.join("renamed folder").is_dir());
+        assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Rename,Some(filename),Some("directory"),&op).is_err());
+        assert_eq!(fs::read(&dest).unwrap(),bytes);
+        fs::write(remote.join("renamed folder").join("child"),b"x").unwrap();
+        assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).is_err());
+        remote_mutate(&mut c,&format!("{remote_path}/renamed folder"),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
+        remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).unwrap();
+        assert!(!remote.join("renamed folder").exists());
+        std::os::unix::fs::symlink(&dest,remote.join("link")).unwrap();
+        assert!(copy_download(&mut c,&format!("{remote_path}/link"),&local.join("link-copy"),&partial,&op,&events).is_err());
+        // Cancel during a real transfer, not just before the command: the first
+        // progress callback kills the transport and the local partial is removed.
+        let cancelled = Arc::new(Operation::default());
+        let mut cc = open("trusted-gui",&cancelled).unwrap();
+        let cancel_op = cancelled.clone();
+        let cancel_events = Channel::<Progress>::new(move |_| { cancel_op.cancel(); Ok(()) });
+        let cancelled_target = local.join("cancelled.bin");
+        assert!(copy_download(&mut cc,&dest,&cancelled_target,&partial,&cancelled,&cancel_events).is_err());
+        assert!(!partial.exists()); assert!(!cancelled_target.exists());
+        assert!(cancelled.child.lock().unwrap().is_none());
+        // An exclusive remote partial remains identifiable after upload cancel;
+        // the requested final name is never published.
+        let cancelled_upload = Arc::new(Operation::default());
+        let mut cu = open("trusted-gui",&cancelled_upload).unwrap();
+        let cancel_op = cancelled_upload.clone();
+        let cancel_events = Channel::<Progress>::new(move |_| { cancel_op.cancel(); Ok(()) });
+        let cancelled_remote = wire::join(remote_path,"cancelled.bin").unwrap();
+        let cancelled_partial = wire::join(remote_path,".cancelled.part").unwrap();
+        assert!(copy_upload(&mut cu,&source,&cancelled_remote,&cancelled_partial,&cancelled_upload,&cancel_events).is_err());
+        assert!(!Path::new(&cancelled_remote).exists()); assert!(Path::new(&cancelled_partial).exists());
+        assert!(cancelled_upload.child.lock().unwrap().is_none());
+        op.cancel(); assert!(op.check().is_err()); assert!(c.realpath(".").is_err()); drop(c); drop(op);
+        // No child survives cancellation; the timer is a fixture-only upper bound.
+        timer.join().unwrap();
+    }
+}

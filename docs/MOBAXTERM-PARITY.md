@@ -26,7 +26,7 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | План | План | Паритет |
 | SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | План | План | Паритет |
 | SSH-05 | X11 forwarding: локальный X display и корректное закрытие соединения | План | План | Паритет |
-| FS-01 | SFTP рядом с SSH: список, upload/download, drag/drop, rename/delete, права, прогресс/отмена | План | План | Протоколы |
+| FS-01 | SFTP рядом с SSH: список, upload/download, drag/drop, rename/delete, права, прогресс/отмена | Частичная реализация: листинг/передача | Частичная реализация: листинг/передача | v0.5 draft; см. ограничения ниже |
 | FS-02 | Удалённый текстовый редактор: кодировки, поиск, upload при сохранении, конфликт изменений | План | План | Паритет |
 | FS-03 | SCP, FTP/FTPS: передача и TLS-проверка; предупреждение для незашифрованного FTP | План | План | Паритет |
 | RDP-01 | Встроенный desktop, параметры безопасности и проверка сертификата | План | План | Протоколы |
@@ -122,3 +122,46 @@ Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implem
 
 - **FS-00 (partial implementation / manual acceptance pending):** user-launched OpenSSH `sftp` in a built-in PTY console with remote navigation and `get` / `put`. Requires OS OpenSSH with the `sftp` executable. Safe host-key policy retained. Passwords are not saved. No automatic sessions.
 - **FS-01/FS-04 (still planned):** GUI remote filesystem browser alongside SSH, independent local folder, two-pane drag-and-drop, progress/error/cancel, permissions, symlinks, timestamp and filename correctness, background transfer and remote editor. An interactive command-line `sftp>` is not equivalent to MobaXterm's SFTP browser.
+
+
+## v0.5 SFTP GUI — review slice / срез для проверки
+
+Two panels, binary SFTP v3 listing/navigation and upload/download; bounded
+mkdir, no-overwrite rename, delete with confirmation, internal one-file drag/drop.
+GUI Linux: OpenSSH password/PAM; Windows: native password/keyboard-interactive or direct OpenSSH key/agent.
+Issue #9 stays open pending full Arch/Windows acceptance.
+
+Две панели, SFTP v3, навигация, бинарная передача без перезаписи, mkdir,
+rename, удаление с подтверждением и Drag & Drop одного файла.
+GUI Linux: пароль/PAM; Windows: native пароль/keyboard-interactive или OpenSSH ключ/агент.
+
+See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
+
+
+### FS-01 / FS-04 follow-up in draft PR #10 (pending acceptance)
+
+Native SFTP v3 mkdir, rename, remove file, rmdir empty directory and internal single-file cross-pane drag/drop added, with explicit delete/transfer confirmation and backend type checks. Portable name validation, no-overwrite checks and cancellation remain. Local regular files can be renamed via exclusive hardlink/unlink on supporting filesystems; local directory rename now uses native no-replace on Linux/Windows. Context menus support right-click and Shift+F10. No recursive operations, multi-select, external OS drag/drop or transfer queue. **Not marked complete** until latest CI and real Arch/Windows GUI tests pass.
+
+### FS-04 review update: multi-file batch (not full parity)
+
+Checkbox multi-selection with a 50-file cap and one-at-a-time upload/download
+added in draft PR #10. Entire preflight fails on collision or invalid name,
+backend still prevents overwrite, and cancel stops later jobs. No recursive
+folder transfers, resume, progress across sessions or background queue.
+
+
+### Windows native GUI authentication — implemented review slice
+
+Rust ssh2/libssh2 now provides password and keyboard-interactive for Windows
+Files, with strict previously trusted host-key verification before credentials,
+hidden bounded input, destination-bound sessions and socket cancellation.
+OpenSSH consoles, Linux ControlMaster login and direct key/agent are retained.
+Native cancellation closes the Windows Files login and requires reconnect.
+Unknown/changed/revoked keys fail closed; new trust uses the OpenSSH console.
+No saved secrets, shell/askpass or credentials in argv/environment/logs.
+
+Linux CI uses real isolated sshd/PAM; Windows CI uses an independent loopback
+SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates,
+password-change and mixed-method MFA chains remain unsupported. GUI acceptance
+on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
+accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).

@@ -9,14 +9,14 @@ import { FileBrowser } from "./FileBrowser";
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth";
 type Event = { kind: "data"; value: number[] } | { kind: "exit"; value: number } | { kind: "error"; value: string };
-export function SshTerminal({ connection: c, language, kind = "ssh", onSession }: { connection: Connection; language: "ru" | "en"; kind?: TerminalKind; onSession?: (id: string | null) => void }) {
+export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnly = false, onSession }: { connection: Connection; language: "ru" | "en"; kind?: TerminalKind; passwordOnly?: boolean; onSession?: (id: string | null) => void }) {
   const sessionCallback = useRef(onSession); sessionCallback.current = onSession;
   const container = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const session = useRef<string | null>(null);
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState(""), [busy, setBusy] = useState(false);
-  const [auth, setAuth] = useState<AuthMode>("auto");
+  const [auth, setAuth] = useState<AuthMode>(passwordOnly ? "password" : "auto");
   const ru = language === "ru";
   useEffect(() => {
     const term = new Terminal({ cursorBlink: true, scrollback: 2000, fontSize: 13, theme: { background: "#11151b", foreground: "#e2e8f0" } });
@@ -40,6 +40,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", onSession }
   }, []);
   async function stop() {
     const id = session.current; session.current = null;
+    sessionCallback.current?.(null);
     setBusy(false); setStatus(ru ? "Отключено" : "Disconnected");
     if (id) await invoke("ssh_disconnect", { id }).catch(e => setStatus(String(e)));
   }
@@ -72,14 +73,14 @@ export function SshTerminal({ connection: c, language, kind = "ssh", onSession }
         <span>{ru ? "Вход" : "Authentication"}</span>
         <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => setAuth(e.target.value as AuthMode)}>
           <option value="auto">{ru ? "Авто" : "Auto"}</option>
-          <option value="key">{ru ? "SSH-ключ / агент" : "SSH key / agent"}</option>
+          <option value="key" disabled={passwordOnly}>{ru ? "SSH-ключ / агент" : "SSH key / agent"}</option>
           <option value="password">{ru ? "Пароль / PAM" : "Password / PAM"}</option>
         </select>
       </label>
       <button disabled={busy} onClick={() => void connect()}>{ru ? "Подключить / повторить" : "Connect / reconnect"}</button>
       <button disabled={!busy} onClick={() => void stop()}>{ru ? "Отключить / отменить" : "Disconnect / cancel"}</button>
     </div>
-    <p className="ssh-help">{kind === "filesauth" ? (ru ? "Linux: войдите здесь, затем используйте панели ниже. Пароль/PAM вводится скрыто в приглашении OpenSSH. Проверьте отпечаток нового host key. После входа терминал остаётся без приглашения shell — это нормально. Отключение завершает доступ к файлам." : "Linux: log in here, then use the panels below. Password/PAM is entered at the hidden OpenSSH prompt. Verify a new host fingerprint. After login no shell prompt appears; this is normal. Disconnect closes Files access.") : kind === "sftp"
+    <p className="ssh-help">{kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
       ? (ru
         ? "Настоящий OpenSSH SFTP. После входа используйте pwd, ls, cd, get, put и help. Сначала проверьте SHA256 ключа сервера; пароли не сохраняются. Локальный каталог передачи задавайте командой lcd — по умолчанию он зависит от запуска NodeDesk. Встроенный файловый браузер появится в следующем этапе."
         : "Real OpenSSH SFTP. After login use pwd, ls, cd, get, put and help. Independently verify the SHA256 host fingerprint. Passwords are not saved. Set the local transfer directory using lcd; otherwise it depends on how NodeDesk was started. The graphical file browser is a later step.")

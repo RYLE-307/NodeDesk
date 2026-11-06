@@ -7,9 +7,12 @@ use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String> }
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
 fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
-    if let Some(id)=&d.auth_session { d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?); }
+    if let Some(id)=&d.auth_session {
+        #[cfg(windows)] {d.native=Some(app.state::<crate::native_auth::Logins>().get(id,&d.host,d.port,&d.username)?);}
+        #[cfg(not(windows))] {d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?);}
+    }
     Ok(())
 }
 #[derive(Serialize)]
@@ -23,20 +26,20 @@ pub struct Listing { path: String, entries: Vec<Entry> }
  */
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
-pub struct FileCapabilities { interactive_login: bool, key_agent: bool }
+pub struct FileCapabilities { interactive_login: bool, key_agent: bool, native_login: bool }
 #[tauri::command]
 pub fn files_capabilities() -> FileCapabilities {
-    FileCapabilities { interactive_login: cfg!(unix), key_agent: true }
+    FileCapabilities { interactive_login: cfg!(any(unix,windows)), key_agent: true, native_login: cfg!(windows) }
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Progress { bytes: u64, total: Option<u64> }
 #[derive(Default)]
-struct Operation { cancelled: AtomicBool, child: Mutex<Option<Child>> }
+struct Operation { cancelled: AtomicBool, child: Mutex<Option<Child>>, native: Mutex<Option<Arc<crate::native_auth::Login>>> }
 impl Operation {
     fn check(&self) -> Result<()> { if self.cancelled.load(Ordering::SeqCst) { Err("Operation cancelled or timed out".into()) } else { Ok(()) } }
-    fn cancel(&self) { self.cancelled.store(true,Ordering::SeqCst); self.stop(); }
+    fn cancel(&self) { self.cancelled.store(true,Ordering::SeqCst); if let Ok(login)=self.native.lock() {if let Some(login)=login.as_ref() {login.close();}} self.stop(); }
     fn stop(&self) { if let Ok(mut c) = self.child.lock() { if let Some(mut child) = c.take() { let _ = child.kill(); let _ = child.wait(); } } }
 }
 #[derive(Default)]
@@ -96,9 +99,14 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
     strict.extend(args); strict.push("sftp".into()); Ok(strict)
 }
-type Sftp = Client<std::process::ChildStdout,std::process::ChildStdin>;
+type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
+    if let Some(login)=&d.native {
+        *op.native.lock().map_err(|_|"Operation lock failed")?=Some(login.clone());
+        op.check()?;
+        return crate::native_auth::subsystem(login);
+    }
     let mut command = Command::new("ssh");
     if let Some(socket)=&d.control {
         // If the master vanished, fail closed instead of reconnecting/falling back.
@@ -113,7 +121,7 @@ fn spawn_transport(mut command: Command, op: &Operation) -> Result<Sftp> {
     let mut slot = op.child.lock().map_err(|_| "Process lock failed")?; op.check()?;
     let mut child = command.spawn().map_err(|_| "Cannot start OpenSSH".to_string())?;
     let reader = child.stdout.take().ok_or("Missing SSH output")?; let writer = child.stdin.take().ok_or("Missing SSH input")?;
-    *slot = Some(child); drop(slot); Client::new(reader,writer)
+    *slot = Some(child); drop(slot); Client::new(Box::new(reader) as Box<dyn Read+Send>,Box::new(writer) as Box<dyn Write+Send>)
 }
 fn local_dir(path: &str) -> Result<PathBuf> {
     let p = if path.is_empty() {
@@ -373,7 +381,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
 }
 #[cfg(all(test,unix))]
 pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into())};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into()),native:None};
     let op=Arc::new(Operation::default());
     let result=(|| -> Result<()> {
         // Exercise the production connect/list/copy functions, not a parallel
@@ -403,10 +411,32 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
     op.stop(); result.unwrap();
 }
 #[cfg(test)]
+pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:None,native:Some(login)};
+    let op=Arc::new(Operation::default());
+    let mut c=connect(&d,&op).unwrap();
+    let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
+    let local=PathBuf::from(fixture).join(format!("native-{case}"));fs::create_dir(&local).unwrap();
+    let source=local.join("source.bin");let bytes:Vec<u8>=(0..65537).map(|n|(n%256)as u8).collect();fs::write(&source,&bytes).unwrap();
+    let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
+    let events=Channel::<Progress>::new(|_|Ok(()));
+    copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    let target=local.join("download.bin");let partial=local.join(".download.part");
+    copy_download(&mut c,&remote,&target,&partial,&op,&events).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
+    assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+    assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
+    let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
+    let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
+    assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+    assert!(!partial.exists());assert!(!local.join("cancelled.bin").exists());
+    // Windows cancellation interrupts the TCP socket and requires a fresh login.
+    assert!(connect(&d,&Operation::default()).is_err());
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None,native:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
@@ -426,7 +456,7 @@ mod tests {
     #[test]
     fn capabilities_match_native_transport_support() {
         let capabilities=files_capabilities();
-        assert_eq!(capabilities.interactive_login,cfg!(unix));
+        assert_eq!(capabilities.interactive_login,cfg!(any(unix,windows)));
         assert!(capabilities.key_agent);
     }
     #[test] fn local_mutations_refuse_overwrite_symlinks_and_nonempty_dirs() {
@@ -473,7 +503,7 @@ mod tests {
     #[test]
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
-        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None};
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None,native:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
             cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);

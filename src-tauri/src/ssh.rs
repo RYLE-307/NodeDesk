@@ -67,7 +67,10 @@ pub(crate) fn files_socket(sessions: &Sessions, id: &str, host: &str, port: u16,
     Ok(bridge.socket())
 }
 #[tauri::command]
-pub fn files_auth_ready(id: String, host: String, port: u16, username: String, state: State<'_,Sessions>) -> bool {
+pub fn files_auth_ready(id: String, host: String, port: u16, username: String, state: State<'_,Sessions>, app: tauri::AppHandle) -> bool {
+    #[cfg(windows)] return app.state::<crate::native_auth::Logins>().ready(&id,&host,port,&username);
+    #[cfg(not(windows))] let _=app;
+    #[cfg(not(windows))]
     files_socket(&state,&id,&host,port,&username).is_ok()
 }
 #[derive(Clone, Serialize)]
@@ -129,6 +132,7 @@ fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Resu
 }
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+    #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
@@ -176,7 +180,9 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     Ok(())
 }
 #[tauri::command]
-pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> Result<(), String> {
+pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)] if app.state::<crate::native_auth::Logins>().contains(&id) {return app.state::<crate::native_auth::Logins>().write(&id,data);}
+    #[cfg(not(windows))] let _=app;
     if data.len() > 65536 { return Err("Input too large".into()); }
     let writer = state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.writer.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -185,11 +191,14 @@ pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> 
     }).await.map_err(|_| "Input task failed".to_string())?
 }
 #[tauri::command]
-pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)] if app.state::<crate::native_auth::Logins>().contains(&id) {return Ok(());}
+    #[cfg(not(windows))] let _=app;
     state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.master.resize(size(cols, rows)?).map_err(|_| "SSH resize failed".into())
 }
 #[tauri::command]
-pub fn ssh_disconnect(id: String, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<crate::native_auth::Logins>().disconnect(&id);
     state.0.lock().map_err(|_| "Session lock failed")?.remove(&id);
     Ok(())
 }

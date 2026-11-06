@@ -16,7 +16,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
         // Never record terminal input, even in this test harness.
         window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer'].includes(cmd)?args?.request:undefined});
         if (cmd==='files_capabilities') return window.fixture.caps;
-        if (cmd==='ssh_connect') {window.fixture.session=args.id; return;}
+        if (cmd==='ssh_connect') {window.fixture.session=args.id; window.fixture.loginAuth=args.auth; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
         if (cmd==='files_cancel') {window.fixture.rejectPending?.(new Error('cancelled'));window.fixture.rejectPending=null;return;}
@@ -42,7 +42,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
   const files=page.getByRole('region',{name:language==='en'?'SFTP file manager':'Файловый менеджер SFTP'});
   // Wait for the native capability command to resolve before interacting;
   // Windows has no OpenSSH ControlMaster bridge.
-  const auth=files.getByRole('checkbox',{name:language==='en'?'Password/PAM or key login (Linux)':'Вход по паролю/PAM или ключу (Linux)'});
+  const auth=files.getByRole('checkbox',{name:language==='en'?'Interactive Files login (password/PAM)':'Интерактивный вход для файлов (пароль/PAM)'});
   if (caps.interactiveLogin) await expect(auth).toBeChecked();
   else await expect(auth).toBeDisabled();
   return files;
@@ -317,9 +317,9 @@ test('select visible limits to regular files and multi-drag reuses batch confirm
   await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('File transfers: 2/2');
 });
 
-test('Windows capability contract defaults to safe key/agent and does not start unsupported password bridge',async({page})=>{
+test('unsupported-platform capability fails closed to key/agent',async({page})=>{
   const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
-  const checkbox=files.getByRole('checkbox',{name:'Password/PAM or key login (Linux)'});
+  const checkbox=files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'});
   await expect(checkbox).toBeDisabled();
   await expect(checkbox).not.toBeChecked();
   await expect(files.getByText('GUI password/PAM is not available on this platform yet.',{exact:false})).toBeVisible();
@@ -334,8 +334,28 @@ test('Windows capability contract defaults to safe key/agent and does not start 
 });
 test('missing capability command fails closed and leaves no interactive login',async({page})=>{
   const files=await open(page,'en',{interactiveLogin:false,keyAgent:false});
-  const checkbox=files.getByRole('checkbox',{name:'Password/PAM or key login (Linux)'});
+  const checkbox=files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'});
   await expect(checkbox).toBeDisabled();
   await expect(checkbox).not.toBeChecked();
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='ssh_connect'))).toHaveLength(0);
+});
+
+test('Windows native login offers password/PAM, gates remote access and clears listing on disconnect',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:true,keyAgent:true,nativeLogin:true});
+  const method=files.getByRole('combobox',{name:'SSH authentication method'});
+  await expect(method).toHaveValue('password');
+  await expect(method.locator('option[value=key]')).toBeDisabled();
+  await expect(files.getByText('Cancelling a transfer closes the Files session',{exact:false})).toBeVisible();
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination))).toHaveLength(0);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  expect(await page.evaluate(()=>window.fixture.loginAuth)).toBe('password');
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toBeVisible();
+  await files.getByRole('button',{name:'Disconnect / cancel'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
+  await expect(files.getByText('Waiting for login',{exact:true})).toBeVisible();
 });

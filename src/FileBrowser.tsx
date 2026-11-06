@@ -15,11 +15,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const gate = useRef(new OperationGate()), mounted = useRef(true);
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(false);
-  const [capabilities, setCapabilities] = useState<{interactiveLogin:boolean;keyAgent:boolean}|null>(null);
+  const [capabilities, setCapabilities] = useState<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}|null>(null);
   useEffect(() => {
     let alive=true;
     if (!isTauri()) return;
-    void invoke<{interactiveLogin:boolean;keyAgent:boolean}>("files_capabilities")
+    void invoke<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}>("files_capabilities")
       .then(value => {
         if (!alive) return;
         setCapabilities(value);
@@ -374,13 +374,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   return <section className="file-browser" aria-label={ru ? "Файловый менеджер SFTP" : "SFTP file manager"}>
     <label><input type="checkbox" checked={interactive} disabled={busy || !capabilities?.interactiveLogin}
-      onChange={e => setInteractive(e.target.checked)}/>{ru ? "Вход по паролю/PAM или ключу (Linux)" : "Password/PAM or key login (Linux)"}</label>
+      onChange={e => setInteractive(e.target.checked)}/>{ru ? "Интерактивный вход для файлов (пароль/PAM)" : "Interactive Files login (password/PAM)"}</label>
     {capabilities && !capabilities.interactiveLogin && <p className="ssh-help" role="status">
       {ru
         ? "Графический пароль/PAM на этой платформе пока недоступен. Используйте SSH-ключ/агент для файлов или SSH/SFTP-терминал для входа по паролю. Проверка ключа сервера обязательна."
         : "GUI password/PAM is not available on this platform yet. Use SSH key/agent for files, or the SSH/SFTP console for password login. Host-key verification remains required."}
     </p>}
-    {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
+    {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" passwordOnly={!!capabilities?.nativeLogin} onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
+    {interactive && capabilities?.nativeLogin && <p className="ssh-help">{ru ? "Windows: только пароль/PAM и заранее доверенный host key. Новый ключ сначала сверьте и примите в SSH-консоли. Отмена передачи закрывает файловую сессию; затем подключитесь повторно. Для ключа/агента снимите галочку." : "Windows: password/PAM and a previously trusted host key only. Verify and accept new keys in the SSH console first. Cancelling a transfer closes the Files session; reconnect afterwards. For key/agent, uncheck interactive login."}</p>}
     <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
     <div className="files-actions">
       <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>

@@ -33,7 +33,9 @@ jobs:
       - run: npm test
       - run: npm run build
   desktop:
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -50,7 +52,12 @@ jobs:
           cache-on-failure: true
       - name: Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf openssh-server
+        run: |
+          # The runner's Azure mirror can stall large WebKit downloads. Use the
+          # official Ubuntu archive with normal signed repository verification.
+          sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf openssh-server
       - run: npm ci
       - name: Rust tests (Windows)
         if: runner.os == 'Windows'

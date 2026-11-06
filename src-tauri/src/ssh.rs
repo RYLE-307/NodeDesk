@@ -60,11 +60,13 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, cols: 
     Ok(())
 }
 #[tauri::command]
-pub fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> Result<(), String> {
+pub async fn ssh_write(id: String, data: String, state: State<'_, Sessions>) -> Result<(), String> {
     if data.len() > 65536 { return Err("Input too large".into()); }
     let writer = state.0.lock().map_err(|_| "Session lock failed")?.get(&id).ok_or("Session closed")?.writer.clone();
-    let mut writer = writer.lock().map_err(|_| "Input lock failed")?;
-    writer.write_all(data.as_bytes()).and_then(|_| writer.flush()).map_err(|_| "SSH input failed".into())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut writer = writer.lock().map_err(|_| "Input lock failed".to_string())?;
+        writer.write_all(data.as_bytes()).and_then(|_| writer.flush()).map_err(|_| "SSH input failed".to_string())
+    }).await.map_err(|_| "Input task failed".to_string())?
 }
 #[tauri::command]
 pub fn ssh_resize(id: String, cols: u16, rows: u16, state: State<'_, Sessions>) -> Result<(), String> {

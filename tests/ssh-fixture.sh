@@ -22,9 +22,9 @@ AuthorizedKeysFile $fixture/client.pub
 StrictModes no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-UsePAM no
+UsePAM yes
 AllowUsers $(id -un)
-LogLevel ERROR
+LogLevel VERBOSE
 EOF
 sudo mkdir -p /run/sshd
 sudo /usr/sbin/sshd -D -e -f "$fixture/sshd_config" &

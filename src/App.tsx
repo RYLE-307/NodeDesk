@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
   Catalog,
@@ -9,11 +10,15 @@ import {
   emptyCatalog,
   load,
   removeGroup,
+  moveConnection,
   save,
 } from "./catalog";
 
 const labels = {
   ru: {
+    move: "Переместить в группу…",
+    actions: "Действия",
+    moved: "Подключение перемещено",
     navigation: "Навигация",
     connections: "Подключения",
     empty: "Каталог пока пуст",
@@ -61,6 +66,9 @@ const labels = {
     stage: "Локальный каталог · без автоподключений",
   },
   en: {
+    move: "Move to group…",
+    actions: "Actions",
+    moved: "Connection moved",
     navigation: "Navigation",
     connections: "Connections",
     empty: "No connections yet",
@@ -133,6 +141,19 @@ export default function App() {
   const [tabs, setTabs] = useState<string[]>([]),
     [active, setActive] = useState(""),
     [secondary, setSecondary] = useState("");
+  const [menu, setMenu] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragActive = useRef(false);
+  function clearDrag() {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setDragId(null); setDropTarget(null);
+    setTimeout(() => { dragActive.current = false; }, 0);
+  }
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
   const dialog = useRef<HTMLDialogElement>(null),
     t = labels[data.language];
   useEffect(() => {
@@ -224,55 +245,71 @@ export default function App() {
         ))}
     </>
   );
+  function target(groupId: string | null) {
+    const key = groupId ?? "root";
+    return {
+      onDragOver: (e: React.DragEvent) => {
+        if (blocked || !dragId || !data.connections.some(c => c.id === dragId && c.groupId !== groupId)) return;
+        e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move";
+        if (dropTarget !== key) {
+          if (hoverTimer.current) clearTimeout(hoverTimer.current);
+          setDropTarget(key);
+          if (groupId) hoverTimer.current = setTimeout(() => setFolded(prev => {
+            const next = new Set(prev); next.delete(groupId); return next;
+          }), 650);
+        }
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setDropTarget(null);
+          if (hoverTimer.current) clearTimeout(hoverTimer.current);
+        }
+      },
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!blocked && dragId && e.dataTransfer.getData("application/x-nodedesk-connection") === dragId) {
+          const next = moveConnection(data, dragId, groupId);
+          if (next !== data && commit(next)) setNotice(t.moved);
+        }
+        clearDrag();
+      },
+    };
+  }
+  function connectionRow(c: Connection, depth: number) {
+    return <div key={c.id} className={`connection-row ${active === c.id ? "selected" : ""} ${dragId === c.id ? "dragging" : ""}`} style={{paddingLeft: depth * 14}}
+      draggable={!blocked} onDragStart={e => {
+        if ((e.target as HTMLElement).closest(".row-menu")) { e.preventDefault(); return; }
+        e.dataTransfer.setData("application/x-nodedesk-connection", c.id);
+        e.dataTransfer.effectAllowed = "move"; dragActive.current = true; setDragId(c.id); setMenu(null);
+      }} onDragEnd={clearDrag}
+      onContextMenu={e => { e.preventDefault(); setMenu(c.id); }}>
+      <button className="connection-open" title={`${c.name} — ${c.username ? c.username + "@" : ""}${c.host}:${c.port}`} onClick={() => { if (!dragActive.current) open(c.id); }}>
+        <Icon name={c.protocol}/><span className="row-name">{c.name}</span><small>{c.protocol}</small>{c.favorite && <Icon name="star"/>}
+      </button>
+      <button aria-label={`${t.actions}: ${c.name}`} aria-expanded={menu === c.id} onClick={() => setMenu(menu === c.id ? null : c.id)}><Icon name="more"/></button>
+      {menu === c.id && <div className="row-menu" onKeyDown={e => { if (e.key === "Escape") { setMenu(null); (e.currentTarget.previousElementSibling as HTMLElement)?.focus(); } }}>
+        <button disabled={blocked} onClick={() => { edit({kind:"connection", value:{...c}}); setMenu(null); }}>{t.edit} / {t.move}</button>
+        <button disabled={blocked} aria-pressed={c.favorite} onClick={() => { commit({...data, connections:data.connections.map(x => x.id === c.id ? {...x, favorite:!x.favorite} : x)}); setMenu(null); }}>{t.favorites}</button>
+        <button disabled={blocked} onClick={() => { if (window.confirm(t.confirmConnection) && commit({...data, connections:data.connections.filter(x => x.id !== c.id)})) close(c.id); setMenu(null); }}>{t.delete}</button>
+      </div>}
+    </div>;
+  }
   function tree(parent: string | null, depth = 0): React.ReactNode {
-    return data.groups
-      .filter((g) => g.parentId === parent)
-      .map((g) => (
-        <div key={g.id}>
-          <div className="group-row" style={{ paddingLeft: depth * 12 }}>
-            <button
-              aria-label={g.name}
-              aria-expanded={!folded.has(g.id)}
-              onClick={() =>
-                setFolded((prev) => {
-                  const n = new Set(prev);
-                  n.has(g.id) ? n.delete(g.id) : n.add(g.id);
-                  return n;
-                })
-              }
-            >
-              {folded.has(g.id) ? "▸" : "▾"}
-            </button>
-            <button
-              className={filter === g.id ? "selected grow" : "grow"}
-              onClick={() => setFilter(g.id)}
-            >
-              ▱ {g.name}
-            </button>
-            <button
-              disabled={blocked}
-              aria-label={`${t.edit}: ${g.name}`}
-              onClick={() => edit({ kind: "group", value: { ...g } })}
-            >
-              ✎
-            </button>
-            <button
-              disabled={blocked}
-              aria-label={`${t.delete}: ${g.name}`}
-              onClick={() => {
-                if (
-                  window.confirm(t.confirmGroup) &&
-                  commit(removeGroup(data, g.id))
-                )
-                  setFilter("all");
-              }}
-            >
-              ×
-            </button>
-          </div>
-          {!folded.has(g.id) && tree(g.id, depth + 1)}
+    return <>
+      {data.groups.filter(g => g.parentId === parent).map(g => <div key={g.id}>
+        <div className={`group-row ${dropTarget === g.id ? "drop-target" : ""}`} style={{paddingLeft:depth * 14}} {...target(g.id)}>
+          <button aria-label={g.name} aria-expanded={!folded.has(g.id)} onClick={() => setFolded(prev => { const n = new Set(prev); n.has(g.id) ? n.delete(g.id) : n.add(g.id); return n; })}><span className={!folded.has(g.id) ? "turned" : ""}><Icon name="chevron"/></span></button>
+          <button className="grow" title={path(g.id)} onClick={() => { setFilter(g.id); setFolded(prev => { const n = new Set(prev); n.delete(g.id); return n; }); }}><Icon name="folder"/><span className="row-name">{g.name}</span></button>
+          <button aria-label={`${t.actions}: ${g.name}`} aria-expanded={menu === g.id} onClick={() => setMenu(menu === g.id ? null : g.id)}><Icon name="more"/></button>
         </div>
-      ));
+        {menu === g.id && <div className="row-menu" onKeyDown={e => { if (e.key === "Escape") setMenu(null); }}>
+          <button disabled={blocked} onClick={() => {edit({kind:"group",value:{...g}});setMenu(null);}}>{t.edit}</button>
+          <button disabled={blocked} onClick={() => {if(window.confirm(t.confirmGroup) && commit(removeGroup(data,g.id))) setFilter("all");setMenu(null);}}>{t.delete}</button>
+        </div>}
+        {(!folded.has(g.id) || query || filter === "favorites") && tree(g.id, depth + 1)}
+      </div>)}
+      {connections.filter(c => c.groupId === parent).map(c => connectionRow(c, depth))}
+    </>;
   }
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
@@ -317,7 +354,7 @@ export default function App() {
             aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)}
           >
-            ☰
+            <Icon name="menu"/>
           </button>
         </header>
         {expanded && (
@@ -345,7 +382,7 @@ export default function App() {
                     })
                   }
                 >
-                  ＋ {t.add}
+                  <Icon name="plus"/> {t.add}
                 </button>
                 <button
                   disabled={blocked}
@@ -362,7 +399,7 @@ export default function App() {
                     })
                   }
                 >
-                  ＋ {t.group}
+                  <Icon name="plus"/> {t.group}
                 </button>
               </div>
               <input
@@ -382,69 +419,18 @@ export default function App() {
                 className={filter === "favorites" ? "selected" : ""}
                 onClick={() => setFilter("favorites")}
               >
-                ☆ {t.favorites}
+                <Icon name="star"/> {t.favorites}
               </button>
-              {tree(null)}
+
             </div>
-            <div className="connection-list">
-              {connections.map((c) => (
-                <article className="connection" key={c.id}>
-                  <button
-                    className="connection-open"
-                    onClick={() => open(c.id)}
-                  >
-                    <span className="protocol">{c.protocol}</span>
-                    <strong>{c.name}</strong>
-                    <small>
-                      {c.host}:{c.port}
-                    </small>
-                  </button>
-                  <div className="actions">
-                    <button
-                      disabled={blocked}
-                      aria-label={`${t.favorites}: ${c.name}`}
-                      aria-pressed={c.favorite}
-                      onClick={() =>
-                        commit({
-                          ...data,
-                          connections: data.connections.map((x) =>
-                            x.id === c.id ? { ...x, favorite: !x.favorite } : x,
-                          ),
-                        })
-                      }
-                    >
-                      {c.favorite ? "★" : "☆"}
-                    </button>
-                    <button
-                      disabled={blocked}
-                      aria-label={`${t.edit}: ${c.name}`}
-                      onClick={() =>
-                        edit({ kind: "connection", value: { ...c } })
-                      }
-                    >
-                      ✎
-                    </button>
-                    <button
-                      disabled={blocked}
-                      aria-label={`${t.delete}: ${c.name}`}
-                      onClick={() => {
-                        if (
-                          window.confirm(t.confirmConnection) &&
-                          commit({
-                            ...data,
-                            connections: data.connections.filter(
-                              (x) => x.id !== c.id,
-                            ),
-                          })
-                        )
-                          close(c.id);
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                </article>
-              ))}
+            <div className="connection-list" onDragOver={e => {
+              if (!dragId) return;
+              const bounds = e.currentTarget.getBoundingClientRect();
+              if (e.clientY < bounds.top + 40) e.currentTarget.scrollTop -= 14;
+              if (e.clientY > bounds.bottom - 40) e.currentTarget.scrollTop += 14;
+            }}>
+              <div className={`root-target ${dropTarget === "root" ? "drop-target" : ""}`} {...target(null)}><Icon name="folder"/>{t.root}</div>
+              {tree(null)}
               {!connections.length && (
                 <p className="muted">
                   {data.connections.length ? t.none : t.empty}
@@ -564,7 +550,7 @@ export default function App() {
             <p>{t.unavailable}</p>
           </section>
         )}
-        <div className="status">{t.stage}</div>
+        <div className="status">{t.stage}<span role="status"> {notice}</span></div>
       </main>
       <dialog
         ref={dialog}

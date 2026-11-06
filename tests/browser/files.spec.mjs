@@ -7,7 +7,7 @@ async function open(page, language='en') {
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
@@ -18,8 +18,13 @@ async function open(page, language='en') {
         if (cmd==='ssh_connect') {window.fixture.session=args.id; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
-        if (cmd==='files_list') return {path:args.destination ? '/remote' : '/local',entries:[{name:'sample.bin',kind:'file',size:128,modified:null,permissions:384}]};
-        if (cmd==='files_transfer') throw new Error('Unexpected transfer without confirmation/collision checks');
+        if (cmd==='files_list') return {path:args.destination ? '/remote' : '/local',
+          entries:args.destination && window.fixture.emptyRemote ? [] :
+            [{name:'sample.bin',kind:'file',size:128,modified:null,permissions:384}]};
+        if (cmd==='files_transfer') {
+          if (window.fixture.allowTransfer) return;
+          throw new Error('Unexpected transfer without confirmation/collision checks');
+        }
       },
     };
   },{language});
@@ -157,4 +162,25 @@ test('right click and keyboard context menu are non-destructive until confirmed'
   expect(calls[0].request).toMatchObject({
     action:'rename',name:'sample.bin',newName:'renamed-from-menu.bin',expectedKind:'file',destination:null,
   });
+});
+
+test('successful upload and mutation refresh only their destination panes',async({page}) => {
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;window.fixture.emptyRemote=true;window.fixture.allowTransfer=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('button',{name:'sample.bin',exact:true}).click();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload → remote'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).length)).toBe(2);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'))).toHaveLength(1);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&!c.destination))).toHaveLength(1);
+  page.once('dialog',dialog=>dialog.accept('new-dir'));
+  await remote.getByRole('button',{name:'New folder'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).length)).toBe(3);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'&&c.request?.action==='mkdir'))).toHaveLength(1);
 });

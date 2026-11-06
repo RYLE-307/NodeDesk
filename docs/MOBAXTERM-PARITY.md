@@ -112,3 +112,8 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 3. Windows/Linux тестируются раздельно: Windows OpenSSH/ConPTY, FreeRDP/RDP engine, X server, Unix tools; Linux PTY, X11/Wayland/Xwayland и системные VPN. Наличие библиотеки не равно реализованной функции.
 4. Не сохранять SSH/RDP/VPN пароли, ключи, токены или логи с секретами в WebView storage. Разрешать сохранение только в отдельном защищённом vault после аудита, opt-in и явного управления экспортом.
 5. Перепроверять официальные источники при планировании каждой подсистемы; эта таблица не гарантирует, что перечислены **абсолютно все** настройки каждой редакции MobaXterm.
+
+
+### SSH-06 implementation note (PR #4, pending manual acceptance)
+
+Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implemented. Password is not stored, but passes transiently through terminal input IPC. This is **not** proof of a successful password login on Arch/Windows; remain in review status until wrong/correct password, PAM, cancellation and strict host-key checks are confirmed. See [#5](https://github.com/RYLE-307/NodeDesk/issues/5).

@@ -29,7 +29,7 @@ impl Logins {
     pub fn contains(&self,id:&str) -> bool {self.0.lock().map(|s|s.contains_key(id)).unwrap_or(false)}
     pub fn write(&self,id:&str,mut data:String) -> Result<()> {
         let login=self.0.lock().map_err(|_|"Login lock failed")?.get(id).cloned().ok_or("Login closed")?;
-        if data.len()>65536 || !login.alive.load(Ordering::SeqCst) { data.zeroize(); return Err("Login input rejected".into()); }
+        if data.len()>65536 || !login.alive.load(Ordering::SeqCst) || login.ready() { data.zeroize(); return Err("Login input rejected (closed or already authenticated)".into()); }
         login.input.try_send(data).map_err(|e| {let (mpsc::TrySendError::Full(mut data)|mpsc::TrySendError::Disconnected(mut data))=e;data.zeroize();"Login input queue full or closed".into()})
     }
     pub fn ready(&self,id:&str,host:&str,port:u16,user:&str)->bool {self.get(id,host,port,user).map(|s|s.ready()).unwrap_or(false)}
@@ -154,12 +154,28 @@ fn authenticate(login:&Login,prompt:&mut Prompter,files:&[PathBuf],method:&str)-
     Ok(session)
 }
 pub type StreamClient=Client<Box<dyn Read+Send>,Box<dyn Write+Send>>;
+struct NativeStream {channel:ssh2::Channel,login:Arc<Login>}
+impl Read for NativeStream {
+    fn read(&mut self,bytes:&mut [u8])->std::io::Result<usize> {
+        let result=self.channel.read(bytes);
+        if result.as_ref().map(|n|*n==0).unwrap_or(true) {self.login.close();}
+        result
+    }
+}
+impl Write for NativeStream {
+    fn write(&mut self,bytes:&[u8])->std::io::Result<usize> {
+        let result=self.channel.write(bytes);if result.is_err() {self.login.close();}result
+    }
+    fn flush(&mut self)->std::io::Result<()> {let result=self.channel.flush();if result.is_err() {self.login.close();}result}
+}
 pub fn subsystem(login:&Arc<Login>)->Result<StreamClient> {
     if !login.ready() {return Err("Complete Files login first; reconnect after cancellation".into());}
     let session=login.session.lock().map_err(|_|"Session lock failed")?.as_ref().cloned().ok_or("Login closed")?;
-    let mut channel=session.channel_session().map_err(|_|"Cannot open SSH channel")?;
-    channel.subsystem("sftp").map_err(|_|"SFTP subsystem unavailable")?;
-    Client::new(Box::new(channel.clone()) as Box<dyn Read+Send>,Box::new(channel) as Box<dyn Write+Send>)
+    let mut channel=session.channel_session().map_err(|_|{login.close();"Cannot open SSH channel"})?;
+    channel.subsystem("sftp").map_err(|_|{login.close();"SFTP subsystem unavailable"})?;
+    let reader=NativeStream {channel:channel.clone(),login:login.clone()};
+    let writer=NativeStream {channel,login:login.clone()};
+    Client::new(Box::new(reader) as Box<dyn Read+Send>,Box::new(writer) as Box<dyn Write+Send>)
 }
 
 #[cfg(test)]

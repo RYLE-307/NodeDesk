@@ -97,6 +97,20 @@ class FS(paramiko.SFTPServerInterface):
         except OSError as e:
             return paramiko.SFTPServer.convert_errno(e.errno)
 
+    def mkdir(self, path, attr):
+        try:
+            self.path(path).mkdir()
+            return paramiko.SFTP_OK
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
+    def rmdir(self, path):
+        try:
+            self.path(path).rmdir()
+            return paramiko.SFTP_OK
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
 
 def serve(client):
     transport = paramiko.Transport(client)

@@ -1,7 +1,8 @@
 # План разработки
 
 > Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux password/PAM via OpenSSH auth bridge; Windows key/agent. No mkdir/rename/delete/DnD.
+> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive; direct key/agent on both.
+> mkdir/rename/delete, context menus and a bounded 50-file transfer queue are implemented; manual acceptance pending.
 > Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
 
 ## v0.2 alpha
@@ -70,12 +71,12 @@ First real SFTP step: user-initiated native OpenSSH `sftp` process attached to a
 Two panels, real structured SFTP v3 listing/navigation, binary upload/download,
 nonrecursive mkdir, rename, delete (with confirmation), and internal single-file
 drag/drop, with no overwrite, progress/cancel. GUI: Linux password/PAM via
-OpenSSH auth bridge; Windows key/agent. Windows password/PAM and bulk operations
-remain planned. Issue #9 remains open pending manual Arch/Windows acceptance.
+OpenSSH auth bridge; Windows native password/keyboard-interactive. Recursive and
+background operations remain planned. Issue #9 remains open pending manual Arch/Windows acceptance.
 
 Две панели, настоящий SFTP v3, навигация, бинарная передача без перезаписи,
 создание папок, переименование, удаление с подтверждением и Drag & Drop одного
-файла. GUI Linux: пароль/PAM через OpenSSH. Windows: ключ/агент.
+файла. GUI Linux: пароль/PAM через OpenSSH. Windows: native пароль/PAM или ключ/агент.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 
@@ -101,11 +102,19 @@ backend as the sequential transfer buttons. This is **not** a persistent
 background queue, and transfers that finished before cancellation are not
 rolled back. Pending newest CI and manual desktop testing.
 
-### Windows SFTP GUI capability handling (v0.5 review)
 
-The GUI now obtains `interactiveLogin` and `keyAgent` capabilities from
-Rust rather than guessing the OS. Native Windows defaults to the supported
-key/agent mode with the password/PAM checkbox disabled and explanatory text;
-Linux retains its private interactive OpenSSH bridge. The SSH/SFTP **terminal**
-tabs still support password/PAM on both targets. No Windows GUI password
-claim until a new secure backend adapter is implemented and tested.
+### Windows native GUI authentication — implemented review slice
+
+Rust ssh2/libssh2 now provides password and keyboard-interactive for Windows
+Files, with strict previously trusted host-key verification before credentials,
+hidden bounded input, destination-bound sessions and socket cancellation.
+OpenSSH consoles, Linux ControlMaster login and direct key/agent are retained.
+Native cancellation closes the Windows Files login and requires reconnect.
+Unknown/changed/revoked keys fail closed; new trust uses the OpenSSH console.
+No saved secrets, shell/askpass or credentials in argv/environment/logs.
+
+Linux CI uses real isolated sshd/PAM; Windows CI uses an independent loopback
+SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates,
+password-change and mixed-method MFA chains remain unsupported. GUI acceptance
+on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
+accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).

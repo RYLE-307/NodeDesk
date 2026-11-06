@@ -128,12 +128,12 @@ Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implem
 
 Two panels, binary SFTP v3 listing/navigation and upload/download; bounded
 mkdir, no-overwrite rename, delete with confirmation, internal one-file drag/drop.
-GUI Linux: password/PAM via OpenSSH auth bridge; Windows key/agent.
+GUI Linux: OpenSSH password/PAM; Windows: native password/keyboard-interactive or direct OpenSSH key/agent.
 Issue #9 stays open pending full Arch/Windows acceptance.
 
 Две панели, SFTP v3, навигация, бинарная передача без перезаписи, mkdir,
 rename, удаление с подтверждением и Drag & Drop одного файла.
-GUI Linux: пароль/PAM; Windows: ключ/агент.
+GUI Linux: пароль/PAM; Windows: native пароль/keyboard-interactive или OpenSSH ключ/агент.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 
@@ -149,12 +149,19 @@ added in draft PR #10. Entire preflight fails on collision or invalid name,
 backend still prevents overwrite, and cancel stops later jobs. No recursive
 folder transfers, resume, progress across sessions or background queue.
 
-### FS-04 Windows compatibility note (v0.5 draft)
 
-Tauri/Rust now advertises file authentication capabilities to the GUI.
-The Windows OpenSSH backend currently supports direct key/agent GUI SFTP
-only; the Unix ControlMaster password bridge is not claimed on Windows.
-The UI defaults to a safe supported mode and disables the unsupported
-checkbox, with a localized message. See
-[Windows OpenSSH architecture](https://github.com/PowerShell/Win32-OpenSSH/wiki/About-Win32-OpenSSH-and-Design-Details).
-This is not full MobaXterm SFTP parity.
+### Windows native GUI authentication — implemented review slice
+
+Rust ssh2/libssh2 now provides password and keyboard-interactive for Windows
+Files, with strict previously trusted host-key verification before credentials,
+hidden bounded input, destination-bound sessions and socket cancellation.
+OpenSSH consoles, Linux ControlMaster login and direct key/agent are retained.
+Native cancellation closes the Windows Files login and requires reconnect.
+Unknown/changed/revoked keys fail closed; new trust uses the OpenSSH console.
+No saved secrets, shell/askpass or credentials in argv/environment/logs.
+
+Linux CI uses real isolated sshd/PAM; Windows CI uses an independent loopback
+SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates,
+password-change and mixed-method MFA chains remain unsupported. GUI acceptance
+on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
+accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).

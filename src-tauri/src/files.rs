@@ -425,6 +425,13 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     copy_download(&mut c,&remote,&target,&partial,&op,&events).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
     assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
+    let folder=format!("native-folder-{case}");
+    remote_mutate(&mut c,&home,&folder,MutationAction::Mkdir,None,None,&op).unwrap();
+    assert!(remote_mutate(&mut c,&home,&folder,MutationAction::Mkdir,None,None,&op).is_err());
+    remote_mutate(&mut c,&home,&folder,MutationAction::Delete,None,Some("directory"),&op).unwrap();
+    let name=format!("native-{case}.bin");let renamed=format!("renamed-{case}.bin");
+    remote_mutate(&mut c,&home,&name,MutationAction::Rename,Some(&renamed),Some("file"),&op).unwrap();
+    remote_mutate(&mut c,&home,&renamed,MutationAction::Rename,Some(&name),Some("file"),&op).unwrap();
     let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
     let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
     assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());

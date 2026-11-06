@@ -126,17 +126,18 @@ Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implem
 
 ## v0.5 SFTP GUI — review slice / срез для проверки
 
-Two panels, real structured SFTP v3 listing/navigation and binary upload/download
-with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. No mkdir, rename,
-delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
-is pending; no merge before verification.
+Two panels, binary SFTP v3 listing/navigation and upload/download; bounded
+mkdir, no-overwrite rename, delete with confirmation, internal one-file drag/drop.
+GUI Linux: password/PAM via OpenSSH auth bridge; Windows key/agent.
+Issue #9 stays open pending full Arch/Windows acceptance.
 
-Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
-с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
+Две панели, SFTP v3, навигация, бинарная передача без перезаписи, mkdir,
+rename, удаление с подтверждением и Drag & Drop одного файла.
+GUI Linux: пароль/PAM; Windows: ключ/агент.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
 
 
 ### FS-01 / FS-04 follow-up in draft PR #10 (pending acceptance)
 
-Native SFTP v3 mkdir, rename, remove file, rmdir empty directory and internal single-file cross-pane drag/drop added, with explicit delete/transfer confirmation and backend type checks. Portable name validation, no-overwrite checks and cancellation remain. Local regular files can be renamed via exclusive hardlink/unlink on supporting filesystems; local directory rename is intentionally not implemented yet. No recursive operations, multi-select, external OS drag/drop or transfer queue. **Not marked complete** until latest CI and real Arch/Windows GUI tests pass.
+Native SFTP v3 mkdir, rename, remove file, rmdir empty directory and internal single-file cross-pane drag/drop added, with explicit delete/transfer confirmation and backend type checks. Portable name validation, no-overwrite checks and cancellation remain. Local regular files can be renamed via exclusive hardlink/unlink on supporting filesystems; local directory rename now uses native no-replace on Linux/Windows. Context menus support right-click and Shift+F10. No recursive operations, multi-select, external OS drag/drop or transfer queue. **Not marked complete** until latest CI and real Arch/Windows GUI tests pass.

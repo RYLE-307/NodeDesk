@@ -154,6 +154,34 @@ impl<R: Read, W: Write> Client<R,W> {
         let mut b = vec![]; string(&mut b,path.as_bytes()); let p = self.request(7,b)?;
         let mut d = Self::payload(&p,105)?; let a = Attrs::read(&mut d)?; d.end()?; Ok(a)
     }
+    /// Only a canonical parent and a validated single filename may reach callers.
+    /// SFTP v3 RENAME has no overwrite flag: compliant servers reject an existing
+    /// destination. We also LSTAT it first, but concurrent hostile writers can race.
+    pub fn missing(&mut self, path: &str) -> Result<bool> {
+        let mut b = vec![]; string(&mut b,path.as_bytes());
+        let p = self.request(7,b)?;
+        if p[0] == 101 {
+            return match Self::status(&p)? {
+                2 => Ok(true),
+                code => Err(format!("SFTP status {code} checking destination")),
+            };
+        }
+        let mut d = Self::payload(&p,105)?;
+        Attrs::read(&mut d)?; d.end()?; Ok(false)
+    }
+    pub fn mkdir(&mut self, path: &str) -> Result<()> {
+        let mut b = vec![]; string(&mut b,path.as_bytes());
+        u32b(&mut b,0); // no attrs; server's umask controls new directory
+        Self::ok(&self.request(14,b)?)
+    }
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<()> {
+        let mut b = vec![]; string(&mut b,old.as_bytes()); string(&mut b,new.as_bytes());
+        Self::ok(&self.request(18,b)?)
+    }
+    pub fn remove(&mut self, path: &str, directory: bool) -> Result<()> {
+        let mut b = vec![]; string(&mut b,path.as_bytes());
+        Self::ok(&self.request(if directory {15} else {13},b)?)
+    }
     pub fn open(&mut self, path: &str, flags: u32) -> Result<Vec<u8>> {
         let mut b = vec![]; string(&mut b,path.as_bytes()); u32b(&mut b,flags);
         // New files are private; remote existing permissions are never modified.
@@ -182,6 +210,29 @@ mod tests {
         assert!(name("файл с пробелом.bin").is_ok());
         assert_eq!(join("/tmp", "a;$(x).bin").unwrap(),"/tmp/a;$(x).bin");
         assert!(path("/tmp/../etc").is_err());
+    }
+    #[test] fn mutations_use_sftp_v3_codes_and_validate_missing() {
+        // Version then one LSTAT reply "no such file" for request ID 1.
+        let mut bytes=frame(&[2,0,0,0,3]);
+        let mut status=vec![101]; u32b(&mut status,1); u32b(&mut status,2);
+        string(&mut status,b"missing"); string(&mut status,b"");
+        bytes.extend(frame(&status));
+        let mut c=Client::new(Cursor::new(bytes),Vec::new()).unwrap();
+        assert!(c.missing("/tmp/not-there").unwrap());
+        let outgoing=c.writer;
+        // INIT, then LSTAT packet.
+        assert_eq!(outgoing[4],1);
+        let init_end=9;
+        assert_eq!(outgoing[init_end+4],7);
+
+        // MKDIR must send an empty ATTRS flags value.
+        let mut stream=frame(&[2,0,0,0,3]);
+        let mut okay=vec![101]; u32b(&mut okay,1); u32b(&mut okay,0);
+        string(&mut okay,b""); string(&mut okay,b""); stream.extend(frame(&okay));
+        let mut mkdir=Client::new(Cursor::new(stream),Vec::new()).unwrap();
+        mkdir.mkdir("/tmp/newdir").unwrap();
+        let outgoing=mkdir.writer; assert_eq!(outgoing[9+4],14);
+        assert!(outgoing.ends_with(&[0,0,0,0]));
     }
     #[test] fn bounds_and_truncation() {
         for p in [vec![0;4], vec![0xff;4], frame(&[2,0,0]), frame(&[2,0,0,0,4])] {

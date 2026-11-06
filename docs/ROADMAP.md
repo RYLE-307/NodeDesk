@@ -91,3 +91,12 @@ upload/download operation. All files must pass preflight collision/type
 checks; any error or user cancellation stops the rest, and prior successful
 files remain. Manual runtime verification pending. This is not a persistent
 background queue. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+
+### v0.5 review addition: transfer visibility
+
+An ephemeral per-file transfer report, live queue position, and "Select visible
+(up to 50)" were added to the same draft PR. A selected group of files can be
+dragged between loaded panels using the same confirmation and no-overwrite
+backend as the sequential transfer buttons. This is **not** a persistent
+background queue, and transfers that finished before cancellation are not
+rolled back. Pending newest CI and manual desktop testing.

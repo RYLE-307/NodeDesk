@@ -55,9 +55,13 @@ jobs:
         run: |
           # The runner's Azure mirror can stall large WebKit downloads. Use the
           # official Ubuntu archive with normal signed repository verification.
+          # Current runner images use mirror+file indirection (runner-images #14823).
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
           for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [ -f "$source" ]; then
-              sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' "$source"
+              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$source"
             fi
           done
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update

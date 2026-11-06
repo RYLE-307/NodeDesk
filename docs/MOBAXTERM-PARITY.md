@@ -148,3 +148,13 @@ Checkbox multi-selection with a 50-file cap and one-at-a-time upload/download
 added in draft PR #10. Entire preflight fails on collision or invalid name,
 backend still prevents overwrite, and cancel stops later jobs. No recursive
 folder transfers, resume, progress across sessions or background queue.
+
+### FS-04 Windows compatibility note (v0.5 draft)
+
+Tauri/Rust now advertises file authentication capabilities to the GUI.
+The Windows OpenSSH backend currently supports direct key/agent GUI SFTP
+only; the Unix ControlMaster password bridge is not claimed on Windows.
+The UI defaults to a safe supported mode and disables the unsupported
+checkbox, with a localized message. See
+[Windows OpenSSH architecture](https://github.com/PowerShell/Win32-OpenSSH/wiki/About-Win32-OpenSSH-and-Design-Details).
+This is not full MobaXterm SFTP parity.

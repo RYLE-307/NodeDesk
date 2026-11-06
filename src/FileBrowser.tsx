@@ -59,20 +59,25 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     previous.current = next; setRemote(null); selectRemote(""); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
-  async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void) {
-    if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return; }
-    const id = crypto.randomUUID(); if (!gate.current.begin(id)) return;
+  async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
+    if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return false; }
+    const id = crypto.randomUUID(); if (!gate.current.begin(id)) return false;
     const host = JSON.stringify(destination);
+    let completed = false;
     setBusy(true); setError(""); setStatus(""); setProgress(null); setCancelling(false);
     try {
       const result = await task(id);
-      if (mounted.current && gate.current.owns(id) && previous.current === host) success(result);
+      if (mounted.current && gate.current.owns(id) && previous.current === host) {
+        success(result);
+        completed = true;
+      }
     } catch (e) { if (mounted.current && gate.current.owns(id)) setError(String(e)); }
     finally {
       // Close a late registration too if the component was destroyed during invoke.
       if (!mounted.current) void invoke("files_cancel",{id}).catch(() => {});
       if (gate.current.finish(id) && mounted.current) { setBusy(false); setCancelling(false); }
     }
+    return completed;
   }
   function list(isRemote: boolean, path: string) {
     if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
@@ -89,14 +94,19 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const target = upload ? remote! : local!;
     if (target.entries.some(e => e.name === name)) { setError(ru ? "Имя уже существует. Перезапись отключена." : "Destination name exists. Overwrite is disabled."); return; }
     if (!window.confirm(`${upload ? (ru ? "Загрузить на сервер" : "Upload to remote") : (ru ? "Скачать локально" : "Download locally")}\n${name}\n→ ${target.path}\n${ru ? "Без перезаписи" : "No overwrite"}?`)) return;
+    const targetPath = target.path;
     void run(id => {
       const events = new Channel<Progress>();
       events.onmessage = p => { if (mounted.current && gate.current.owns(id)) setProgress(p); };
       return invoke("files_transfer",{id,request:{destination,localDirectory:local!.path,remoteDirectory:remote!.path,name,upload},events});
     }, () => {
-      // Invalidate the destination after mutation; user refreshes to see current server state.
+      // Clear stale destination before reloading it from the backend.
       if (upload) { setRemote(null); selectRemote(""); } else { setLocal(null); selectLocal(""); }
-      setStatus(ru ? "Передача завершена. Обновите панель назначения." : "Transfer completed. Refresh the destination pane.");
+      setStatus(ru ? "Передача завершена" : "Transfer completed");
+    }).then(ok => {
+      // The first operation has released its gate before scheduling a refresh.
+      // Never refresh after a cancellation, closed tab or changed connection.
+      if (ok && mounted.current) list(upload,targetPath);
     });
   }
   function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
@@ -135,13 +145,16 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if (action !== "delete" && listing.entries.some(e => e.name === existing)) {
       setError(ru ? "Имя уже существует. Перезапись запрещена." : "Destination already exists; no overwrite."); return;
     }
+    const currentFolder = listing.path;
     void run(id => invoke("files_mutate",{id,request:{
       destination:isRemote ? destination : null,
-      directory:listing.path, name, action, newName,
+      directory:currentFolder, name, action, newName,
       expectedKind:entry?.kind ?? null,
     }}), () => {
       if (isRemote) {setRemote(null); selectRemote("");} else {setLocal(null); selectLocal("");}
-      setStatus(ru ? "Изменение выполнено. Обновите панель." : "Change completed. Refresh the pane.");
+      setStatus(ru ? "Изменение выполнено" : "Change completed");
+    }).then(ok => {
+      if (ok && mounted.current) list(isRemote,currentFolder);
     });
   }
   function dragFile(event: React.DragEvent, isRemote: boolean, entry: FileEntry, folder: string) {

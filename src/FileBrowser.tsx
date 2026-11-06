@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
-import { childPath, parentPath, portableName, progressPercent, transferAllowed, visibleEntries, OperationGate } from "./filesModel";
+import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, visibleEntries, OperationGate } from "./filesModel";
 import type { FileEntry, Listing, Progress } from "./filesModel";
 
 export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
@@ -16,6 +16,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
+  const [batchLocal,setBatchLocal] = useState<string[]>([]), [batchRemote,setBatchRemote] = useState<string[]>([]);
+  const [queueProgress,setQueueProgress] = useState<{index:number;total:number;name:string}|null>(null);
+  const stopQueue = useRef(false);
   const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
   const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
   const filteredRemote = useMemo(() => visibleEntries(remote?.entries ?? [],remoteFilter),[remote,remoteFilter]);
@@ -33,7 +36,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }, [authSession,interactive,profile]);
   useEffect(() => {
     if (interactive && !authReady) {
-      setRemote(null); selectRemote("");
+      stopQueue.current = true;
+      setRemote(null); selectRemote(""); setBatchRemote([]);
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
@@ -52,14 +56,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }, [context]);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {}); };
+    return () => { mounted.current = false; stopQueue.current = true; const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {}); };
   }, []);
   // Profile edits invalidate the previous host's listing. No automatic reconnect.
   const previous = useRef(JSON.stringify(destination));
   useEffect(() => {
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
-    previous.current = next; setRemote(null); selectRemote(""); setRemotePath(".");
+    previous.current = next; stopQueue.current = true; setRemote(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -85,8 +89,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   function list(isRemote: boolean, path: string) {
     if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
     void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
-      if (isRemote) { setRemote(listing); setRemotePath(listing.path); selectRemote(""); }
-      else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); }
+      if (isRemote) { setRemote(listing); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
+      else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); setBatchLocal([]); }
       setStatus(ru ? "Каталог прочитан" : "Directory loaded");
     });
   }
@@ -104,12 +108,74 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       return invoke("files_transfer",{id,request:{destination,localDirectory:local!.path,remoteDirectory:remote!.path,name,upload},events});
     }, () => {
       // Clear stale destination before reloading it from the backend.
-      if (upload) { setRemote(null); selectRemote(""); } else { setLocal(null); selectLocal(""); }
+      if (upload) { setRemote(null); selectRemote(""); setBatchRemote([]); } else { setLocal(null); selectLocal(""); setBatchLocal([]); }
       setStatus(ru ? "Передача завершена" : "Transfer completed");
     }).then(ok => {
       // The first operation has released its gate before scheduling a refresh.
       // Never refresh after a cancellation, closed tab or changed connection.
       if (ok && mounted.current) list(upload,targetPath);
+    });
+  }
+  function toggleBatch(isRemote: boolean, name: string, checked: boolean) {
+    if (busy) return;
+    const set = isRemote ? setBatchRemote : setBatchLocal;
+    set(current => {
+      if (!checked) return current.filter(item => item !== name);
+      if (current.includes(name)) return current;
+      if (current.length >= 50) {
+        setError(ru ? "Можно выбрать максимум 50 файлов." : "Select no more than 50 files.");
+        return current;
+      }
+      return [...current,name];
+    });
+  }
+  function transferSelected(upload: boolean) {
+    if (busy || gate.current.id || (interactive && !authReady)) return;
+    const source = upload ? local : remote, target = upload ? remote : local;
+    let names: string[];
+    try { names = transferBatchPlan(upload ? batchLocal : batchRemote,source,target); }
+    catch (cause) { setError(String(cause)); return; }
+    if (!source || !target) return;
+    const label = upload ? (ru ? "Загрузить на сервер" : "Upload to server") : (ru ? "Скачать локально" : "Download locally");
+    const preview = names.slice(0,12).join("\n");
+    if (!window.confirm(`${label}: ${names.length} ${ru ? "файлов" : "files"}\n→ ${target.path}\n${preview}${names.length>12?"\n…":""}\n${ru ? "Без перезаписи. Продолжить?" : "No overwrite. Continue?"}`)) return;
+    stopQueue.current = false;
+    let completed = 0;
+    const targetPath = target.path;
+    const request = {destination,localDirectory:local!.path,remoteDirectory:remote!.path,upload};
+    void run(async id => {
+      for (let index=0; index<names.length; index++) {
+        if (stopQueue.current || !mounted.current || previous.current !== JSON.stringify(destination)) {
+          throw new Error(ru ? "Очередь отменена." : "Transfer queue cancelled.");
+        }
+        const name = names[index];
+        setQueueProgress({index:index+1,total:names.length,name});
+        const events = new Channel<Progress>();
+        events.onmessage = value => {
+          if (mounted.current && gate.current.owns(id) && !stopQueue.current) setProgress(value);
+        };
+        try {
+          await invoke("files_transfer",{id,request:{...request,name},events});
+        } catch (cause) {
+          throw new Error(`${name}: ${String(cause)}`);
+        }
+        completed++;
+        // The same backend operation ID is registered/released per file.
+        // No concurrent file transfers, no retry and no continuation after error.
+      }
+    }, () => {
+      if (upload) {setRemote(null);selectRemote("");setBatchRemote([]);}
+      else {setLocal(null);selectLocal("");setBatchLocal([]);}
+      setStatus(ru ? `Передано файлов: ${completed}/${names.length}` : `Files transferred: ${completed}/${names.length}`);
+    }).then(ok => {
+      setQueueProgress(null);
+      if (!mounted.current || !completed) return;
+      if (ok) list(upload,targetPath);
+      else {
+        // Some files were committed before the error/cancel; do not present an outdated listing.
+        if (upload) {setRemote(null);selectRemote("");setBatchRemote([]);}
+        else {setLocal(null);selectLocal("");setBatchLocal([]);}
+      }
     });
   }
   function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
@@ -154,7 +220,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       directory:currentFolder, name, action, newName,
       expectedKind:entry?.kind ?? null,
     }}), () => {
-      if (isRemote) {setRemote(null); selectRemote("");} else {setLocal(null); selectLocal("");}
+      if (isRemote) {setRemote(null); selectRemote(""); setBatchRemote([]);} else {setLocal(null); selectLocal(""); setBatchLocal([]);}
       setStatus(ru ? "Изменение выполнено" : "Change completed");
     }).then(ok => {
       if (ok && mounted.current) list(isRemote,currentFolder);
@@ -179,13 +245,15 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     } catch { /* ignore external and invalid drops */ }
   }
   async function cancel() {
+    stopQueue.current = true;
     const id = gate.current.id; if (!id) return; setCancelling(true);
-    try { await invoke("files_cancel",{id}); } catch(e) { setError(String(e)); }
+    try { await invoke("files_cancel",{id}); } catch(e) { if (!queueProgress) setError(String(e)); }
   }
   function panel(isRemote: boolean) {
     const listing = isRemote ? remote : local, draft = isRemote ? remotePath : localPath;
     const selection = isRemote ? remoteSelection : localSelection, select = isRemote ? selectRemote : selectLocal;
     const filter = isRemote ? remoteFilter : localFilter, visible = isRemote ? filteredRemote : filteredLocal;
+    const chosen = isRemote ? batchRemote : batchLocal;
     const title = isRemote ? (ru ? "Удалённая FS" : "Remote filesystem") : (ru ? "Локальная FS" : "Local filesystem");
     const kinds = ru ? {file:"Файл",directory:"Папка",symlink:"Ссылка",other:"Другой"} : {file:"File",directory:"Folder",symlink:"Link",other:"Other"};
     return <section className={`files-panel ${dropTarget === (isRemote ? "remote" : "local") ? "files-drop-target" : ""}`}
@@ -209,9 +277,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         placeholder={ru ? "Фильтр по имени…" : "Filter by filename…"}
         value={filter} disabled={!listing || busy}
         onChange={event => {
-          if (isRemote) { setRemoteFilter(event.target.value); selectRemote(""); }
-          else { setLocalFilter(event.target.value); selectLocal(""); }
+          if (isRemote) { setRemoteFilter(event.target.value); selectRemote(""); setBatchRemote([]); }
+          else { setLocalFilter(event.target.value); selectLocal(""); setBatchLocal([]); }
         }}/>
+      <div className="files-multiselect">
+        <span>{ru ? "Выбрано для передачи" : "Selected for transfer"}: {chosen.length}/50</span>
+        <button type="button" disabled={!listing || busy || chosen.length===0}
+          onClick={() => (isRemote ? setBatchRemote : setBatchLocal)([])}>{ru ? "Снять выделение" : "Clear selection"}</button>
+      </div>
       <div className="files-ops">
         <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
@@ -220,7 +293,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       <div className="files-table-scroll" onContextMenu={event => {
         if (event.target instanceof Element && event.target.closest("tr")) return;
         event.preventDefault(); showContext(isRemote,null,event.clientX,event.clientY);
-      }}><table><thead><tr><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
+      }}><table><thead><tr><th>{ru ? "Выбор" : "Select"}</th><th>{ru ? "Имя" : "Name"}</th><th>{ru ? "Тип" : "Type"}</th><th>{ru ? "Байт" : "Bytes"}</th><th>{ru ? "Изменён" : "Modified"}</th><th>{ru ? "Права" : "Mode"}</th></tr></thead>
         <tbody>{listing && visible.map((e: FileEntry) => <tr key={e.name} className={selection === e.name ? "selected" : ""}
           draggable={!busy && e.kind === "file" && portableName(e.name)}
           onDragStart={event => dragFile(event,isRemote,e,listing.path)}
@@ -238,6 +311,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
             }
           }}
         >
+          <td><input type="checkbox"
+            aria-label={`${ru ? "Выбрать для передачи" : "Select for transfer"}: ${e.name}`}
+            checked={chosen.includes(e.name)}
+            disabled={busy || e.kind !== "file" || !portableName(e.name)}
+            onChange={event => toggleBatch(isRemote,e.name,event.target.checked)}/></td>
           <td><button disabled={busy || !portableName(e.name)} aria-pressed={selection === e.name} onClick={() => select(e.name)} onDoubleClick={() => {if (e.kind === "directory") list(isRemote,childPath(listing.path,e.name,isRemote));}} title={e.name}>{e.name}</button>
             {e.kind === "directory" && <button disabled={busy || !portableName(e.name)} aria-label={`${ru ? "Открыть папку" : "Open folder"}: ${e.name}`} onClick={() => list(isRemote,childPath(listing.path,e.name,isRemote))}>↳</button>}</td>
           <td>{kinds[e.kind]}</td><td>{e.size ?? "—"}</td><td>{e.modified == null ? "—" : new Date(e.modified * 1000).toLocaleString(ru ? "ru-RU" : "en-US")}</td><td>{e.permissions == null ? "—" : (e.permissions & 0o7777).toString(8)}</td>
@@ -254,8 +332,13 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     <div className="files-actions">
       <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>
       <button disabled={!transferAllowed(remote?.entries.find(e => e.name === remoteSelection),local,remote,busy)} onClick={() => transfer(false)}>{ru ? "← Скачать локально" : "← Download locally"}</button>
+      <button disabled={!batchLocal.length || busy || (interactive && !authReady) || !local || !remote}
+        onClick={() => transferSelected(true)}>{ru ? `Загрузить выбранные (${batchLocal.length})` : `Upload selected (${batchLocal.length})`}</button>
+      <button disabled={!batchRemote.length || busy || (interactive && !authReady) || !local || !remote}
+        onClick={() => transferSelected(false)}>{ru ? `Скачать выбранные (${batchRemote.length})` : `Download selected (${batchRemote.length})`}</button>
       <button disabled={!busy || cancelling} onClick={() => void cancel()}>{cancelling ? (ru ? "Отменяется…" : "Cancelling…") : (ru ? "Отменить операцию" : "Cancel operation")}</button>
     </div>
+    {queueProgress && <p role="status">{ru ? "Очередь" : "Queue"}: ${queueProgress.index}/${queueProgress.total} — ${queueProgress.name}</p>}
     {progress && <div className="files-progress"><progress aria-label={ru ? "Передано" : "Transferred"} max={100} value={progressPercent(progress)}/><span>{progress.bytes} / {progress.total ?? "?"} {ru ? "байт" : "bytes"}</span></div>}
     {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
     <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>

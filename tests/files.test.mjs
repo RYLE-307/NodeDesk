@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, OperationGate } from "../src/filesModel.ts";
+import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, startBatch, updateBatchItem, finishBatch, OperationGate } from "../src/filesModel.ts";
 
 test("reject traversal, Windows devices, alternate streams and control characters", () => {
   for (const name of ["", ".", "..", "a/b", "a\\b", "x:y", "NUL.txt", "COM1", "CONOUT$", "file.", "x\n", "\x1b[31m", "x*"]) {
@@ -75,4 +75,19 @@ test("bounded multi-file transfer plan rejects entire unsafe batches", () => {
   assert.throws(()=>transferBatchPlan(["a.bin","b.bin"],local,
     {...remote,entries:[{name:"b.bin",kind:"file"}]}),/overwrite/);
   assert.throws(()=>transferBatchPlan(["a.bin"],null,remote),/Load both/);
+});
+
+test("ephemeral transfer report classifies completed, failed and not-started items",()=>{
+  const names=["a.bin","b.bin","c.bin"];
+  const original=startBatch(names);
+  assert.deepEqual(original.map(item=>item.state),["queued","queued","queued"]);
+  const first=updateBatchItem(original,0,"active");
+  const done=updateBatchItem(first,0,"done");
+  const second=updateBatchItem(done,1,"failed");
+  const finished=finishBatch(second);
+  assert.deepEqual(finished.map(item=>item.state),["done","failed","skipped"]);
+  assert.deepEqual(original.map(item=>item.state),["queued","queued","queued"],"immutable history");
+  assert.equal(updateBatchItem(done,-1,"done").length,3);
+  assert.equal(updateBatchItem(done,999,"done").length,3);
+  assert.deepEqual(finishBatch(updateBatchItem(done,1,"active")).map(item=>item.state),["done","cancelled","skipped"]);
 });

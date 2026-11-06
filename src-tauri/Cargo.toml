@@ -18,7 +18,7 @@ tauri = { version = "2", features = [] }
 
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
-ssh2 = { version = "0.9.6", features = ["vendored-openssl"] }
+ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
 base64 = "0.22"
 zeroize = "1"
 

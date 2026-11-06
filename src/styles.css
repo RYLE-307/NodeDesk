@@ -422,3 +422,14 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-table-scroll td:first-child, .files-table-scroll th:first-child { width:46px; text-align:center; }
 .files-table-scroll input[type="checkbox"] { accent-color:var(--accent); cursor:pointer; }
 .files-actions { flex-wrap:wrap; }
+
+/* Session-only transfer report, deliberately not persisted or logged. */
+.files-batch-report { border:1px solid var(--line); border-radius:6px; padding:7px 10px; font-size:12px; max-height:185px; overflow:auto; }
+.files-batch-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:5px; }
+.files-batch-heading button { font-size:11px; padding:4px 7px; }
+.files-batch-report ol { margin:0; padding-left:22px; }
+.files-batch-report li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 0; }
+.files-batch-report li span:first-child { overflow-wrap:anywhere; min-width:0; }
+.files-batch-report li span:last-child { flex-shrink:0; }
+.files-batch-done span:last-child { color:var(--accent); }
+.files-batch-failed span:last-child, .files-batch-cancelled span:last-child { color:var(--danger); }

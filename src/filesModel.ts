@@ -33,3 +33,15 @@ export class OperationGate {
   owns(id: string): boolean { return this.id === id; }
   finish(id: string): boolean { if (!this.owns(id)) return false; this.id = null; return true; }
 }
+
+/** Client-side view only: never changes the authoritative loaded directory. */
+export function visibleEntries(entries: FileEntry[], filter: string): FileEntry[] {
+  const needle = filter.trim().toLocaleLowerCase();
+  return entries
+    .filter(entry => !needle || entry.name.toLocaleLowerCase().includes(needle))
+    .sort((a,b) => {
+      const aFolder = a.kind === "directory", bFolder = b.kind === "directory";
+      if (aFolder !== bFolder) return aFolder ? -1 : 1;
+      return a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:"base"});
+    });
+}

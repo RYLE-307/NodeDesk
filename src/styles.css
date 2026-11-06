@@ -360,3 +360,11 @@ footer select { padding: 4px 6px; font-size: 12px; }
   .app, .app.collapsed { grid-template-columns: min(var(--sidebar-width, 310px), 55vw) 7px minmax(0, 1fr); }
   .app.collapsed { grid-template-columns: 76px 7px minmax(0, 1fr); }
 }
+
+/* Real SFTP console lives alongside SSH in the same saved connection, no auto-connect. */
+.ssh-tools-workspace { display:flex; flex-direction:column; height:100%; min-height:0; }
+.ssh-tool-switcher { display:flex; gap:4px; padding:4px 8px; border-bottom:1px solid var(--line); }
+.ssh-tool-switcher button { padding:5px 12px; font-size:12px; }
+.ssh-tool-switcher button[aria-selected="true"] { color:var(--accent); background:var(--surface); }
+.ssh-tool-panel { flex:1; min-height:0; overflow:hidden; }
+.ssh-tool-panel[hidden] { display:none; }

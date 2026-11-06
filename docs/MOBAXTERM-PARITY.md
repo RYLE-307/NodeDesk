@@ -117,3 +117,8 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 ### SSH-06 implementation note (PR #4, pending manual acceptance)
 
 Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implemented. Password is not stored, but passes transiently through terminal input IPC. This is **not** proof of a successful password login on Arch/Windows; remain in review status until wrong/correct password, PAM, cancellation and strict host-key checks are confirmed. See [#5](https://github.com/RYLE-307/NodeDesk/issues/5).
+
+## SFTP delivery split (v0.4 draft)
+
+- **FS-00 (partial implementation / manual acceptance pending):** user-launched OpenSSH `sftp` in a built-in PTY console with remote navigation and `get` / `put`. Requires OS OpenSSH with the `sftp` executable. Safe host-key policy retained. Passwords are not saved. No automatic sessions.
+- **FS-01/FS-04 (still planned):** GUI remote filesystem browser alongside SSH, independent local folder, two-pane drag-and-drop, progress/error/cancel, permissions, symlinks, timestamp and filename correctness, background transfer and remote editor. An interactive command-line `sftp>` is not equivalent to MobaXterm's SFTP browser.

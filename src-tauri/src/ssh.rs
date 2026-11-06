@@ -14,6 +14,10 @@ impl Drop for Session { fn drop(&mut self) { if let Ok(mut child) = self.child.l
 #[serde(rename_all = "camelCase")]
 pub enum AuthMode { Auto, Key, Password }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalKind { Ssh, Sftp }
+
 #[derive(Default)]
 pub struct Sessions(Mutex<HashMap<String, Session>>);
 #[derive(Clone, Serialize)]
@@ -56,14 +60,34 @@ fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Ve
     args.extend([port.to_string(), "-l".into(), username.into(), host.into()]);
     Ok(args)
 }
+fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
+    // Reuse the validated OpenSSH destination and security/authentication settings.
+    // sftp accepts -P for the port, not ssh's -p; its login is one user@host argument.
+    let ssh_args = arguments(host, port, username, auth)?;
+    let option_end = ssh_args.len().checked_sub(5).ok_or("Invalid SSH arguments")?;
+    let mut args: Vec<String> = ssh_args[..option_end].iter()
+        .filter(|value| value.as_str() != "-tt")
+        .cloned()
+        .collect();
+    args.push("-P".into());
+    args.push(port.to_string());
+    let destination_host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else { host.to_string() };
+    args.push(format!("{username}@{destination_host}"));
+    Ok(args)
+}
 #[tauri::command]
-pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
-    let args = arguments(&host, port, &username, auth)?;
+    let (program, args) = match kind {
+        TerminalKind::Ssh => ("ssh", arguments(&host, port, &username, auth)?),
+        TerminalKind::Sftp => ("sftp", sftp_arguments(&host, port, &username, auth)?),
+    };
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
     if sessions.contains_key(&id) || sessions.len() >= 16 { return Err("Session already exists or limit reached".into()); }
     let pair = native_pty_system().openpty(size(cols, rows)?).map_err(|e| e.to_string())?;
-    let mut command = CommandBuilder::new("ssh");
+    let mut command = CommandBuilder::new(program);
     command.args(args);
     command.env("TERM", "xterm-256color");
     command.env("SSH_ASKPASS_REQUIRE", "never");
@@ -129,6 +153,25 @@ mod tests {
                 assert!(args.contains(&flag), "missing {flag:?} for {mode:?}");
             }
             assert!(!args.iter().any(|a| a.contains("StrictHostKeyChecking=no") || a.contains("Password=secret") || a.contains("ProxyCommand=")));
+        }
+    }
+    #[test]
+    fn sftp_uses_validated_openssh_options_and_port_syntax() {
+        let args = sftp_arguments("example.com", 2222, "admin", AuthMode::Password).unwrap();
+        assert_eq!(args[0..2], ["-F", "none"]);
+        assert!(!args.contains(&"-tt".into()));
+        for option in [
+            "-oStrictHostKeyChecking=ask",
+            "-oPasswordAuthentication=yes",
+            "-oKbdInteractiveAuthentication=yes",
+            "-oPubkeyAuthentication=no",
+            "-oForwardAgent=no",
+            "-oEscapeChar=none",
+        ] { assert!(args.contains(&option.into()), "missing {option}"); }
+        assert_eq!(&args[args.len()-3..], ["-P", "2222", "admin@example.com"]);
+        assert_eq!(sftp_arguments("::1", 22, "root", AuthMode::Key).unwrap().last().unwrap(), "root@[::1]");
+        for invalid in ["-oProxyCommand=evil", "evil host", "host; touch /tmp/test"] {
+            assert!(sftp_arguments(invalid, 22, "root", AuthMode::Auto).is_err());
         }
     }
     #[test] fn dimensions() { assert!(size(0,24).is_err()); assert!(size(80,24).is_ok()); }

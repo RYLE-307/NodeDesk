@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SshTerminal } from "./SshTerminal";
+import { SshWorkspace } from "./SshTerminal";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -411,7 +411,7 @@ export default function App() {
   }
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
-    return c?.protocol === "SSH" ? <SshTerminal connection={c} language={data.language}/> : c ? (
+    return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}

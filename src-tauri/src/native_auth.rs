@@ -235,7 +235,8 @@ mod tests {
             let result=authenticate(&login,&mut prompt,&[PathBuf::from(&dir).join(known)],method);
             let trusted=known=="trusted-gui" || known=="trusted-hashed";
             let expect=valid && trusted;
-            assert_eq!(result.is_ok(),expect,"native auth case {case}");
+            // All adapter errors are fixed, secret-free stage descriptions.
+            assert_eq!(result.is_ok(),expect,"native auth case {case}: {}",result.as_ref().err().map(String::as_str).unwrap_or("authenticated"));
             let output=String::from_utf8(seen.lock().unwrap().clone()).unwrap();assert!(!output.contains(&secret));
             if !trusted {assert!(output.is_empty(),"trust must precede any credential prompt");}
             if let Ok(session)=result {

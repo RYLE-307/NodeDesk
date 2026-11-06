@@ -22,8 +22,8 @@ secret = secrets.token_hex(24)
 user = 'ndfixture'
 (root / 'auth-user').write_text(user)
 (root / 'auth-secret').write_text(secret)
-key = paramiko.ECDSAKey.generate()
-other = paramiko.ECDSAKey.generate()
+key = paramiko.RSAKey.generate(2048)
+other = paramiko.RSAKey.generate(2048)
 public = f'{key.get_name()} {key.get_base64()}'
 (root / 'trusted-gui').write_text(f'[127.0.0.1]:22229 {public}\n')
 (root / 'trusted-hashed').write_text(f'{paramiko.HostKeys.hash_host("[127.0.0.1]:22229")} {public}\n')

@@ -27,7 +27,7 @@ fn size(cols: u16, rows: u16) -> Result<PtySize, String> {
     if !(2..=500).contains(&cols) || !(2..=300).contains(&rows) { return Err("Invalid terminal size".into()); }
     Ok(PtySize { cols, rows, pixel_width: 0, pixel_height: 0 })
 }
-fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
+pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
     if host.is_empty() || host.len() > 253 || host.starts_with('-') || !host.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)) || port == 0
         || username.is_empty() || username.len() > 200 || !username.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || username.starts_with('-') {
         return Err("Invalid SSH destination / username".into());

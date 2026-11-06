@@ -59,3 +59,18 @@ SSH authentication selection Auto/Key/Password-PAM and native OpenSSH password/k
 ## v0.4 SFTP transport slice (draft PR)
 
 First real SFTP step: user-initiated native OpenSSH `sftp` process attached to a PTY and rendered inside NodeDesk, next to the existing SSH terminal. Key, agent, password/PAM modes use the existing strict OpenSSH trust policy. Users can run `pwd`, `ls`, `cd`, `get`, `put` and `help` in the embedded SFTP console. This does **not** yet include a two-pane graphical browser or file drag/drop. Track full file manager acceptance in [MOBAXTERM-PARITY.md](MOBAXTERM-PARITY.md). Manual test on Arch and Windows required before merge.
+
+
+## v0.5 SFTP GUI — review slice / срез для проверки
+
+Two panels, real structured SFTP v3 listing/navigation and binary upload/download
+with no overwrite, confirmation, progress/cancel. GUI: key/agent and previously
+trusted host only; password/PAM stay in the existing consoles. No mkdir, rename,
+delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
+is pending; no merge before verification.
+
+Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
+с подтверждением, прогрессом и отменой. GUI: ключ/агент и уже доверенный host key.
+Пароль/PAM работают в консолях. mkdir/rename/delete/DnD отложены.
+
+See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).

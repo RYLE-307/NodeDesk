@@ -444,7 +444,7 @@ export default function App() {
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.3</small>
+              NodeDesk <small>0.5</small>
             </strong>
           )}
           <button

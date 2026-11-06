@@ -13,6 +13,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$fixture/other"
 ssh-keygen -q -t ed25519 -N '' -f "$fixture/client"
 printf '[127.0.0.1]:22229 %s\n' "$(cat "$fixture/other.pub")" > "$fixture/changed"
 printf '@revoked [127.0.0.1]:22229 %s\n' "$(cat "$fixture/host.pub")" > "$fixture/revoked"
+printf '[127.0.0.1]:22229 %s\n' "$(cat "$fixture/host.pub")" > "$fixture/trusted-gui"
 cat > "$fixture/sshd_config" <<EOF
 ListenAddress 127.0.0.1
 Port 22229
@@ -25,6 +26,7 @@ KbdInteractiveAuthentication no
 UsePAM yes
 AllowUsers $(id -un)
 LogLevel VERBOSE
+Subsystem sftp internal-sftp
 EOF
 sudo mkdir -p /run/sshd
 sudo /usr/sbin/sshd -D -e -f "$fixture/sshd_config" &

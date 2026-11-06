@@ -368,3 +368,18 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .ssh-tool-switcher button[aria-selected="true"] { color:var(--accent); background:var(--surface); }
 .ssh-tool-panel { flex:1; min-height:0; overflow:hidden; }
 .ssh-tool-panel[hidden] { display:none; }
+/* Files uses inherited theme tokens and never mounts a fake filesystem. */
+.file-browser { padding: 12px; overflow: auto; height: 100%; min-height: 0; }
+.files-actions, .files-path, .files-progress { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.files-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+.files-panel { min-width: 0; border: 1px solid var(--border, #687582); border-radius: 6px; padding: 8px; }
+.files-panel h3 { margin: 0 0 8px; }
+.files-path input { flex: 1; min-width: 100px; }
+.files-current { overflow-wrap: anywhere; font-size: 12px; }
+.files-table-scroll { overflow: auto; max-height: 55vh; }
+.files-panel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.files-panel th, .files-panel td { padding: 4px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border, #687582); }
+.files-panel td:first-child button { max-width: 240px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.files-panel td button { font-size: inherit; }
+.files-panel tr.selected { outline: 1px solid currentColor; outline-offset: -1px; }
+@media (max-width: 1100px) { .files-panels { grid-template-columns: minmax(0, 1fr); } }

@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
+import { FileBrowser } from "./FileBrowser";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp";
@@ -88,17 +89,20 @@ export function SshTerminal({ connection: c, language, kind = "ssh" }: { connect
 }
 
 export function SshWorkspace({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
-  const [active, setActive] = useState<TerminalKind>("ssh");
+  const [active, setActive] = useState<TerminalKind | "files">("ssh");
   return <section className="ssh-tools-workspace">
     <div className="ssh-tool-switcher" role="tablist" aria-label={language === "ru" ? "Инструменты подключения" : "Connection tools"}>
-      {(["ssh", "sftp"] as const).map(kind => <button key={kind} type="button" role="tab" aria-selected={active === kind}
-        onClick={() => setActive(kind)}>{kind.toUpperCase()}</button>)}
+      {(["ssh", "sftp", "files"] as const).map(kind => <button key={kind} type="button" role="tab" aria-selected={active === kind}
+        onClick={() => setActive(kind)}>{kind === "files" ? (language === "ru" ? "Файлы" : "Files") : kind.toUpperCase()}</button>)}
     </div>
     <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "ssh"}>
       <SshTerminal connection={connection} language={language} kind="ssh" />
     </div>
     <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "sftp"}>
       <SshTerminal connection={connection} language={language} kind="sftp" />
+    </div>
+    <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "files"}>
+      <FileBrowser connection={connection} language={language}/>
     </div>
   </section>;
 }

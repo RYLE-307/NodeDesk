@@ -100,3 +100,12 @@ dragged between loaded panels using the same confirmation and no-overwrite
 backend as the sequential transfer buttons. This is **not** a persistent
 background queue, and transfers that finished before cancellation are not
 rolled back. Pending newest CI and manual desktop testing.
+
+### Windows SFTP GUI capability handling (v0.5 review)
+
+The GUI now obtains `interactiveLogin` and `keyAgent` capabilities from
+Rust rather than guessing the OS. Native Windows defaults to the supported
+key/agent mode with the password/PAM checkbox disabled and explanatory text;
+Linux retains its private interactive OpenSSH bridge. The SSH/SFTP **terminal**
+tabs still support password/PAM on both targets. No Windows GUI password
+claim until a new secure backend adapter is implemented and tested.

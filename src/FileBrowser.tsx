@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
-import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, visibleEntries, OperationGate } from "./filesModel";
-import type { FileEntry, Listing, Progress } from "./filesModel";
+import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, startBatch, updateBatchItem, finishBatch, visibleEntries, OperationGate } from "./filesModel";
+import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
 
 export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
   const ru = language === "ru";
@@ -18,6 +18,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [dropTarget, setDropTarget] = useState<"local" | "remote" | null>(null);
   const [batchLocal,setBatchLocal] = useState<string[]>([]), [batchRemote,setBatchRemote] = useState<string[]>([]);
   const [queueProgress,setQueueProgress] = useState<{index:number;total:number;name:string}|null>(null);
+  const [batchReport,setBatchReport] = useState<BatchItem[]>([]);
+  const [batchFinished,setBatchFinished] = useState(false);
   const stopQueue = useRef(false);
   const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
   const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
@@ -63,7 +65,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
-    previous.current = next; stopQueue.current = true; setRemote(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
+    setRemote(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -140,6 +143,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const preview = names.slice(0,12).join("\n");
     if (!window.confirm(`${label}: ${names.length} ${ru ? "файлов" : "files"}\n→ ${target.path}\n${preview}${names.length>12?"\n…":""}\n${ru ? "Без перезаписи. Продолжить?" : "No overwrite. Continue?"}`)) return;
     stopQueue.current = false;
+    setBatchReport(startBatch(names)); setBatchFinished(false);
+    const mark = (index:number, state:BatchItemState) => {
+      if (mounted.current) setBatchReport(items => updateBatchItem(items,index,state));
+    };
     let completed = 0;
     const targetPath = target.path;
     const request = {destination,localDirectory:local!.path,remoteDirectory:remote!.path,upload};
@@ -149,7 +156,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           throw new Error(ru ? "Очередь отменена." : "Transfer queue cancelled.");
         }
         const name = names[index];
+        mark(index,"active");
         setQueueProgress({index:index+1,total:names.length,name});
+        setProgress(null);
         const events = new Channel<Progress>();
         events.onmessage = value => {
           if (mounted.current && gate.current.owns(id) && !stopQueue.current) setProgress(value);
@@ -157,8 +166,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         try {
           await invoke("files_transfer",{id,request:{...request,name},events});
         } catch (cause) {
+          mark(index,stopQueue.current ? "cancelled" : "failed");
           throw new Error(`${name}: ${String(cause)}`);
         }
+        mark(index,"done");
         completed++;
         // The same backend operation ID is registered/released per file.
         // No concurrent file transfers, no retry and no continuation after error.
@@ -168,8 +179,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       else {setLocal(null);selectLocal("");setBatchLocal([]);}
       setStatus(ru ? `Передано файлов: ${completed}/${names.length}` : `Files transferred: ${completed}/${names.length}`);
     }).then(ok => {
+      if (!mounted.current) return;
       setQueueProgress(null);
-      if (!mounted.current || !completed) return;
+      setBatchReport(items => finishBatch(items));
+      setBatchFinished(true);
+      if (!completed) return;
       if (ok) list(upload,targetPath);
       else {
         // Some files were committed before the error/cancel; do not present an outdated listing.
@@ -338,7 +352,20 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         onClick={() => transferSelected(false)}>{ru ? `Скачать выбранные (${batchRemote.length})` : `Download selected (${batchRemote.length})`}</button>
       <button disabled={!busy || cancelling} onClick={() => void cancel()}>{cancelling ? (ru ? "Отменяется…" : "Cancelling…") : (ru ? "Отменить операцию" : "Cancel operation")}</button>
     </div>
-    {queueProgress && <p role="status">{ru ? "Очередь" : "Queue"}: ${queueProgress.index}/${queueProgress.total} — ${queueProgress.name}</p>}
+    {queueProgress && <p role="status">{ru ? "Очередь" : "Queue"}: {queueProgress.index}/{queueProgress.total} — {queueProgress.name}</p>}
+    {batchReport.length>0 && <section className="files-batch-report" aria-label={ru ? "Отчёт о передаче" : "Transfer report"}>
+      <div className="files-batch-heading">
+        <strong>{ru ? "Передача файлов" : "File transfers"}: {batchReport.filter(item => item.state==="done").length}/{batchReport.length}</strong>
+        {batchFinished && !busy && <button type="button" onClick={() => {setBatchReport([]);setBatchFinished(false);}}>
+          {ru ? "Очистить отчёт" : "Clear report"}</button>}
+      </div>
+      <ol>{batchReport.map((item,index) => <li key={index} className={`files-batch-${item.state}`}>
+        <span>{item.name}</span>
+        <span>{ru
+          ? ({queued:"Ожидает",active:"Передаётся",done:"Готово",failed:"Ошибка",cancelled:"Отменён",skipped:"Не запускался"} as const)[item.state]
+          : ({queued:"Queued",active:"Transferring",done:"Done",failed:"Failed",cancelled:"Cancelled",skipped:"Not started"} as const)[item.state]}</span>
+      </li>)}</ol>
+    </section>}
     {progress && <div className="files-progress"><progress aria-label={ru ? "Передано" : "Transferred"} max={100} value={progressPercent(progress)}/><span>{progress.bytes} / {progress.total ?? "?"} {ru ? "байт" : "bytes"}</span></div>}
     {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
     <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>

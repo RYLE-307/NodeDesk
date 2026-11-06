@@ -69,3 +69,11 @@ is pending; no merge before verification.
 с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через OpenSSH, Windows: ключ/агент. Создание папок, переименование, удаление и DnD одного файла есть, приёмка ещё впереди.
 
 See [security, limitations and acceptance](docs/V0.5-SFTP-GUI.md).
+
+### v0.5 review addition
+
+Multi-file checkbox selection and one-at-a-time upload/download (up to 50
+regular files) with explicit confirmation and cancellation are included in
+[PR #10](https://github.com/RYLE-307/NodeDesk/pull/10). The existing SFTP
+trust and no-overwrite rules still apply. This is not a persistent transfer
+queue; see [V0.5](docs/V0.5-SFTP-GUI.md).

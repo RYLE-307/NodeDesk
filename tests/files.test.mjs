@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, OperationGate } from "../src/filesModel.ts";
+import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, OperationGate } from "../src/filesModel.ts";
 
 test("reject traversal, Windows devices, alternate streams and control characters", () => {
   for (const name of ["", ".", "..", "a/b", "a\\b", "x:y", "NUL.txt", "COM1", "CONOUT$", "file.", "x\n", "\x1b[31m", "x*"]) {
@@ -57,4 +57,22 @@ test("directory-first view and localized filename search preserve the source lis
   assert.deepEqual(visibleEntries(entries,"ФАЙЛ").map(e=>e.name),["файл Б.txt"]);
   assert.deepEqual(visibleEntries(entries,"  DIR ").map(e=>e.name),["a-dir","z-dir"]);
   assert.deepEqual(entries.map(e=>e.name),snapshot,"sorting must not mutate authoritative state");
+});
+
+test("bounded multi-file transfer plan rejects entire unsafe batches", () => {
+  const local={path:"/source",entries:[
+    {name:"a.bin",kind:"file"},{name:"b.bin",kind:"file"},
+    {name:"dir",kind:"directory"},{name:"link",kind:"symlink"},
+    {name:"bad/name",kind:"file"},
+  ]};
+  const remote={path:"/remote",entries:[]};
+  assert.deepEqual(transferBatchPlan(["a.bin","b.bin"],local,remote),["a.bin","b.bin"]);
+  assert.deepEqual(local.entries.map(e=>e.name),["a.bin","b.bin","dir","link","bad/name"]);
+  for (const names of [
+    [],["a.bin","a.bin"],["a.bin","missing"],["dir"],["link"],
+    ["bad/name"],Array.from({length:51},()=> "a.bin"),
+  ]) assert.throws(()=>transferBatchPlan(names,local,remote));
+  assert.throws(()=>transferBatchPlan(["a.bin","b.bin"],local,
+    {...remote,entries:[{name:"b.bin",kind:"file"}]}),/overwrite/);
+  assert.throws(()=>transferBatchPlan(["a.bin"],null,remote),/Load both/);
 });

@@ -1,5 +1,9 @@
 # NodeDesk
 
+> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
+> GUI: key/agent only; password/PAM in consoles. No mkdir/rename/delete/DnD.
+> Full scope and acceptance: [V0.5](docs/V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+
 **RU** · [English](README.md)
 
 Локальное приложение для работы с инфраструктурой на Windows и Linux.

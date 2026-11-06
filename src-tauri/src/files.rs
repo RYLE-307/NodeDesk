@@ -23,20 +23,43 @@ impl Operation {
     fn stop(&self) { if let Ok(mut c) = self.child.lock() { if let Some(mut child) = c.take() { let _ = child.kill(); let _ = child.wait(); } } }
 }
 #[derive(Default)]
-pub struct Operations(Mutex<HashMap<String,Arc<Operation>>>);
-impl Operations { pub fn shutdown(&self) { if let Ok(mut ops) = self.0.lock() { for (_,op) in ops.drain() { op.cancel(); } } } }
+struct Registry { active: HashMap<String,Arc<Operation>>, cancelled: HashMap<String,Instant> }
+impl Registry {
+    fn prune(&mut self) { self.cancelled.retain(|_,time| time.elapsed() < Duration::from_secs(120)); }
+    fn insert(&mut self, id: &str, op: Arc<Operation>) -> Result<()> {
+        self.prune();
+        if self.cancelled.remove(id).is_some() { return Err("Operation cancelled before start".into()); }
+        if self.active.len() >= 16 || self.active.contains_key(id) { return Err("Operation limit or duplicate ID".into()); }
+        self.active.insert(id.into(),op); Ok(())
+    }
+    fn cancel(&mut self, id: String) -> Result<()> {
+        self.prune();
+        if let Some(op) = self.active.get(&id) { op.cancel(); }
+        else {
+            if self.cancelled.len() >= 64 { return Err("Pending cancellation limit".into()); }
+            self.cancelled.insert(id,Instant::now());
+        }
+        Ok(())
+    }
+}
+#[derive(Default)]
+pub struct Operations(Mutex<Registry>);
+impl Operations { pub fn shutdown(&self) { if let Ok(mut ops) = self.0.lock() { for (_,op) in ops.active.drain() { op.cancel(); } ops.cancelled.clear(); } } }
 struct Guard { id: String, op: Arc<Operation>, app: tauri::AppHandle, done: Arc<AtomicBool> }
 impl Drop for Guard {
     fn drop(&mut self) {
         self.done.store(true,Ordering::SeqCst); self.op.stop();
-        if let Ok(mut ops) = self.app.state::<Operations>().0.lock() { ops.remove(&self.id); }
+        if let Ok(mut ops) = self.app.state::<Operations>().0.lock() { ops.active.remove(&self.id); }
     }
 }
-fn register(id: &str, app: &tauri::AppHandle) -> Result<Guard> {
+fn operation_id(id: &str) -> Result<()> {
     if id.len() != 36 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') { return Err("Invalid operation ID".into()); }
+    Ok(())
+}
+fn register(id: &str, app: &tauri::AppHandle) -> Result<Guard> {
+    operation_id(id)?;
     let state = app.state::<Operations>(); let mut ops = state.0.lock().map_err(|_| "Operation lock failed")?;
-    if ops.len() >= 16 || ops.contains_key(id) { return Err("Operation limit or duplicate ID".into()); }
-    let op = Arc::new(Operation::default()); ops.insert(id.to_string(),op.clone());
+    let op = Arc::new(Operation::default()); ops.insert(id,op.clone())?;
     let done = Arc::new(AtomicBool::new(false));
     let weak = Arc::downgrade(&op); let finished = done.clone();
     // A bounded watchdog also interrupts a blocked pipe read/write on both platforms.
@@ -108,7 +131,8 @@ pub async fn files_list(id: String, destination: Option<Destination>, path: Stri
 }
 #[tauri::command]
 pub fn files_cancel(id: String, state: State<'_,Operations>) -> Result<()> {
-    if let Some(op) = state.0.lock().map_err(|_| "Operation lock failed")?.get(&id) { op.cancel(); } Ok(())
+    operation_id(&id)?;
+    state.0.lock().map_err(|_| "Operation lock failed")?.cancel(id)
 }
 fn private_new(path: &Path) -> Result<fs::File> {
     let mut options = OpenOptions::new(); options.write(true).create_new(true);
@@ -193,6 +217,15 @@ mod tests {
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
     }
     #[test] fn cancellation_is_idempotent() { let op = Operation::default(); assert!(op.check().is_ok()); op.cancel(); op.cancel(); assert!(op.check().is_err()); }
+    #[test] fn cancel_before_registration_and_limits() {
+        let mut registry = Registry::default(); registry.cancel("late".into()).unwrap();
+        assert!(registry.insert("late",Arc::new(Operation::default())).is_err());
+        let op = Arc::new(Operation::default()); registry.insert("active",op.clone()).unwrap();
+        registry.cancel("active".into()).unwrap(); assert!(op.check().is_err());
+        for n in 0..64 { registry.cancel(n.to_string()).unwrap(); }
+        assert!(registry.cancel("overflow".into()).is_err());
+        assert!(operation_id("../malicious").is_err());
+    }
     #[test] fn local_no_replace_and_partial_cleanup() {
         let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
         let path = root.join("target"); let _ = fs::remove_file(&path);
@@ -239,6 +272,27 @@ mod tests {
         assert!(c.lstat(&format!("{remote_path}/missing")).is_err());
         std::os::unix::fs::symlink(&dest,remote.join("link")).unwrap();
         assert!(copy_download(&mut c,&format!("{remote_path}/link"),&local.join("link-copy"),&partial,&op,&events).is_err());
+        // Cancel during a real transfer, not just before the command: the first
+        // progress callback kills the transport and the local partial is removed.
+        let cancelled = Arc::new(Operation::default());
+        let mut cc = open("trusted-gui",&cancelled).unwrap();
+        let cancel_op = cancelled.clone();
+        let cancel_events = Channel::<Progress>::new(move |_| { cancel_op.cancel(); Ok(()) });
+        let cancelled_target = local.join("cancelled.bin");
+        assert!(copy_download(&mut cc,&dest,&cancelled_target,&partial,&cancelled,&cancel_events).is_err());
+        assert!(!partial.exists()); assert!(!cancelled_target.exists());
+        assert!(cancelled.child.lock().unwrap().is_none());
+        // An exclusive remote partial remains identifiable after upload cancel;
+        // the requested final name is never published.
+        let cancelled_upload = Arc::new(Operation::default());
+        let mut cu = open("trusted-gui",&cancelled_upload).unwrap();
+        let cancel_op = cancelled_upload.clone();
+        let cancel_events = Channel::<Progress>::new(move |_| { cancel_op.cancel(); Ok(()) });
+        let cancelled_remote = wire::join(remote_path,"cancelled.bin").unwrap();
+        let cancelled_partial = wire::join(remote_path,".cancelled.part").unwrap();
+        assert!(copy_upload(&mut cu,&source,&cancelled_remote,&cancelled_partial,&cancelled_upload,&cancel_events).is_err());
+        assert!(!Path::new(&cancelled_remote).exists()); assert!(Path::new(&cancelled_partial).exists());
+        assert!(cancelled_upload.child.lock().unwrap().is_none());
         op.cancel(); assert!(op.check().is_err()); assert!(c.realpath(".").is_err()); drop(c); drop(op);
         // No child survives cancellation; the timer is a fixture-only upper bound.
         timer.join().unwrap();

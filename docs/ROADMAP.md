@@ -1,5 +1,9 @@
 # План разработки
 
+> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
+> GUI: key/agent only; password/PAM in consoles. No mkdir/rename/delete/DnD.
+> Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+
 ## v0.2 alpha
 
 Каталог с CRUD, вложенными группами, поиском, избранным и локальным хранением

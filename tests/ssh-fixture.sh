@@ -7,7 +7,11 @@ auth_user="ndfixture$$"
 cleanup() {
   if [[ -n "$server_pid" ]]; then sudo kill "$server_pid" 2>/dev/null || true; fi
   sudo userdel "$auth_user" 2>/dev/null || true
-  rm -rf -- "$fixture"
+  # PAM may create private cache files owned by the disposable account.
+  # Delete only the exact directory created by mktemp, never a computed parent.
+  if [[ "$fixture" == /tmp/tmp.* && -d "$fixture" && ! -L "$fixture" ]]; then
+    sudo rm -rf -- "$fixture"
+  fi
 }
 trap cleanup EXIT
 # Disposable CI account; never alters a developer account or uses user credentials.

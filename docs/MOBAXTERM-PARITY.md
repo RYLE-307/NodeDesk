@@ -127,13 +127,11 @@ Auto / Key / Password-PAM selection and native hidden OpenSSH PTY prompts implem
 ## v0.5 SFTP GUI — review slice / срез для проверки
 
 Two panels, real structured SFTP v3 listing/navigation and binary upload/download
-with no overwrite, confirmation, progress/cancel. GUI: key/agent and previously
-trusted host only; password/PAM stay in the existing consoles. No mkdir, rename,
+with no overwrite, confirmation, progress/cancel. GUI: Linux password/PAM via the Files login panel; Windows key/agent. No mkdir, rename,
 delete or drag/drop yet. Issue #9 remains open. Arch/Windows manual acceptance
 is pending; no merge before verification.
 
 Две панели, настоящий SFTP v3, навигация и бинарная передача без перезаписи,
-с подтверждением, прогрессом и отменой. GUI: ключ/агент и уже доверенный host key.
-Пароль/PAM работают в консолях. mkdir/rename/delete/DnD отложены.
+с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).

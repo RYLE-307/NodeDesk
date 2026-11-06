@@ -67,3 +67,20 @@ export function transferBatchPlan(names: readonly string[], source: Listing | nu
   }
   return output;
 }
+
+/** Ephemeral transfer report. No credentials or session identifiers. */
+export type BatchItemState = "queued" | "active" | "done" | "failed" | "cancelled" | "skipped";
+export type BatchItem = { name: string; state: BatchItemState };
+export function startBatch(names: readonly string[]): BatchItem[] {
+  return names.map(name => ({name, state:"queued"}));
+}
+export function updateBatchItem(items: readonly BatchItem[], index: number, state: BatchItemState): BatchItem[] {
+  if (index < 0 || index >= items.length) return [...items];
+  return items.map((item,i) => i === index ? {...item,state} : item);
+}
+export function finishBatch(items: readonly BatchItem[]): BatchItem[] {
+  // The active item should only be left active if the frontend was interrupted
+  // before a backend result; a conservative incomplete status is safest.
+  return items.map(item => item.state === "queued" ? {...item,state:"skipped"}
+    : item.state === "active" ? {...item,state:"cancelled"} : item);
+}

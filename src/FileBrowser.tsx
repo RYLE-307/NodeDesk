@@ -379,7 +379,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       {ru
         ? "Графический пароль/PAM на этой платформе пока недоступен. Используйте SSH-ключ/агент для файлов или SSH/SFTP-терминал для входа по паролю. Проверка ключа сервера обязательна."
         : "GUI password/PAM is not available on this platform yet. Use SSH key/agent for files, or the SSH/SFTP console for password login. Host-key verification remains required."}
-    </p>
+    </p>}
     {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
     <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
     <div className="files-actions">

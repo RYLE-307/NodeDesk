@@ -135,3 +135,8 @@ is pending; no merge before verification.
 с подтверждением, прогрессом и отменой. GUI Linux: пароль/PAM через панель входа OpenSSH. Windows: ключ/агент. mkdir/rename/delete/DnD отложены.
 
 See [V0.5-SFTP-GUI.md](V0.5-SFTP-GUI.md).
+
+
+### FS-01 / FS-04 follow-up in draft PR #10 (pending acceptance)
+
+Native SFTP v3 mkdir, rename, remove file, rmdir empty directory and internal single-file cross-pane drag/drop added, with explicit delete/transfer confirmation and backend type checks. Portable name validation, no-overwrite checks and cancellation remain. Local regular files can be renamed via exclusive hardlink/unlink on supporting filesystems; local directory rename is intentionally not implemented yet. No recursive operations, multi-select, external OS drag/drop or transfer queue. **Not marked complete** until latest CI and real Arch/Windows GUI tests pass.

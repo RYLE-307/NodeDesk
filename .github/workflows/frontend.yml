@@ -33,6 +33,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf openssh-server
       - run: npm ci
+      - name: Rust tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Rust tests and real OpenSSH host-key integration (Linux)
+        if: runner.os == 'Linux'
+        run: bash tests/ssh-fixture.sh
       - run: npm run tauri build -- --no-bundle

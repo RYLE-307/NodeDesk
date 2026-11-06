@@ -45,3 +45,8 @@ Rust is unavailable in the local agent environment; Cargo.lock is not yet tracke
 
 [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [MobaXterm parity goals](docs/MOBAXTERM-PARITY.md) · [MIT](LICENSE)
+
+
+## v0.3 SSH vertical slice (review branch)
+
+Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this branch. Explicit connect/reconnect, resize, tab lifecycle and strict known_hosts trust are included; key/agent authentication only. Arch manual acceptance is required before merge. See [architecture, limits and acceptance steps](docs/V0.3-SSH.md). Passwords, SFTP and tunnels remain deferred.

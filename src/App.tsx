@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SshTerminal } from "./SshTerminal";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -313,7 +314,7 @@ export default function App() {
   }
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
-    return c ? (
+    return c?.protocol === "SSH" ? <SshTerminal connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}
@@ -346,7 +347,7 @@ export default function App() {
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.2</small>
+              NodeDesk <small>0.3</small>
             </strong>
           )}
           <button
@@ -526,9 +527,9 @@ export default function App() {
           )}
         </div>
         <div className={`workspace ${secondary ? "split-workspace" : ""}`}>
-          {pane(active)}
+          {tabs.map(id => <div className="tab-pane" key={id} hidden={id !== active && id !== secondary}>{pane(id)}</div>)}
           {secondary && (
-            <div className="secondary">
+            <div className="secondary-selector">
               <select
                 aria-label={t.tabs}
                 value={secondary}
@@ -540,7 +541,7 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              {pane(secondary)}
+
             </div>
           )}
         </div>

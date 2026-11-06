@@ -21,3 +21,8 @@ CI проверяет frontend и desktop Windows/Ubuntu; Arch требует о
 
 Номер версии не означает готовность всего перечня. Функция считается выполненной
 только после проверки на обеих целевых ОС либо явного описания различий.
+
+
+## v0.3 SSH vertical slice (review branch)
+
+Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this branch. Explicit connect/reconnect, resize, tab lifecycle and strict known_hosts trust are included; key/agent authentication only. Arch manual acceptance is required before merge. See [architecture, limits and acceptance steps](V0.3-SSH.md). Passwords, SFTP and tunnels remain deferred.

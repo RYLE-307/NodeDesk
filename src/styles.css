@@ -328,3 +328,15 @@ footer select { padding: 4px 6px; font-size: 12px; }
   .catalog-tools .actions { flex-wrap: wrap; }
   .connection-open small { display: none; }
 }
+
+.tab-pane { flex: 1; min-width: 0; height: 100%; }
+.tab-pane[hidden] { display:none; }
+.ssh-pane { height:100%; min-height:300px; display:flex; flex-direction:column; padding:8px; gap:6px; }
+.ssh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.ssh-help { font-size:12px; margin:0; }
+.ssh-screen { flex:1; min-height:200px; overflow:hidden; background:#11151b; }
+.secondary-selector { position:absolute; right:16px; top:48px; z-index:1; }
+.workspace { position:relative; }
+
+.workspace { display:flex; }
+.split-workspace { display:flex; }

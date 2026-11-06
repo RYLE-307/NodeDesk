@@ -216,6 +216,7 @@ mod tests {
             (0,"password","trusted-gui",true),(1,"keyboard-interactive","trusted-gui",true),
             (2,"password","trusted-gui",false),(3,"password","changed",true),
             (4,"keyboard-interactive","revoked",true),(5,"password","native-unknown",true),
+            (6,"password","trusted-hashed",true),
         ] {
             let (input,rx)=mpsc::sync_channel(32);
             let login=Arc::new(Login {host:"127.0.0.1".into(),port:22229,user:user.clone(),alive:AtomicBool::new(true),socket:Mutex::new(None),session:Mutex::new(None),input});
@@ -230,10 +231,11 @@ mod tests {
             });
             let mut prompt=Prompter {login:login.clone(),rx,events,deadline:Instant::now()+Duration::from_secs(20),failed:false};
             let result=authenticate(&login,&mut prompt,&[PathBuf::from(&dir).join(known)],method);
-            let expect=valid && known=="trusted-gui";
+            let trusted=known=="trusted-gui" || known=="trusted-hashed";
+            let expect=valid && trusted;
             assert_eq!(result.is_ok(),expect,"native auth case {case}");
             let output=String::from_utf8(seen.lock().unwrap().clone()).unwrap();assert!(!output.contains(&secret));
-            if known!="trusted-gui" {assert!(output.is_empty(),"trust must precede any credential prompt");}
+            if !trusted {assert!(output.is_empty(),"trust must precede any credential prompt");}
             if let Ok(session)=result {
                 *login.session.lock().unwrap()=Some(session);
                 crate::files::verify_native_adapter(login.clone(),&user,&dir,case);

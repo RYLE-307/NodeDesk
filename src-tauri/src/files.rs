@@ -438,6 +438,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     assert!(!partial.exists());assert!(!local.join("cancelled.bin").exists());
     // Windows cancellation interrupts the TCP socket and requires a fresh login.
     assert!(connect(&d,&Operation::default()).is_err());
+    assert!(c.realpath(".").is_err());
 }
 #[cfg(test)]
 mod tests {

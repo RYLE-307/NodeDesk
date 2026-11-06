@@ -26,6 +26,7 @@ key = paramiko.ECDSAKey.generate()
 other = paramiko.ECDSAKey.generate()
 public = f'{key.get_name()} {key.get_base64()}'
 (root / 'trusted-gui').write_text(f'[127.0.0.1]:22229 {public}\n')
+(root / 'trusted-hashed').write_text(f'{paramiko.HostKeys.hash_host("[127.0.0.1]:22229")} {public}\n')
 (root / 'changed').write_text(f'[127.0.0.1]:22229 {other.get_name()} {other.get_base64()}\n')
 (root / 'revoked').write_text(f'@revoked [127.0.0.1]:22229 {public}\n')
 

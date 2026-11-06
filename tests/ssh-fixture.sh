@@ -30,6 +30,8 @@ ssh-keygen -q -t ed25519 -N '' -f "$fixture/client"
 printf '[127.0.0.1]:22229 %s\n' "$(cat "$fixture/other.pub")" > "$fixture/changed"
 printf '@revoked [127.0.0.1]:22229 %s\n' "$(cat "$fixture/host.pub")" > "$fixture/revoked"
 printf '[127.0.0.1]:22229 %s\n' "$(cat "$fixture/host.pub")" > "$fixture/trusted-gui"
+cp "$fixture/trusted-gui" "$fixture/trusted-hashed"
+ssh-keygen -H -f "$fixture/trusted-hashed" >/dev/null 2>&1
 cat > "$fixture/sshd_config" <<EOF
 ListenAddress 127.0.0.1
 Port 22229

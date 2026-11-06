@@ -184,3 +184,18 @@ test('successful upload and mutation refresh only their destination panes',async
   await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).length)).toBe(3);
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'&&c.request?.action==='mkdir'))).toHaveLength(1);
 });
+
+test('file search is independent per pane and clears hidden selection',async({page}) => {
+  const files=await open(page);
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('button',{name:'sample.bin',exact:true}).click();
+  const search=local.getByRole('searchbox',{name:'Local filesystem: search files'});
+  await search.fill('not-present');
+  await expect(local.getByText('No matches')).toBeVisible();
+  await expect(local.getByRole('button',{name:'sample.bin',exact:true})).toHaveCount(0);
+  await expect(files.getByRole('button',{name:'Upload → remote'})).toBeDisabled();
+  await search.fill('SAMPLE');
+  await expect(local.getByRole('button',{name:'sample.bin',exact:true})).toBeVisible();
+  await expect(local.getByRole('button',{name:'sample.bin',exact:true})).toHaveAttribute('aria-pressed','false');
+});

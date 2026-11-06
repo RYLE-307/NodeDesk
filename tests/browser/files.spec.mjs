@@ -2,12 +2,12 @@ import { test, expect } from '@playwright/test';
 
 // UI contract tests only. The real sshd fixture separately proves authentication
 // and SFTP bytes. This mock is never included in the application bundle.
-async function open(page, language='en') {
-  await page.addInitScript(({language}) => {
+async function open(page, language='en', caps={interactiveLogin:true,keyAgent:true}) {
+  await page.addInitScript(({language,caps}) => {
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
@@ -15,6 +15,7 @@ async function open(page, language='en') {
       async invoke(cmd,args) {
         // Never record terminal input, even in this test harness.
         window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer'].includes(cmd)?args?.request:undefined});
+        if (cmd==='files_capabilities') return window.fixture.caps;
         if (cmd==='ssh_connect') {window.fixture.session=args.id; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
@@ -34,7 +35,7 @@ async function open(page, language='en') {
         }
       },
     };
-  },{language});
+  },{language,caps});
   await page.goto('/');
   await page.getByRole('button',{name:/Fixture SSH/}).dblclick();
   await page.getByRole('tab',{name:language==='en'?'Files':'Файлы',exact:true}).click();
@@ -308,4 +309,27 @@ test('select visible limits to regular files and multi-drag reuses batch confirm
   const names=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').map(c=>c.request.name));
   expect(names).toEqual(['extra.bin','sample.bin']);
   await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('File transfers: 2/2');
+});
+
+test('Windows capability contract defaults to safe key/agent and does not start unsupported password bridge',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const checkbox=files.getByRole('checkbox',{name:'Password/PAM or key login (Linux)'});
+  await expect(checkbox).toBeDisabled();
+  await expect(checkbox).not.toBeChecked();
+  await expect(files.getByText('GUI password/PAM is not available on this platform yet.',{exact:false})).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='ssh_connect'))).toHaveLength(0);
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].destination.authSession).toBeNull();
+});
+test('missing capability command fails closed and leaves no interactive login',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:false});
+  const checkbox=files.getByRole('checkbox',{name:'Password/PAM or key login (Linux)'});
+  await expect(checkbox).toBeDisabled();
+  await expect(checkbox).not.toBeChecked();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='ssh_connect'))).toHaveLength(0);
 });

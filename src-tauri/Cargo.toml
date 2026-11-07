@@ -1,6 +1,6 @@
 [package]
 name = "nodedesk"
-version = "0.5.0-alpha.0"
+version = "0.6.0-alpha.0"
 description = "Offline-first infrastructure workspace"
 edition = "2021"
 publish = false

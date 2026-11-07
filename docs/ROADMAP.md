@@ -114,6 +114,22 @@ Linux CI separately uses a disposable trusted sshd fixture to verify bytes
 through the local SSH forward to a loopback target; native Windows and
 user-owned tunnel-target acceptance remain open.
 
+## v0.8 functional increment (under development)
+
+**Guarded remote POSIX permissions:** the SFTP Files context menu now allows
+explicit **Change permissions…** on a remote regular file or directory, using
+three octal digits (000–777) and a confirmation including before/after mode;
+world-writable modes trigger an extra warning in the same confirmation.
+The native Rust/SFTP v3 backend forbids special setuid/setgid/sticky bits,
+rejects symlinks and stale type/mode/size/mtime listings, rechecks the
+result and never calls a shell/sudo or changes local ACLs.
+Automated Linux OpenSSH/SFTP fixture and Windows/Linux build/browser tests
+cover the feature; combined manual validation remains deferred to v0.9.
+The operation is not guaranteed atomic against a hostile SFTP server.
+Further v0.8 priorities: SSH config/gateway support with strict known_hosts,
+transfer UX and reliable network diagnostics, while keeping no unattended
+connections or credential persistence.
+
 ## v0.6 priorities
 
 1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.

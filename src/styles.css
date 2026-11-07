@@ -461,3 +461,13 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .vnc-embedded-password input { display:block; max-width:100%; width:100%; }
 .vnc-embedded-surface { min-height:320px; height:min(62dvh,680px); width:100%; overflow:hidden; background:#242424; border:1px solid var(--line); border-radius:6px; }
 .vnc-embedded-surface canvas { max-width:100%; }
+
+/* v0.6 embedded Guacamole desktop inside RDP tab */
+.rdp-embedded { padding:12px; border:1px solid var(--line); border-radius:8px; margin:8px 0 20px; min-width:0; }
+.rdp-embedded h3 { margin:4px 0 10px; }
+.rdp-embedded-controls { display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:6px 0; }
+.rdp-embedded-controls label:first-child { flex:1 1 260px; min-width:0; }
+.rdp-embedded-controls input[type="url"] { max-width:100%; width:100%; min-width:0; }
+.rdp-embedded-surface { background:#1c1c1c; border:1px solid var(--line); border-radius:6px; min-height:320px; height:min(62dvh,680px); overflow:auto; outline-offset:3px; }
+.rdp-embedded-surface:focus-visible { outline:2px solid currentColor; }
+.rdp-embedded-surface canvas { display:block; max-width:100%; }

@@ -30,15 +30,15 @@ function validEndpoint(value:unknown):value is RecoveryEndpoint {
   if (!value || typeof value!=="object")return false;
   const v=value as Record<string,unknown>;
   return textField(v.host,255) && textField(v.username,255) &&
-    Number.isInteger(v.port) && Number(v.port)>0 && Number(v.port)<=65535;
+    typeof v.port==="number" && Number.isInteger(v.port) && v.port>0 && v.port<=65535;
 }
 function validFileEntry(v:unknown):v is FileEntry {
   if (!v || typeof v!=="object")return false;
   const e=v as Record<string,unknown>;
   return typeof e.name==="string" && portableName(e.name) && e.kind==="file" &&
-    (e.size===null || Number.isSafeInteger(e.size) && Number(e.size)>=0) &&
-    (e.modified===null || Number.isSafeInteger(e.modified) && Number(e.modified)>=0) &&
-    (e.permissions===null || Number.isSafeInteger(e.permissions) && Number(e.permissions)>=0);
+    (e.size===null || typeof e.size==="number" && Number.isSafeInteger(e.size) && e.size>=0) &&
+    (e.modified===null || typeof e.modified==="number" && Number.isSafeInteger(e.modified) && e.modified>=0) &&
+    (e.permissions===null || typeof e.permissions==="number" && Number.isSafeInteger(e.permissions) && e.permissions>=0);
 }
 const states=new Set(["queued","active","done","failed","cancelled","skipped"]);
 export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|null {
@@ -47,7 +47,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if (v.version!==VERSION || !validEndpoint(v.endpoint) ||
     typeof v.upload!=="boolean" ||
     !textField(v.localDirectory,2048) || !textField(v.remoteDirectory,2048) ||
-    !Number.isSafeInteger(v.savedAt) ||
+    (typeof v.savedAt!=="number" || !Number.isSafeInteger(v.savedAt)) ||
     Number(v.savedAt)>now+60000 || now-Number(v.savedAt)>MAX_AGE_MS ||
     !Array.isArray(v.names) || v.names.length<1 || v.names.length>50 ||
     !v.names.every(x=>typeof x==="string"&&portableName(x)) ||
@@ -61,7 +61,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if (partial!==null) {
     if(!partial||typeof partial!=="object")return null;
     const q=partial as Record<string,unknown>;
-    if(!Number.isInteger(q.index)||Number(q.index)<0||
+    if((typeof q.index!=="number"||!Number.isInteger(q.index))||Number(q.index)<0||
       Number(q.index)>=v.names.length ||
       typeof q.previousId!=="string"||!idPattern.test(q.previousId) ||
       (v.items[Number(q.index)] as BatchItem).state==="done")return null;
@@ -70,7 +70,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   const items=finishBatch(v.items as BatchItem[]);
   if(items.every(item=>item.state==="done"))return null;
   return {
-    version:1,endpoint:{...v.endpoint as RecoveryEndpoint},upload:v.upload as boolean,
+    version:1,endpoint:{...(v.endpoint as RecoveryEndpoint)},upload:v.upload as boolean,
     localDirectory:v.localDirectory as string,remoteDirectory:v.remoteDirectory as string,
     names:[...(v.names as string[])],
     sourceEntries:(v.sourceEntries as FileEntry[]).map(e=>({...e})),

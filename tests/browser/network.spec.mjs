@@ -14,7 +14,7 @@ test("network diagnostics make no request until click and show bounded result",a
   await expect(pane).toBeVisible();
   expect(await page.evaluate(()=>window.calls)).toEqual([]);
   await pane.getByLabel("Host").fill("localhost");
-  await pane.getByLabel("Port").fill("8080");
+  await pane.getByRole("spinbutton",{name:"Port",exact:true}).fill("8080");
   await pane.getByRole("button",{name:"Check TCP"}).click();
   await expect(pane.getByRole("status")).toContainText("TCP port 8080: reachable");
   expect(await page.evaluate(()=>window.calls)).toEqual([{cmd:"network_probe",args:{target:{host:"localhost",port:8080}}}]);

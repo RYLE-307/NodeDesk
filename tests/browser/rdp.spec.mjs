@@ -11,6 +11,7 @@ async function open(page,language="en",launchError=false) {
       language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};
+    window.isTauri=true;
     window.fixture={calls:[]};
     let index=0;
     window.__TAURI_INTERNALS__={

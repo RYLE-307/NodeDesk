@@ -68,11 +68,14 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
     depends_on: [guacamole]
-    networks: [lab]
+    # Host-published loopback port needs a normal ingress bridge; the
+    # backend network remains internal and is never host-published.
+    networks: [lab, ingress]
 
 networks:
   lab:
     internal: true
+  ingress: {}
 
 volumes:
   bootstrap:

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
+import { VncWorkspace } from "./VncWorkspace";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -413,7 +414,8 @@ export default function App() {
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
-      c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> : c ? (
+      c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
+      c?.protocol === "VNC" ? <VncWorkspace connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}
@@ -762,13 +764,14 @@ export default function App() {
                         value: {
                           ...editor.value,
                           protocol,
-                          port: protocol === "SSH" ? 22 : 3389,
+                          port: protocol === "SSH" ? 22 : protocol === "VNC" ? 5900 : 3389,
                         },
                       });
                     }}
                   >
                     <option>SSH</option>
                     <option>RDP</option>
+                    <option>VNC</option>
                   </select>
                 </label>
                 <label>

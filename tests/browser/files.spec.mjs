@@ -589,3 +589,38 @@ test('queue retry refuses destination collision and changed source metadata',asy
   await report.getByRole('button',{name:'Clear report'}).click();
   await expect(report).toHaveCount(0);
 });
+
+
+test('cancelled queue can retry unfinished files using a fresh operation ID',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{
+    Object.assign(window.fixture,{ready:true,emptyRemote:true,extraLocal:true,
+      allowTransfer:true,pauseTransfers:true});
+  });
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(1);
+  await files.getByRole('button',{name:'Cancel operation'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 0/2');
+  await expect(report.getByRole('listitem').first()).toContainText('Cancelled');
+  await expect(report.getByRole('listitem').last()).toContainText('Not started');
+  await page.evaluate(()=>{window.fixture.pauseTransfers=false;});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',dialog=>dialog.accept());
+  await report.getByRole('button',{name:'Retry unfinished'}).click();
+  await expect(report).toContainText('File transfers: 2/2');
+  const attempts=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'));
+  expect(attempts.map(x=>x.request.name)).toEqual(['sample.bin','sample.bin','extra.bin']);
+  expect(attempts[0].id).not.toEqual(attempts[1].id);
+  expect(attempts[1].id).toEqual(attempts[2].id);
+});

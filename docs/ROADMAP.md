@@ -1,14 +1,14 @@
 # План разработки
 
-> **Current review: v0.6.0-alpha.0 — external RDP and TigerVNC launchers (draft PR #11).**
+> **Current review: v0.6.0-alpha.0 — embedded WSS VNC, external RDP/TigerVNC, and system VPN (draft PR #11).**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 
 ## v0.6 priorities
 
 1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
-2. **Embedded or managed RDP:** investigate FreeRDP library/embedding and licensing, session lifecycle, reconnect, clipboard/fullscreen/multi-monitor. The launcher is not the final integration.
-3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. Embedded VNC and SSH/VPN tunnels follow later.
+2. **Embedded RDP — NOT YET IMPLEMENTED:** evaluate FreeRDP native rendering/bindings versus an opt-in authenticated Guacamole gateway, including licensing and TLS/NLA. External launcher is not a renderer. [Architecture](V0.6-EMBEDDED-DESKTOP.md).
+3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. **Embedded WSS noVNC** was added as a separate opt-in mode; it needs a trusted TLS gateway and an authentication policy. Direct TCP and SSH/VPN tunnels follow later. See [embedded desktops](V0.6-EMBEDDED-DESKTOP.md).
 4. **VPN system-profile manager (in PR #11):** read-only listing and manual connect/disconnect (with confirmation) of OS-owned profiles. Linux NetworkManager VPN/WireGuard; Windows current-user IKEv2/L2TP/SSTP with required encryption, existing OS credentials only. No profile editing, plaintext secrets or automatic routing changes. [V0.6 VPN](V0.6-VPN.md). Actual desktop VPN acceptance pending.
 5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
 

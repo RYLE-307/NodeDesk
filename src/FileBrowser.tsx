@@ -251,14 +251,17 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   function retryUnfinished(){
     if(!retryPlan || busy || gate.current.id || !batchFinished)return;
-    if(retryPlan.connectionKey!==JSON.stringify(destination) ||
-      local?.path!==retryPlan.localDirectory || remote?.path!==retryPlan.remoteDirectory){
-      setError(ru?"Открой обе исходные папки в том же подключении.":"Open both original folders in the same connection.");
+    if(retryPlan.connectionKey!==JSON.stringify(destination)){
+      setError(ru?"Очередь относится к другому подключению.":"Queue belongs to a different connection.");
       return;
     }
     if(listingVersion.current.local<=retryPlan.localVersion ||
       listingVersion.current.remote<=retryPlan.remoteVersion){
       setError(ru?"Перед повтором обнови ОБЕ файловые панели.":"Refresh BOTH filesystem panes before retry.");
+      return;
+    }
+    if(local?.path!==retryPlan.localDirectory || remote?.path!==retryPlan.remoteDirectory){
+      setError(ru?"Открой обе исходные папки в том же подключении.":"Open both original folders in the same connection.");
       return;
     }
     let indexes:number[],names:string[];

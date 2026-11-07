@@ -2,7 +2,7 @@
 //! SFTP packets supply filesystem semantics. No shell, CLI listing or secret input.
 use crate::{sftp_wire::{self as wire, Client, Result, CHUNK}, ssh::{self, AuthMode}};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
@@ -487,6 +487,93 @@ fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Opera
     // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
     Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
 }
+/// Explicit resume: verify every byte of a remote partial against the opened
+/// local source before writing, then recheck the entire file before publication.
+/// Only previous NodeDesk operation IDs are accepted by the caller UI.
+fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
+    op:&Operation,events:&Channel<Progress>)->Result<()> {
+    let before=fs::symlink_metadata(source).map_err(|_|"Local source unavailable")?;
+    if !before.is_file()||before.is_symlink(){return Err("Regular local file required".into());}
+    let mut opts=OpenOptions::new();opts.read(true);
+    #[cfg(windows)] {use std::os::windows::fs::OpenOptionsExt;opts.custom_flags(0x00200000);}
+    let mut f=opts.open(source).map_err(|_|"Cannot open local source")?;
+    let opened=f.metadata().map_err(|_|"Cannot stat local source")?;
+    if !opened.is_file()||opened.is_symlink(){return Err("Regular local file required".into());}
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev()!=opened.dev()||before.ino()!=opened.ino(){
+            return Err("Local source changed".into());
+        }
+    }
+    let size=opened.len();op.check()?;
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    let attrs=c.lstat(temp)?;
+    if attrs.kind()!="file"{return Err("Regular partial required".into());}
+    let prefix_len=attrs.size.ok_or("Partial size unavailable")?;
+    if prefix_len==0||prefix_len>=size {
+        return Err("Partial must contain between 1 and size-1 bytes".into());
+    }
+    // Compare remote prefix against local bytes before requesting write access.
+    let read_handle=c.open(temp,1)?;
+    let mut offset=0_u64;
+    while offset<prefix_len {
+        op.check()?;
+        let chunk=c.read(&read_handle,offset)?.ok_or("Partial truncated")?;
+        if chunk.len() as u64>prefix_len-offset{return Err("Partial exceeds prefix".into());}
+        let mut local=vec![0;chunk.len()];
+        f.read_exact(&mut local).map_err(|_|"Local source shortened")?;
+        if chunk!=local{return Err("Partial differs from source; no write".into());}
+        offset+=chunk.len() as u64;
+    }
+    c.close(&read_handle)?;op.check()?;
+    let verified=c.lstat(temp)?;
+    if verified.kind()!="file"||verified.size!=attrs.size||
+        verified.modified!=attrs.modified{
+        return Err("Partial changed during verification".into());
+    }
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    // SSH_FXF_WRITE without CREATE, TRUNC or APPEND. The verified prefix stays.
+    let h=c.open(temp,2)?;
+    let mut bytes=vec![0;CHUNK];
+    let mut written=prefix_len;
+    while written<size {
+        op.check()?;
+        let n=f.read(&mut bytes).map_err(|_|"Local read failed")?;
+        if n==0||n as u64>size-written{return Err("Local source changed".into());}
+        c.write(&h,written,&bytes[..n])?;
+        written+=n as u64;
+        events.send(Progress{bytes:written,total:Some(size)})
+            .map_err(|_|"Transfer view closed")?;
+    }
+    c.close(&h)?;op.check()?;
+    if f.metadata().map_err(|_|"Cannot inspect local source")?.len()!=size {
+        return Err("Local source changed during resume".into());
+    }
+    let full=c.lstat(temp)?;
+    if full.kind()!="file"||full.size!=Some(size){
+        return Err("Remote file size changed; not published".into());
+    }
+    // A second full-file comparison detects modifications to either prefix
+    // or suffix. The original user file is only ever opened read-only.
+    f.seek(SeekFrom::Start(0)).map_err(|_|"Cannot rewind local file")?;
+    let reader=c.open(temp,1)?;
+    let mut at=0_u64;
+    while at<size {
+        op.check()?;
+        let chunk=c.read(&reader,at)?.ok_or("Remote file truncated")?;
+        if chunk.len() as u64>size-at {return Err("Remote file grew".into());}
+        let mut expected=vec![0;chunk.len()];
+        f.read_exact(&mut expected).map_err(|_|"Local file changed")?;
+        if chunk!=expected{return Err("Remote data mismatch; no publication".into());}
+        at+=chunk.len() as u64;
+    }
+    c.close(&reader)?;op.check()?;
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    // SFTP v3 rename (not overwrite-capable posix-rename); hostile concurrent
+    // writers cannot be excluded atomically by this protocol.
+    c.rename(temp,remote)
+}
+
 fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
@@ -507,11 +594,15 @@ fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Op
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool }
+pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String> }
 #[tauri::command]
 pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
     resolve_auth(&mut request.destination,&app)?;
     wire::name(&request.name)?; wire::path(&request.remote_directory)?;
+    if let Some(previous)=&request.resume_id {
+        if !request.upload || previous==&id{return Err("Invalid resume request".into());}
+        operation_id(previous)?;
+    }
     let g = register(&id,&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = &g; let local = local_dir(&request.local_directory)?;
@@ -519,8 +610,15 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
         let parent = c.realpath(&request.remote_directory)?; let remote = wire::join(&parent,&request.name)?;
         let partial = format!(".nodedesk-{id}.part");
         if request.upload {
-            let temp = wire::join(&parent,&partial)?;
-            copy_upload(&mut c,&target,&remote,&temp,&g.op,&events).map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
+            if let Some(previous)=request.resume_id.as_deref() {
+                let old=wire::join(&parent,&format!(".nodedesk-{previous}.part"))?;
+                copy_upload_resume(&mut c,&target,&remote,&old,&g.op,&events)
+                    .map_err(|e|format!("{e}; partial remains at {old}"))
+            } else {
+                let temp=wire::join(&parent,&partial)?;
+                copy_upload(&mut c,&target,&remote,&temp,&g.op,&events)
+                    .map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
+            }
         } else { copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events) }
     }).await.map_err(|_| "Transfer task failed".to_string())?
 }

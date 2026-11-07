@@ -773,3 +773,83 @@ test('corrupted local SFTP download partial refuses retry without writes',async(
   expect(req[2].request.upload).toBe(false);
   expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_mutate'))).toHaveLength(0);
 });
+
+
+test('opt-in recovery survives reload but never auto-connects or replays finished files',async({page})=>{
+  let files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true,failOnNameOnce:'extra.bin'
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('File transfers: 1/2');
+  await expect.poll(()=>page.evaluate(()=>{
+    const root=JSON.parse(localStorage.getItem('nodedesk.sftp.recovery.v1')||'{}');
+    return root.records?.[0]?.items?.map(x=>x.state);
+  })).toEqual(['done','failed']);
+  const stored=await page.evaluate(()=>localStorage.getItem('nodedesk.sftp.recovery.v1'));
+  expect(stored).toContain('extra.bin');
+  for(const sensitive of ['authSession','password','privateKey','BEGIN OPENSSH PRIVATE KEY']){
+    expect(stored).not.toContain(sensitive);
+  }
+  await page.reload();
+  await page.getByRole('button',{name:/Fixture SSH/}).dblclick();
+  await page.getByRole('tab',{name:'Files',exact:true}).click();
+  files=page.getByRole('region',{name:'SFTP file manager'});
+  await expect(files.getByText('Saved unfinished queue',{exact:false})).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>
+    ['ssh_connect','files_transfer','files_list'].includes(x.cmd)))).toHaveLength(0);
+  const load=files.getByRole('button',{name:'Load saved queue'});
+  await expect(load).toBeDisabled();
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await load.click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_transfer'))).toHaveLength(0);
+  await report.getByRole('button',{name:'Retry unfinished'}).click();
+  await expect(files.getByRole('alert')).toContainText('Refresh BOTH filesystem panes before retry');
+  await files.getByRole('region',{name:'Local filesystem',exact:true})
+    .getByRole('button',{name:'Open / refresh'}).click();
+  await files.getByRole('region',{name:'Remote filesystem',exact:true})
+    .getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',d=>d.accept());
+  await report.getByRole('button',{name:'Retry unfinished'}).click();
+  await expect(report).toContainText('File transfers: 2/2');
+  const requests=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_transfer'));
+  expect(requests.map(x=>x.request.name)).toEqual(['extra.bin']);
+  await expect.poll(()=>page.evaluate(()=>localStorage.getItem('nodedesk.sftp.recovery.v1'))).toBeNull();
+});
+
+test('SFTP recovery requires opt-in and forgetting a checkpoint never deletes part files',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    emptyRemote:true,extraLocal:true,allowTransfer:true,failOnNameOnce:'extra.bin'
+  }));
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('File transfers: 1/2');
+  expect(await page.evaluate(()=>localStorage.getItem('nodedesk.sftp.recovery.v1'))).toBeNull();
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).check();
+  // Opting in after a failed operation never invents a previous checkpoint.
+  expect(await page.evaluate(()=>localStorage.getItem('nodedesk.sftp.recovery.v1'))).toBeNull();
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).uncheck();
+});

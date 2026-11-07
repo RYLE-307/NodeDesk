@@ -52,30 +52,76 @@ test("RU language and launch failures never imply authenticated RDP",async({page
   await expect(workspace).toContainText("Пароль вводится только там");
 });
 
-test("embedded Guacamole RDP is visible but never autoconnects",async({page})=>{
+test("embedded Guacamole login is opt-in, no autoconnect, no saved credentials",async({page})=>{
   const workspace=await open(page);
   const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
-  await expect(embedded).toBeVisible();
   await expect(embedded).toContainText("Embedded RDP through Guacamole");
-  await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();
+  await expect(embedded.getByRole("button",{name:"Sign in to Guacamole"})).toBeDisabled();
   await expect(embedded.getByLabel("RDP remote screen")).toBeVisible();
-  // Reading a catalog entry or opening a tab must not contact any gateway.
   expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
 });
 
-test("embedded Guacamole rejects plaintext and credential-bearing URLs",async({page})=>{
+test("embedded Guacamole rejects cleartext and credential-bearing API URLs",async({page})=>{
   const workspace=await open(page);
   const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
-  for(const bad of [
-    "ws://host/tunnel",
-    "wss://user:pass@gateway.example/tunnel",
-    "wss://gateway.example/tunnel?token=secret",
-    "wss://gateway.example/tunnel#secret"
-  ]){
-    await embedded.getByRole("textbox",{name:"Guacamole WSS tunnel"}).fill(bad);
-    await embedded.getByRole("button",{name:"Connect embedded"}).click();
+  await embedded.getByRole("checkbox").check();
+  for(const bad of ["http://host/guacamole/","https://user:pass@host/guacamole/",
+    "https://host/guacamole/?token=secret","https://host/guacamole/#secret"]){
+    await embedded.getByRole("textbox",{name:"Guacamole HTTPS URL"}).fill(bad);
+    await embedded.getByRole("textbox",{name:"Guacamole username"}).fill("user");
+    await embedded.getByRole("textbox",{name:"Guacamole password"}).fill("disposable");
+    await embedded.getByRole("button",{name:"Sign in to Guacamole"}).click();
     await expect(embedded.getByRole("alert")).toBeVisible();
-    await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
+    await expect(embedded.getByRole("button",{name:"Sign in to Guacamole"})).toBeEnabled();
     expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
   }
+});
+
+async function mockGuac(page){
+  const endpoint="https://guacamole.example.org/guacamole/";
+  const auth={authToken:"opaque-qa-token",dataSource:"postgresql",
+    availableDataSources:["postgresql"]};
+  const routes=[];
+  await page.route(endpoint+"api/tokens",async route=>{
+    routes.push("login");
+    await route.fulfill({status:200,contentType:"application/json",
+      headers:{"access-control-allow-origin":"*"},
+      body:JSON.stringify(auth)});
+  });
+  await page.route(endpoint+"api/session/data/postgresql/connections?*",async route=>{
+    routes.push("list");
+    await route.fulfill({status:200,contentType:"application/json",
+      headers:{"access-control-allow-origin":"*"},
+      body:JSON.stringify({
+        42:{identifier:"42",name:"Disposable Windows RDP",protocol:"rdp"},
+        70:{identifier:"70",name:"Not an RDP machine",protocol:"vnc"}
+      })});
+  });
+  await page.route(endpoint+"api/tokens/opaque-qa-token",async route=>{
+    routes.push("logout");
+    await route.fulfill({status:204,headers:{"access-control-allow-origin":"*"}});
+  });
+  return routes;
+}
+test("Guacamole account login discovers only authorized RDP machines and clears password",async({page})=>{
+  const routes=await mockGuac(page);
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  await embedded.getByRole("textbox",{name:"Guacamole HTTPS URL"}).fill(
+    "https://guacamole.example.org/guacamole/");
+  await embedded.getByRole("textbox",{name:"Guacamole username"}).fill("qa-user");
+  await embedded.getByRole("textbox",{name:"Guacamole password"}).fill("test-only-password");
+  await embedded.getByRole("checkbox").check();
+  await embedded.getByRole("button",{name:"Sign in to Guacamole"}).click();
+  await expect(embedded.getByRole("combobox",{name:"Authorized RDP connection"})).toHaveValue(
+    "postgresql:42");
+  await expect(embedded.getByRole("combobox")).not.toContainText("Not an RDP machine");
+  await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();
+  await expect(embedded).not.toContainText("test-only-password");
+  expect(routes).toEqual(["login","list"]);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
+  await embedded.getByRole("button",{name:"Sign out"}).click();
+  await expect(embedded.getByRole("button",{name:"Sign in to Guacamole"})).toBeVisible();
+  await expect.poll(()=>routes.includes("logout")).toBe(true);
 });

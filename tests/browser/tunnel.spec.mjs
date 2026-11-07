@@ -3,7 +3,7 @@ import {test,expect} from "@playwright/test";
 test("local SSH forwarding is explicit, loopback scoped and closes with its tab",async({page})=>{
   await page.addInitScript(()=>{
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[{id:"ssh",name:"Lab",host:"example.org",port:22,username:"admin",protocol:"SSH",groupId:null,favorite:false}],language:"en",theme:"dark",monitoring:false}));
-    window.__TAURI__={};window.calls=[];let next=0;
+    window.__TAURI__={};window.isTauri=true;window.calls=[];let next=0;
     window.__TAURI_INTERNALS__={transformCallback(){return ++next;},unregisterCallback(){},async invoke(cmd,args){window.calls.push({cmd,args:{...args,events:undefined}});}};
   });
   await page.goto("/");

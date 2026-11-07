@@ -94,7 +94,7 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 | UX-02 | P0 | Resize sidebar мышью за разделитель, пределы ширины, сохранение, keyboard resize | План | План | [#7](https://github.com/RYLE-307/NodeDesk/issues/7) |
 | UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | Частично: Quick Connect/recent | Частично: Quick Connect/recent | UX |
 | UI-07 | P1 | Drag/drop вкладок, упорядочивание, split в 2/4 панели с resize и корректным переносом активной сессии | Реализация: drag/drop, 2/4, resize | Реализация: drag/drop, 2/4, resize | Workspace; native приёмка ожидается |
-| FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | План | План | Files |
+| FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | Частично: Files, drag/drop, sequential queue, explicit retry unfinished from byte zero | Частично: Files, drag/drop, sequential queue, explicit retry unfinished from byte zero | Нативная приёмка, реальные byte-level resume/pause, права, фоновые задачи и автозапуск остаются |
 | TERM-03 | P1 | Прозрачный clipboard, поиск/выделение, zoom/fonts, настройки кодировки, ссылки, colors/themes, safe paste | План | План | Terminal |
 | CAT-04 | P1 | Управление сессиями: recent, duplicate, bulk edit, group import/export, backup/restore, формат MobaXterm где лицензия позволяет | План | План | Catalog |
 | SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | План | План | SSH |

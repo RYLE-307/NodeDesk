@@ -177,3 +177,16 @@ accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).
 - Native GUI/manual connection and trust acceptance on Windows/Arch remain
   outstanding. No claims of built-in RDP/VNC screens or session parity.
 - See [RDP](V0.6-RDP.md) and [VNC](V0.6-VNC.md).
+
+## v0.6 review slice: system VPN integration
+
+NodeDesk now has a dedicated System VPN tool for existing operating-system
+profiles, not new VPN configuration management. Linux: NetworkManager
+VPN/WireGuard. Windows: current-user built-in IKEv2, L2TP and SSTP profiles
+with required encryption only. It lists OS-reported status and requests
+confirmation before activating or deactivating by OS-assigned identifier.
+Secrets, keys and routes remain with the OS; third-party VPN clients, Windows
+all-user phonebook entries, PPTP and automatic tunnel type are unsupported.
+No background monitoring, VPN-before-RDP orchestration, in-app credentials
+or independent proof of route/DNS isolation. No native desktop test yet.
+[Acceptance and security notes](V0.6-VPN.md).

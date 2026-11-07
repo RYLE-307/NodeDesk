@@ -103,3 +103,18 @@ test("storage failures propagate without overwriting corrupt source", () => {
   assert.throws(() => save(storage, fixture()));
   assert.equal(writes, 1);
 });
+
+test("VNC profiles retain v1 compatibility without persisting credentials",()=>{
+  const data=fixture();
+  data.connections[0].protocol="VNC";
+  data.connections[0].port=5901;
+  data.connections[0].username="";
+  data.connections[0].password="never-store-this";
+  const decoded=decode(JSON.stringify(data));
+  assert.equal(decoded.version,1);
+  assert.equal(decoded.connections[0].protocol,"VNC");
+  assert.equal(decoded.connections[0].port,5901);
+  assert.ok(!JSON.stringify(decoded).includes("never-store-this"));
+  decoded.connections[0].protocol="NOT_A_PROTOCOL";
+  assert.throws(()=>decode(JSON.stringify(decoded)));
+});

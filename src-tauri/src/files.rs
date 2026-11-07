@@ -1093,6 +1093,38 @@ mod tests {
         assert_eq!(fs::read(&kept_target).unwrap(),bytes);
         assert!(!kept.exists());
         resume_op.stop();
+        // Bounded multi-chunk stress: cancel a 2 MiB+ transfer after several
+        // progress events, reopen a fresh trusted SFTP session, and verify
+        // the complete binary file after resuming. No corporate hosts.
+        let large_bytes:Vec<u8>=(0..(2*1024*1024+17))
+            .map(|n| ((n*37+11)%251) as u8).collect();
+        let large_source=local.join("large-stress-source.bin");
+        fs::write(&large_source,&large_bytes).unwrap();
+        let large_remote=wire::join(remote_path,"large-stress.bin").unwrap();
+        let large_temp=wire::join(remote_path,".large-stress.part").unwrap();
+        copy_upload(&mut c,&large_source,&large_remote,&large_temp,&op,&events).unwrap();
+        let cancel_stress=Arc::new(Operation::default());
+        let mut stress_c=open("trusted-gui",&cancel_stress).unwrap();
+        let abort=cancel_stress.clone();
+        let stress_events=Channel::<Progress>::new(move |p|{
+            if p.bytes>=128*1024 {abort.cancel();}
+            Ok(())
+        });
+        let large_partial=local.join(".large-down.part");
+        let large_target=local.join("large-resumed.bin");
+        assert!(copy_download(&mut stress_c,&large_remote,&large_target,
+            &large_partial,&cancel_stress,&stress_events,true).is_err());
+        assert!(!large_target.exists());
+        let partial_size=fs::metadata(&large_partial).unwrap().len();
+        assert!(partial_size>=128*1024 && partial_size<large_bytes.len() as u64);
+        let stress_resume=Arc::new(Operation::default());
+        let mut stress_fresh=open("trusted-gui",&stress_resume).unwrap();
+        let fresh_events=Channel::<Progress>::new(|_|Ok(()));
+        copy_download_resume(&mut stress_fresh,&large_remote,&large_target,
+            &large_partial,&stress_resume,&fresh_events).unwrap();
+        assert_eq!(fs::read(&large_target).unwrap(),large_bytes);
+        assert!(!large_partial.exists());
+        stress_resume.stop();
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
         // Read-only UTF-8 preview uses the same authenticated SFTP transport.

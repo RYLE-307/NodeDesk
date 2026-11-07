@@ -1006,13 +1006,17 @@ test('remote POSIX chmod requires valid octal input and a separate confirmation'
   await expect(files.getByRole('alert')).toContainText('three octal digits');
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'))).toHaveLength(0);
   await remote.getByRole('button',{name:'sample.bin',exact:true}).click({button:'right'});
-  page.once('dialog',d=>d.accept('777'));
-  page.once('dialog',d=>d.dismiss());
+  page.once('dialog',async d=>{
+    await d.accept('777');
+    page.once('dialog',confirmation=>confirmation.dismiss());
+  });
   await files.getByRole('menuitem',{name:'Change permissions…'}).click();
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'))).toHaveLength(0);
   await remote.getByRole('button',{name:'sample.bin',exact:true}).click({button:'right'});
-  page.once('dialog',d=>d.accept('640'));
-  page.once('dialog',d=>d.accept());
+  page.once('dialog',async d=>{
+    await d.accept('640');
+    page.once('dialog',confirmation=>confirmation.accept());
+  });
   await files.getByRole('menuitem',{name:'Change permissions…'}).click();
   await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod').length)).toBe(1);
   const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'));

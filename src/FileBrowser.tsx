@@ -115,6 +115,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   function restoreCheckpoint(){
     if(busy || gate.current.id || !savedRecovery)return;
+    if(interactive && !authReady){
+      setError(ru?"Сначала выполни вход для файлов, затем загрузи сохранённую очередь.":
+        "Complete Files login first, then load the saved queue.");
+      return;
+    }
     const restored=loadRecovery(window.localStorage,recoveryEndpoint);
     if(!restored){
       setSavedRecovery(null);setError(ru?"Контрольная точка устарела или недействительна.":
@@ -135,8 +140,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     setPartialDownload(restored.upload?null:restored.partial);
     setQueueProgress(null);
     recoveryEnabled.current=true;setKeepRecovery(true);
-    setStatus(ru?"Очередь восстановлена без подключения. Теперь подключись, обнови обе панели и вручную подтверди повтор.":
-      "Queue loaded without connecting. Connect, refresh BOTH panes, then confirm retry manually.");
+    setStatus(ru?"Очередь загружена без передачи. Обнови обе панели и вручную подтверди повтор.":
+      "Queue loaded without transfer. Refresh BOTH panes and confirm retry manually.");
   }
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
   useEffect(() => {
@@ -662,10 +667,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       </label>
       <p className="ssh-help">{ru?
         "По выбору сохраняются адрес сервера, имена и пути файлов, статусы и ID операции в локальном хранилище приложения без шифрования. Пароли, ключи и содержимое файлов не сохраняются. Без автоподключения и автопередачи. До 8 серверов, 7 дней.":
-        "Opt-in local metadata: server address, filenames, paths, statuses and operation ID are stored without encryption. No passwords, keys or file contents. No automatic connections or transfers. Up to 8 endpoints, 7 days."}</p>
+        "Opt-in local metadata: server address, filenames, paths, statuses and operation ID are stored without encryption. No passwords, keys or file contents. No automatic connections or transfers. To restore: log in first, then load and refresh both panes. Up to 8 endpoints, 7 days."}</p>
       {savedRecovery && <div className="files-ops">
         <span>{ru?"Незавершённая очередь":"Saved unfinished queue"}: {savedRecovery.items.filter(item=>item.state!=="done").length} {ru?"файлов":"files"} ({savedRecovery.upload?"upload":"download"})</span>
-        <button type="button" disabled={busy || !!gate.current.id}
+        <button type="button" disabled={busy || !!gate.current.id || (interactive && !authReady)}
           onClick={restoreCheckpoint}>{ru?"Загрузить очередь":"Load saved queue"}</button>
         <button type="button" disabled={busy} onClick={()=>{
           if(window.confirm(ru?"Забыть сохранённую очередь? Файлы .part останутся на диске.":

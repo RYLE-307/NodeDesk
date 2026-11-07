@@ -606,6 +606,11 @@ mod tests {
         assert!(decode_preview(vec![0x1b,0x5b,0x6d]).is_err());
         assert!(decode_preview(vec![b'a';PREVIEW_LIMIT+1]).is_err());
     }
+    #[test] fn text_editor_rejects_nontext_and_oversize_content(){
+        assert!(decode_preview(vec![0;1]).is_err());
+        assert!(decode_preview(vec![b'x';PREVIEW_LIMIT+1]).is_err());
+        assert_eq!(decode_preview("текст\n".as_bytes().to_vec()).unwrap(),"текст\n");
+    }
     #[test] fn cancellation_is_idempotent() { let op = Operation::default(); assert!(op.check().is_ok()); op.cancel(); op.cancel(); assert!(op.check().is_err()); }
     #[test] fn cancel_before_registration_and_limits() {
         let mut registry = Registry::default(); registry.cancel("late".into()).unwrap();
@@ -704,6 +709,33 @@ mod tests {
         let view=preview_remote(&mut c,remote_path,note,&op).unwrap();
         assert_eq!(view.content,"Тестовая заметка\nsecond line");
         assert_eq!(view.bytes,view.content.as_bytes().len());
+        let request=SaveTextCopyRequest{
+            destination:d.clone(),directory:remote_path.to_owned(),
+            original_name:note.to_owned(),original_content:view.content.clone(),
+            new_name:"nodedesk-preview-edited.txt".into(),
+            content:"Тестовая заметка\nupdated text".into()
+        };
+        let saved=save_text_copy(&mut c,&request,&op).unwrap();
+        assert_eq!(saved.bytes,request.content.as_bytes().len());
+        assert!(saved.source_unchanged);
+        assert_eq!(fs::read_to_string(remote.join(&request.new_name)).unwrap(),request.content);
+        assert_eq!(fs::read_to_string(&note_path).unwrap(),view.content);
+        // Existing output must never be replaced, including by a second save.
+        assert!(save_text_copy(&mut c,&request,&op).is_err());
+        assert_eq!(fs::read_to_string(remote.join(&request.new_name)).unwrap(),request.content);
+        let mut conflict=SaveTextCopyRequest{
+            new_name:"nodedesk-conflict-copy.txt".into(),..request
+        };
+        fs::write(&note_path,"changed on server").unwrap();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        assert!(!remote.join(&conflict.new_name).exists());
+        // Client-supplied traversal and original-name overwrite are rejected.
+        conflict.new_name="../outside".into();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        conflict.new_name=note.into();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        fs::remove_file(remote.join("nodedesk-preview-edited.txt")).unwrap();
+
         assert!(preview_remote(&mut c,remote_path,filename,&op).is_err());
         fs::write(remote.join("oversize.txt"),vec![b'x';PREVIEW_LIMIT+1]).unwrap();
         assert!(preview_remote(&mut c,remote_path,"oversize.txt",&op).is_err());

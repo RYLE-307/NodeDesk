@@ -1,0 +1,49 @@
+name: Disposable Guacamole RDP integration
+on:
+  pull_request:
+    paths:
+      - "tests/guacamole-lab/**"
+      - ".github/workflows/guacamole-lab.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: guac-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guacamole-rdp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare disposable RDP lab
+        run: |
+          bash tests/guacamole-lab/prepare.sh
+          docker compose -f tests/guacamole-lab/compose.yaml config --quiet
+      - name: Boot Guacamole, PostgreSQL, xrdp and loopback TLS
+        run: docker compose -f tests/guacamole-lab/compose.yaml up -d
+      - name: Extract temporary lab CA
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if docker compose -f tests/guacamole-lab/compose.yaml cp               proxy:/data/caddy/pki/authorities/local/root.crt               tests/guacamole-lab/generated/caddy-root.crt 2>/dev/null; then break; fi
+            sleep 2
+          done
+          test -s tests/guacamole-lab/generated/caddy-root.crt
+      - name: Verify Guacamole user login + real RDP WSS framebuffer negotiation
+        shell: bash
+        run: |
+          set -a
+          source tests/guacamole-lab/.env
+          set +a
+          NODE_EXTRA_CA_CERTS="$PWD/tests/guacamole-lab/generated/caddy-root.crt"             node --experimental-strip-types tests/guacamole-lab/verify.mjs
+      - name: Tear down the disposable network and volumes
+        if: always()
+        run: |
+          docker compose -f tests/guacamole-lab/compose.yaml down -v --remove-orphans || true
+          rm -rf tests/guacamole-lab/generated tests/guacamole-lab/.env

@@ -2,7 +2,7 @@
  //! Never pass passwords, tokens, certificate exceptions or arbitrary shell text.
 use serde::{Deserialize, Serialize};
 use std::{
-    net::{Ipv6Addr, IpAddr},
+    net::IpAddr,
     process::{Command, Stdio},
 };
 
@@ -29,7 +29,7 @@ fn endpoint(host: &str, port: u16) -> Result<String, String> {
             IpAddr::V4(_) => format!("{addr}:{port}"),
         });
     }
-    if host.contains(['[',']',':','/','\\','@','?','#','%']) ||
+    if host.chars().any(|c| matches!(c, '['|']'|':'|'/'|'\\'|'@'|'?'|'#'|'%')) ||
        !host.is_ascii() || host.starts_with('-') ||
        host.split('.').any(|part| part.is_empty() || part.len() > 63 ||
            part.starts_with('-') || part.ends_with('-') ||

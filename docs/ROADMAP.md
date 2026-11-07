@@ -74,9 +74,17 @@ A failed write may leave an incomplete new file for manual inspection.
 There is no silent autosave, shell, persistent cache, or local temporary copy.
 SFTP v3 cannot provide a true atomic compare-and-swap overwrite: direct saving
 to the original, encoding selection, 3-way merge, recovery and manual native
-Windows/Arch acceptance remain open. The editor clears on profile/auth change. Linux CI uses its disposable trusted sshd fixture to pass bytes
-through the local forward to a loopback target; native Windows and user-owned
-target acceptance remain open.
+Windows/Arch acceptance remain open. The editor clears on profile/auth change.
+Added local-only **literal, case-sensitive Find Previous/Next**, exact-selection
+replacement, and explicitly confirmed Replace All. Matching is not a regex;
+search/replacement operates only on the in-memory text, with a 128 KiB output
+limit and at most 4096 replacements per action. No network or file write occurs
+until the separate Save as new copy command. Even after switching to read-only
+view, closing modified text requires a discard confirmation.
+
+Linux CI separately uses a disposable trusted sshd fixture to verify bytes
+through the local SSH forward to a loopback target; native Windows and
+user-owned tunnel-target acceptance remain open.
 
 ## v0.6 priorities
 

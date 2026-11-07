@@ -35,14 +35,14 @@ function assertGuacamoleSession(url){
     // Node 24's builtin WebSocket uses NODE_EXTRA_CA_CERTS to validate
     // the disposable test CA; no insecure TLS verification overrides.
     const socket=new WebSocket(url,"guacamole");
-    let ready=false,frame=false,done=false;
+    let synced=false,drawn=false,done=false;
     const seen=[];
     const timer=setTimeout(()=>finish(new Error("Guacamole RDP session did not produce a framebuffer handshake")),timeoutMs);
     function finish(err){
       if(done)return;
       done=true;clearTimeout(timer);
       try{socket.close();}catch{/* already closed */}
-      if(err)reject(err);else resolve({ready,frame});
+      if(err)reject(err);else resolve({synced,drawn});
     }
     socket.addEventListener("error",()=>finish(new Error("Guacamole WSS connection failed")));
     socket.addEventListener("close",event=>finish(new Error(
@@ -55,8 +55,11 @@ function assertGuacamoleSession(url){
       for(const match of chunk.matchAll(/(?:^|;)\d+\.([a-z]+)(?:,|;)/g)){
         if(seen.length<20)seen.push(match[1]);
       }
-      if(chunk.includes("5.ready,"))ready=true;
-      if(chunk.includes("4.size,")||chunk.includes("4.sync,")||chunk.includes("3.img,"))frame=true;
+      if(chunk.includes("4.sync,"))synced=true;
+      // These are real Guacamole framebuffer drawing instructions produced
+      // by the disposable xrdp session; a separate ready opcode is not
+      // forwarded by all Guacamole web-app tunnel implementations.
+      if(chunk.includes("4.rect,")||chunk.includes("3.img,")||chunk.includes("5.cfill,"))drawn=true;
       // The first server sync may require a client acknowledgement before
       // the next framebuffer update. Send only an echoed timestamp, never
       // credentials or arbitrary text from the remote endpoint.
@@ -64,7 +67,7 @@ function assertGuacamoleSession(url){
       if(match&&Number(match[1])===match[2].length){
         socket.send("4.sync,"+match[1]+"."+match[2]+";");
       }
-      if(ready&&frame)finish();
+      if(synced&&drawn)finish();
     });
   });
 }
@@ -79,8 +82,8 @@ try{
   assert.ok(fixture,"Authorized QA RDP profile was not found");
   const query=guacTunnelQuery(auth.authToken,fixture,1024,768);
   const result=await assertGuacamoleSession(guacWssTunnel(base)+"?"+query);
-  assert.equal(result.ready,true);
-  assert.equal(result.frame,true);
+  assert.equal(result.synced,true);
+  assert.equal(result.drawn,true);
   console.log("PASS: Guacamole HTTPS login, authorized RDP profile, trusted WSS and framebuffer negotiation");
 }finally{
   if(auth)await guacLogout(base,auth);

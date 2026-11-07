@@ -24,7 +24,7 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | SSH-01 | Интерактивный SSH, PTY, resize, UTF-8, пароли/ключи/passphrase, keyboard-interactive | Реализация (ключи) | Реализация (ключи) | v0.3 |
 | SSH-02 | Host-key trust/change rejection, known_hosts, агент и agent forwarding | Реализация (без forwarding) | Реализация (без forwarding) | v0.3 |
 | SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | План | План | Паритет |
-| SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | План | План | Паритет |
+| SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | Частично: локальный loopback key/agent | Частично: локальный loopback key/agent | Паритет |
 | SSH-05 | X11 forwarding: локальный X display и корректное закрытие соединения | План | План | Паритет |
 | FS-01 | SFTP рядом с SSH: список, upload/download, drag/drop, rename/delete, права, прогресс/отмена | Частичная реализация: листинг/передача | Частичная реализация: листинг/передача | v0.5 draft; см. ограничения ниже |
 | FS-02 | Удалённый текстовый редактор: кодировки, поиск, upload при сохранении, конфликт изменений | План | План | Паритет |

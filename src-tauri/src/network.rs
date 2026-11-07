@@ -9,7 +9,7 @@ pub struct ProbeTarget {host:String,port:u16}
 #[serde(rename_all="camelCase")]
 pub struct ProbeResult {addresses:Vec<String>,tcp_reachable:bool,elapsed_ms:u128}
 
-fn valid_host(host:&str)->bool {
+pub(crate) fn valid_host(host:&str)->bool {
     if host.is_empty()||host.len()>253||host.trim()!=host{return false;}
     let addr=host.strip_prefix('[').and_then(|v|v.strip_suffix(']')).unwrap_or(host);
     if addr.parse::<IpAddr>().is_ok(){return true;}

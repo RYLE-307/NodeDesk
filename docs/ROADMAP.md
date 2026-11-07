@@ -46,6 +46,12 @@ multi-port scans are still planned.
 Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
 requires confirmation because pasted commands may execute immediately. Clipboard
 copy/link handling, persisted font preferences and native acceptance remain open.
+The first SSH tunnel slice provides one explicit local forward per SSH workspace:
+the listener is fixed to 127.0.0.1, only unprivileged ports are accepted, and
+OpenSSH runs without a shell or password prompt using an already trusted host key
+and key/agent authentication. The tunnel stops with the tab or application.
+Remote/dynamic forwards, password/PAM tunnel auth and real target acceptance
+remain open. A successful process spawn alone does not prove a usable tunnel.
 
 ## v0.6 priorities
 

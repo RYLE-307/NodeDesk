@@ -337,6 +337,9 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .terminal-tools label { display:flex; align-items:center; gap:5px; }
 .terminal-tools input { width:clamp(100px,18vw,210px); }
 .terminal-tools button { min-width:28px; }
+.tunnel-workspace { padding:16px; max-width:850px; }
+.tunnel-fields { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0; }
+.tunnel-fields label { display:flex; flex-direction:column; gap:4px; min-width:150px; }
 .ssh-help { font-size:12px; margin:0; }
 .ssh-screen { flex:1; min-height:200px; overflow:hidden; background:#11151b; }
 .secondary-selector { position:absolute; right:16px; top:48px; z-index:1; }

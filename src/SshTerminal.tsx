@@ -6,6 +6,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
+import { TunnelWorkspace } from "./TunnelWorkspace";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -140,11 +141,11 @@ export function LocalWorkspace({language}:{language:"ru"|"en"}) {
 }
 
 export function SshWorkspace({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
-  const [active, setActive] = useState<TerminalKind | "files">("ssh");
+  const [active, setActive] = useState<TerminalKind | "files" | "tunnel">("ssh");
   return <section className="ssh-tools-workspace">
     <div className="ssh-tool-switcher" role="tablist" aria-label={language === "ru" ? "Инструменты подключения" : "Connection tools"}>
-      {(["ssh", "sftp", "files"] as const).map(kind => <button key={kind} type="button" role="tab" aria-selected={active === kind}
-        onClick={() => setActive(kind)}>{kind === "files" ? (language === "ru" ? "Файлы" : "Files") : kind.toUpperCase()}</button>)}
+      {(["ssh", "sftp", "files", "tunnel"] as const).map(kind => <button key={kind} type="button" role="tab" aria-selected={active === kind}
+        onClick={() => setActive(kind)}>{kind === "files" ? (language === "ru" ? "Файлы" : "Files") : kind === "tunnel" ? (language === "ru" ? "Туннель" : "Tunnel") : kind.toUpperCase()}</button>)}
     </div>
     <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "ssh"}>
       <SshTerminal connection={connection} language={language} kind="ssh" />
@@ -154,6 +155,9 @@ export function SshWorkspace({ connection, language }: { connection: Connection;
     </div>
     <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "files"}>
       <FileBrowser connection={connection} language={language}/>
+    </div>
+    <div role="tabpanel" className="ssh-tool-panel" hidden={active !== "tunnel"}>
+      <TunnelWorkspace connection={connection} language={language}/>
     </div>
   </section>;
 }

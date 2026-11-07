@@ -1,0 +1,87 @@
+//! Explicit, loopback-only SSH local forwarding. Existing host trust and key/agent auth only.
+use std::{collections::HashMap,process::{Child,Command,Stdio},sync::{Arc,Mutex},time::Duration};
+use serde::{Deserialize,Serialize};
+use tauri::{ipc::Channel,State,Manager};
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct LocalForward {ssh_host:String,ssh_port:u16,username:String,local_port:u16,target_host:String,target_port:u16}
+#[derive(Clone,Serialize)]
+#[serde(tag="kind",content="value",rename_all="camelCase")]
+pub enum TunnelEvent { Exit(u32), Error(String) }
+
+struct Running(Arc<Mutex<Child>>);
+impl Drop for Running {fn drop(&mut self){if let Ok(mut child)=self.0.lock(){let _=child.kill();}}}
+#[derive(Default)]
+pub struct Tunnels(Mutex<HashMap<String,Running>>);
+impl Tunnels {pub fn shutdown(&self){if let Ok(mut tunnels)=self.0.lock(){tunnels.clear();}}}
+
+fn arguments(spec:&LocalForward)->Result<Vec<String>,String>{
+    if spec.local_port<1024||spec.target_port==0||!crate::network::valid_host(&spec.target_host){return Err("Invalid local forward target or port".into());}
+    let mut args=crate::ssh::arguments(&spec.ssh_host,spec.ssh_port,&spec.username,crate::ssh::AuthMode::Key)?;
+    args.retain(|arg| !matches!(arg.as_str(),"-tt"|"-oClearAllForwardings=yes"|"-oBatchMode=no"|"-oNumberOfPasswordPrompts=3"|"-oStrictHostKeyChecking=ask"));
+    let target=spec.target_host.trim_start_matches('[').trim_end_matches(']');
+    let target=if target.contains(':'){format!("[{target}]")}else{target.into()};
+    let forward=format!("127.0.0.1:{}:{target}:{}",spec.local_port,spec.target_port);
+    // Never expose the listening socket to the LAN. No prompt, config file,
+    // agent forwarding, remote shell or fallback to an unknown host key.
+    let destination=args.pop().ok_or("Missing SSH destination")?;
+    args.extend(["-N".into(),"-T".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),
+        "-oClearAllForwardings=no".into(),"-oExitOnForwardFailure=yes".into(),"-oGatewayPorts=no".into(),
+        "-L".into(),forward,destination]);
+    Ok(args)
+}
+
+#[tauri::command]
+pub fn tunnel_start(id:String,spec:LocalForward,events:Channel<TunnelEvent>,state:State<'_,Tunnels>,app:tauri::AppHandle)->Result<(),String>{
+    if id.len()!=36||!id.chars().all(|c|c.is_ascii_hexdigit()||c=='-'){return Err("Invalid tunnel ID".into());}
+    let args=arguments(&spec)?;
+    let mut tunnels=state.0.lock().map_err(|_|"Tunnel lock failed")?;
+    if tunnels.contains_key(&id)||tunnels.len()>=8{return Err("Tunnel already exists or limit reached".into());}
+    let child=Command::new("ssh").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().map_err(|_|"Cannot start OpenSSH tunnel".to_string())?;
+    let child=Arc::new(Mutex::new(child));
+    tunnels.insert(id.clone(),Running(child.clone()));
+    std::thread::spawn(move||loop{
+        std::thread::sleep(Duration::from_millis(200));
+        let status=match child.lock(){Ok(mut process)=>process.try_wait(),Err(_)=>break};
+        match status{
+            Ok(None)=>continue,
+            Ok(Some(exit))=>{
+                app.state::<Tunnels>().0.lock().ok().map(|mut items|items.remove(&id));
+                let _=events.send(TunnelEvent::Exit(exit.code().unwrap_or(1) as u32));break;
+            }
+            Err(_)=>{
+                app.state::<Tunnels>().0.lock().ok().map(|mut items|items.remove(&id));
+                let _=events.send(TunnelEvent::Error("Cannot inspect SSH tunnel".into()));break;
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn tunnel_stop(id:String,state:State<'_,Tunnels>)->Result<(),String>{
+    state.0.lock().map_err(|_|"Tunnel lock failed")?.remove(&id);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn sample()->LocalForward{LocalForward{ssh_host:"example.org".into(),ssh_port:22,username:"admin".into(),local_port:15432,target_host:"127.0.0.1".into(),target_port:5432}}
+    #[test]fn local_forward_is_loopback_only_and_noninteractive(){
+        let args=arguments(&sample()).unwrap();
+        let option=args.iter().position(|arg|arg=="-L").unwrap();
+        assert_eq!(args[option+1],"127.0.0.1:15432:127.0.0.1:5432");
+        for flag in ["-F","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oExitOnForwardFailure=yes","-oForwardAgent=no","-N","-T"]{assert!(args.contains(&flag.into()));}
+        assert!(!args.contains(&"-tt".into()));
+        assert_eq!(args.last().unwrap(),"example.org");
+    }
+    #[test]fn rejects_unsafe_forward_parameters(){
+        let mut spec=sample();spec.target_host="target;sh".into();assert!(arguments(&spec).is_err());
+        spec=sample();spec.local_port=80;assert!(arguments(&spec).is_err());
+        spec=sample();spec.ssh_host="-oProxyCommand=evil".into();assert!(arguments(&spec).is_err());
+        spec=sample();spec.target_host="::1".into();assert!(arguments(&spec).unwrap().contains(&"127.0.0.1:15432:[::1]:5432".into()));
+    }
+}

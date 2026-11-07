@@ -927,7 +927,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
         let path = root.join("target"); let _ = fs::remove_file(&path);
         let f = private_new(&path).unwrap(); drop(f); assert!(private_new(&path).is_err());
-        drop(PartialLocal {path:path.clone(),keep_on_error:false}); assert!(!path.exists()); fs::remove_dir(root).unwrap();
+        drop(PartialLocal {path:path.clone(),keep_on_error:true});
+        assert!(path.exists(),"explicit batch retention does not remove partial");
+        drop(PartialLocal {path:path.clone(),keep_on_error:false});
+        assert!(!path.exists());
+        fs::remove_dir(root).unwrap();
         assert!(local_dir("../").is_err());
     }
     #[cfg(unix)]
@@ -1042,6 +1046,24 @@ mod tests {
         let existing=local.join("existing.bin");fs::write(&existing,b"untouched").unwrap();
         assert!(copy_download_resume(&mut c,&dest,&existing,&corrupt_partial,&op,&events).is_err());
         assert_eq!(fs::read(&existing).unwrap(),b"untouched");
+        // Batch cancellation retains a private partial; the next independent
+        // authenticated SFTP operation verifies and resumes it safely.
+        let keep_op=Arc::new(Operation::default());
+        let mut keep_c=open("trusted-gui",&keep_op).unwrap();
+        let keep_cancel=keep_op.clone();
+        let keep_events=Channel::<Progress>::new(move |_|{keep_cancel.cancel();Ok(())});
+        let kept=local.join(".nodedesk-retained-download.part");
+        let kept_target=local.join("retained-resumed.bin");
+        assert!(copy_download(&mut keep_c,&dest,&kept_target,&kept,&keep_op,&keep_events,true).is_err());
+        assert!(!kept_target.exists());
+        assert!(kept.exists());
+        assert!(fs::metadata(&kept).unwrap().len()>0);
+        let resume_op=Arc::new(Operation::default());
+        let mut fresh_c=open("trusted-gui",&resume_op).unwrap();
+        copy_download_resume(&mut fresh_c,&dest,&kept_target,&kept,&resume_op,&events).unwrap();
+        assert_eq!(fs::read(&kept_target).unwrap(),bytes);
+        assert!(!kept.exists());
+        resume_op.stop();
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
         // Read-only UTF-8 preview uses the same authenticated SFTP transport.

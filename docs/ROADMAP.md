@@ -20,6 +20,9 @@ real network/protocol acceptance, and the draft PR must not be called a release.
 The first new foundation is a local shell tab (SH-01): fixed system PowerShell
 or CMD on Windows, `/bin/sh` on Linux, explicit start/stop and PTY lifecycle.
 No arbitrary executable path or command line crosses the WebView boundary.
+Quick Connect (UI-06) now opens a transient SSH/RDP/VNC tab using the existing
+validated connection form. It does not save the entry or start a network
+session until the user explicitly chooses a protocol action.
 
 ## v0.6 priorities
 

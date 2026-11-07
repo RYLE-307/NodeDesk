@@ -157,9 +157,9 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
-        TerminalKind::Ssh => ("ssh", arguments(&host, port, &username, auth)?),
-        TerminalKind::Sftp => ("sftp", sftp_arguments(&host, port, &username, auth)?),
-        TerminalKind::FilesAuth => ("ssh", bridge.as_ref().unwrap().arguments(auth)?),
+        TerminalKind::Ssh => ("ssh".into(), arguments(&host, port, &username, auth)?),
+        TerminalKind::Sftp => ("sftp".into(), sftp_arguments(&host, port, &username, auth)?),
+        TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
         TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;

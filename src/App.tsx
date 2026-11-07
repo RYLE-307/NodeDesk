@@ -23,6 +23,7 @@ const labels = {
     move: "Переместить в группу…",
     newGroup: "Новая группа",
     newConnection: "Новое подключение",
+    quickConnect: "Быстрое подключение",
     openConnection: "Открыть вкладку",
     duplicate: "Дублировать",
     sidebarResize: "Ширина панели подключений",
@@ -78,6 +79,7 @@ const labels = {
     move: "Move to group…",
     newGroup: "New group",
     newConnection: "New connection",
+    quickConnect: "Quick Connect",
     openConnection: "Open tab",
     duplicate: "Duplicate",
     sidebarResize: "Connection sidebar width",
@@ -142,7 +144,8 @@ const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
 const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
 type Editor =
   | { kind: "group"; value: Group }
-  | { kind: "connection"; value: Connection };
+  | { kind: "connection"; value: Connection }
+  | { kind: "quick"; value: Connection };
 export default function App() {
   const [initial] = useState(() => {
     try {
@@ -166,6 +169,7 @@ export default function App() {
   const [tabs, setTabs] = useState<string[]>([]),
     [active, setActive] = useState(""),
     [secondary, setSecondary] = useState("");
+  const [quickConnections,setQuickConnections] = useState<Record<string,Connection>>({});
   const [menu, setMenu] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
@@ -217,6 +221,9 @@ export default function App() {
       id: crypto.randomUUID(), name:"",host:"",port:22,username:"",protocol:"SSH",groupId,favorite:false
     }});
     setMenu(null);
+  }
+  function quickConnect() {
+    edit({kind:"quick",value:{id:crypto.randomUUID(),name:"",host:"",port:22,username:"",protocol:"SSH",groupId:null,favorite:false}});
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -309,6 +316,7 @@ export default function App() {
   }
   function close(id: string) {
     setTabs((prev) => prev.filter((x) => x !== id));
+    setQuickConnections(prev => { const next={...prev}; delete next[id]; return next; });
     if (active === id) setActive(tabs.find((x) => x !== id) ?? "");
     if (secondary === id) setSecondary("");
   }
@@ -417,12 +425,12 @@ export default function App() {
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
       id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
-      (data.connections.find((c) => c.id === id)?.name ?? id);
+      (data.connections.find((c) => c.id === id)?.name ?? quickConnections[id]?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
-    const c = data.connections.find((c) => c.id === id);
+    const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
       c?.protocol === "VNC" ? <VncWorkspace connection={c} language={data.language}/> : c ? (
@@ -514,6 +522,7 @@ export default function App() {
                   <Icon name="plus"/> {t.group}
                 </button>
               </div>
+              <button type="button" onClick={quickConnect}><Icon name="plus"/> {t.quickConnect}</button>
               <input
                 type="search"
                 aria-label={t.search}
@@ -722,13 +731,19 @@ export default function App() {
                     };
               try {
                 const validated = decode(JSON.stringify(next));
-                if (commit(validated)) setEditor(null);
+                if (editor.kind === "quick") {
+                  const connection=validated.connections.find(c=>c.id===value.id);
+                  if (!connection) throw new Error("Invalid quick connection");
+                  setQuickConnections(prev=>({...prev,[connection.id]:connection}));
+                  open(connection.id);
+                  setEditor(null);
+                } else if (commit(validated)) setEditor(null);
               } catch {
                 setInvalid(true);
               }
             }}
           >
-            <h2>{editor.kind === "group" ? t.group : t.add}</h2>
+            <h2>{editor.kind === "group" ? t.group : editor.kind === "quick" ? t.quickConnect : t.add}</h2>
             {error === "saveError" && (
               <p role="alert" className="error">
                 {t.saveError}
@@ -848,7 +863,7 @@ export default function App() {
                     value={editor.value.rdpSha256Fingerprint ?? ""}
                     onChange={(e) => setEditor({ ...editor, value: { ...editor.value, rdpSha256Fingerprint: e.target.value || undefined } })}/>
                 </label>}
-                <label>
+                {editor.kind !== "quick" && <label>
                   {t.group}
                   <select
                     value={editor.value.groupId ?? ""}
@@ -864,8 +879,8 @@ export default function App() {
                   >
                     {options()}
                   </select>
-                </label>
-                <label className="check">
+                </label>}
+                {editor.kind !== "quick" && <label className="check">
                   <input
                     type="checkbox"
                     checked={editor.value.favorite}
@@ -877,14 +892,14 @@ export default function App() {
                     }
                   />
                   {t.favorites}
-                </label>
+                </label>}
               </>
             )}
             <div className="actions">
               <button type="button" onClick={() => setEditor(null)}>
                 {t.cancel}
               </button>
-              <button type="submit">{t.save}</button>
+              <button type="submit">{editor.kind === "quick" ? t.openConnection : t.save}</button>
             </div>
           </form>
         )}

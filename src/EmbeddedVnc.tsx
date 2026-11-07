@@ -111,10 +111,12 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
           "VNC connection failed. Check the server and WSS certificate.");
         else setMessage(ru?"VNC отключён.":"VNC disconnected.");
       });
-    }catch{
+    }catch(cause){
       setPhaseBoth("idle");
-      setError(ru?"Не удалось открыть защищённый VNC WebSocket.":
-        "Could not open a secure VNC WebSocket.");
+      const kind=cause instanceof Error?cause.name:"UnknownError";
+      // Report error class only; never leak hostnames or secret buffers.
+      setError((ru?"Не удалось открыть защищённый VNC WebSocket.":
+        "Could not open a secure VNC WebSocket.")+" ["+kind+"]");
     }
   }
   function authenticate(){

@@ -302,6 +302,69 @@ pub async fn files_list(id: String, mut destination: Option<Destination>, path: 
         match destination { Some(d) => { let mut c = connect(&d,&g.op)?; remote_list(&mut c,&path,&g.op) }, None => local_list(&path,&g.op) }
     }).await.map_err(|_| "File task failed".to_string())?
 }
+/// Read-only small UTF-8 preview. No local temporary file, shell or write request.
+const PREVIEW_LIMIT: usize = 128 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PreviewRequest { destination: Destination, directory: String, name: String }
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct Preview { name: String, content: String, bytes: usize }
+
+fn decode_preview(bytes: Vec<u8>) -> Result<String> {
+    if bytes.len() > PREVIEW_LIMIT {return Err("Preview exceeds 128 KiB limit".into());}
+    if bytes.iter().any(|b| *b == 0) {return Err("Binary files cannot be previewed".into());}
+    let content=String::from_utf8(bytes).map_err(|_|"Only UTF-8 text can be previewed".to_string())?;
+    if content.chars().any(|c| c.is_control() && !matches!(c,'\\n'|'\\r'|'\\t')) {
+        return Err("Unsupported control characters in text preview".into());
+    }
+    Ok(content)
+}
+fn preview_remote(c: &mut Sftp, directory: &str, name: &str, op: &Operation) -> Result<Preview> {
+    wire::path(directory)?; wire::name(name)?; op.check()?;
+    let parent=c.realpath(directory)?; op.check()?;
+    let path=wire::join(&parent,name)?;
+    let before=c.lstat(&path)?;
+    if before.kind()!="file" {return Err("Preview requires a regular file".into());}
+    let size=before.size.ok_or("File size unavailable; preview refused")?;
+    if size > PREVIEW_LIMIT as u64 {return Err("Preview exceeds 128 KiB limit".into());}
+    let handle=c.open(&path,1)?;
+    let mut bytes=Vec::with_capacity(size as usize);
+    loop {
+        op.check()?;
+        match c.read(&handle,bytes.len() as u64)? {
+            None=>break,
+            Some(chunk)=>{
+                if chunk.len() > PREVIEW_LIMIT.saturating_sub(bytes.len()){
+                    return Err("Preview exceeds 128 KiB limit".into());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+    }
+    c.close(&handle)?;op.check()?;
+    if bytes.len() as u64 != size {return Err("File changed during preview".into());}
+    let after=c.lstat(&path)?;
+    if after.kind()!="file"||after.size!=before.size||after.modified!=before.modified{
+        return Err("File changed during preview".into());
+    }
+    let bytes_len=bytes.len();
+    Ok(Preview{name:name.to_owned(),content:decode_preview(bytes)?,bytes:bytes_len})
+}
+#[tauri::command]
+pub async fn files_preview(id: String, mut request: PreviewRequest, app: tauri::AppHandle) -> Result<Preview> {
+    wire::name(&request.name)?; wire::path(&request.directory)?;
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        preview_remote(&mut client,&request.directory,&request.name,&guard.op)
+    }).await.map_err(|_|"File preview task failed".to_string())?
+}
+
 #[tauri::command]
 pub fn files_cancel(id: String, state: State<'_,Operations>) -> Result<()> {
     operation_id(&id)?;
@@ -454,6 +517,13 @@ mod tests {
         assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
     }
+    #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
+        assert_eq!(decode_preview("Привет\\nworld".as_bytes().to_vec()).unwrap(),"Привет\\nworld");
+        assert!(decode_preview(b"binary\\0data".to_vec()).is_err());
+        assert!(decode_preview(vec![0xff,0xfe]).is_err());
+        assert!(decode_preview(vec![0x1b,0x5b,0x6d]).is_err());
+        assert!(decode_preview(vec![b'a';PREVIEW_LIMIT+1]).is_err());
+    }
     #[test] fn cancellation_is_idempotent() { let op = Operation::default(); assert!(op.check().is_ok()); op.cancel(); op.cancel(); assert!(op.check().is_err()); }
     #[test] fn cancel_before_registration_and_limits() {
         let mut registry = Registry::default(); registry.cancel("late".into()).unwrap();
@@ -546,6 +616,18 @@ mod tests {
         assert!(copy_download(&mut c,&dest,&downloaded,&partial,&op,&events).is_err());
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
+        // Read-only UTF-8 preview uses the same authenticated SFTP transport.
+        let note="nodedesk-preview.txt";let note_path=wire::join(remote_path,note).unwrap();
+        fs::write(&note_path,"Тестовая заметка\\nsecond line").unwrap();
+        let view=preview_remote(&mut c,remote_path,note,&op).unwrap();
+        assert_eq!(view.content,"Тестовая заметка\\nsecond line");
+        assert_eq!(view.bytes,view.content.as_bytes().len());
+        assert!(preview_remote(&mut c,remote_path,filename,&op).is_err());
+        fs::write(remote.join("oversize.txt"),vec![b'x';PREVIEW_LIMIT+1]).unwrap();
+        assert!(preview_remote(&mut c,remote_path,"oversize.txt",&op).is_err());
+        assert!(preview_remote(&mut c,remote_path,"../outside",&op).is_err());
+        fs::remove_file(remote.join(note)).unwrap();
+        fs::remove_file(remote.join("oversize.txt")).unwrap();
         assert!(c.lstat(&format!("{remote_path}/missing")).is_err());
         // Real SFTP v3 CRUD: mkdir, collision refusal, rename without clobber,
         // non-recursive delete, and type/symlink validation.

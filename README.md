@@ -1,6 +1,6 @@
 # NodeDesk
 
-> **Current development: v0.6.0-alpha.0** — external RDP launcher for Linux/Windows in draft PR #11.
+> **Current development: v0.6.0-alpha.0** — external RDP and certificate-restricted VNC launchers for Linux/Windows in draft PR #11.
 > v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
 > First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
 
@@ -21,7 +21,7 @@ React, TypeScript and Rust. Current development version: **0.6.0-alpha.0**.
 Real SSH/SFTP consoles support key/agent/password/PAM. The v0.5 Files GUI
 supports structured SFTP browsing and binary transfer with Linux password/PAM
 auth bridge, Windows native password/keyboard-interactive or direct key/agent auth.
-The first RDP launcher opens an external mstsc/FreeRDP window on explicit click. Embedded RDP, VNC, VPN, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
+The first RDP launcher opens an external mstsc/FreeRDP window on explicit click. Embedded RDP/VNC, VPN, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
 or credentials are collected. Catalog storage is local WebView profile storage,
 not encryption or backup. [Storage contract and acceptance checks](docs/V0.2.md).
 
@@ -91,3 +91,15 @@ Uncheck interactive login for the existing key/agent path. CA/certificate trust,
 password changes and arbitrary mixed-method MFA chains are outside this slice.
 Linux real-sshd/PAM and Windows independent-peer CI are separate from manual GUI
 acceptance. [Exact architecture and limits](docs/V0.5-SFTP-GUI.md). PR #10 stays draft.
+
+### v0.6 VNC integration (draft)
+
+The existing v1 connection catalog now supports VNC profiles (default port
+5900). Opening the VNC tab does not connect; **Open VNC** launches an externally
+installed TigerVNC viewer. A strict `X509Vnc,X509Plain` allowlist rejects
+unauthenticated or anonymous-transport VNC. Viewer password/certificate prompts
+remain outside NodeDesk; no passwords, insecure fallback, clipboard sharing,
+automatic reconnection or catalog credentials. Linux needs the `tigervnc`
+package; Windows needs the official TigerVNC Viewer installation. This is
+**not** an embedded VNC screen and still needs native manual acceptance.
+[VNC security and QA](docs/V0.6-VNC.md).

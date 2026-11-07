@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {RECOVERY_KEY, validateRecovery, loadRecovery, saveRecovery,
+import {RECOVERY_KEY, validateRecovery, loadRecovery, listRecoveries, saveRecovery,
   forgetRecovery} from "../src/queueRecovery.ts";
 
 const now=Date.UTC(2026,10,7,19,0,0);
@@ -60,20 +60,20 @@ test("validation fails closed on tampered paths, filenames, states, IDs and meta
   store.setItem(RECOVERY_KEY,"{invalid");
   assert.equal(loadRecovery(store,endpoint,now),null);
 });
-test("store retains at most eight separate endpoints and forget only removes one",()=>{
+test("store refuses a ninth checkpoint without silently evicting unfinished work",()=>{
   const store=fakeStorage();
   for(let i=0;i<10;i++){
     assert.equal(saveRecovery(store,record({
       endpoint:{...endpoint,host:"server"+i+".internal"},savedAt:now+i
-    }),now+100),true);
+    }),now+100),i<8);
   }
   const saved=JSON.parse(store.getItem(RECOVERY_KEY));
   assert.equal(saved.records.length,8);
-  assert.equal(loadRecovery(store,{...endpoint,host:"server0.internal"},now+100),null);
-  assert.ok(loadRecovery(store,{...endpoint,host:"server9.internal"},now+100));
-  forgetRecovery(store,{...endpoint,host:"server9.internal"});
+  assert.ok(loadRecovery(store,{...endpoint,host:"server0.internal"},now+100));
   assert.equal(loadRecovery(store,{...endpoint,host:"server9.internal"},now+100),null);
-  assert.ok(loadRecovery(store,{...endpoint,host:"server8.internal"},now+100));
+  forgetRecovery(store,{...endpoint,host:"server0.internal"});
+  assert.equal(loadRecovery(store,{...endpoint,host:"server0.internal"},now+100),null);
+  assert.ok(loadRecovery(store,{...endpoint,host:"server1.internal"},now+100));
 });
 test("recovery never accepts an all-done queue or stale expired metadata",()=>{
   const store=fakeStorage();
@@ -90,4 +90,18 @@ test("a paused item remains incomplete after restart",()=>{
   ]}),now),true);
   assert.deepEqual(loadRecovery(store,endpoint,now).items.map(item=>item.state),
     ["done","paused"]);
+});
+test("separate queue checkpoints on one endpoint are independently restored and forgotten",()=>{
+  const store=fakeStorage();
+  const first="11111111-1111-4111-8111-111111111111";
+  const second="22222222-2222-4222-8222-222222222222";
+  assert.equal(saveRecovery(store,record({queueId:first}),now),true);
+  assert.equal(saveRecovery(store,record({queueId:second,names:["done.bin","other.bin"],
+    sourceEntries:[{name:"done.bin",kind:"file",size:100,modified:2,permissions:384},
+      {name:"other.bin",kind:"file",size:200,modified:3,permissions:384}],
+    items:[{name:"done.bin",state:"done"},{name:"other.bin",state:"paused"}]}),now),true);
+  assert.deepEqual(listRecoveries(store,endpoint,now).map(item=>item.queueId),[second,first]);
+  forgetRecovery(store,endpoint,first);
+  assert.deepEqual(listRecoveries(store,endpoint,now).map(item=>item.queueId),[second]);
+  assert.equal(saveRecovery(store,record({queueId:"bad-id"}),now),false);
 });

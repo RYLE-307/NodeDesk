@@ -6,13 +6,17 @@ import { childPath, parentPath, portableName, progressPercent, transferAllowed, 
 import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
 import {adjacentMatch, countLiteral, replaceAllLiteral, replaceLiteralSelection,
   MAX_REPLACEMENTS, MAX_SEARCH_TERM} from "./textEditorSearch";
-import {forgetRecovery, loadRecovery, saveRecovery} from "./queueRecovery";
+import {forgetRecovery, listRecoveries, saveRecovery} from "./queueRecovery";
 import type {RecoveryEndpoint, RecoveryPartial, RecoveryRecord} from "./queueRecovery";
 
 type PendingTransferPlan = {
+  id:string;
   names:string[]; upload:boolean; localDirectory:string; remoteDirectory:string;
   connectionKey:string; sourceEntries:FileEntry[]; localVersion:number; remoteVersion:number;
 };
+type QueueSnapshot = {id:string;plan:PendingTransferPlan;items:BatchItem[];
+  partialUpload:{index:number;previousId:string}|null;
+  partialDownload:{index:number;previousId:string}|null;finished:boolean};
 
 export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
   const ru = language === "ru";
@@ -52,14 +56,15 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const stopQueue = useRef(false);
   const pauseQueue = useRef(false);
   const [retryPlan,setRetryPlan] = useState<PendingTransferPlan|null>(null);
+  const [queueArchive,setQueueArchive] = useState<QueueSnapshot[]>([]);
   const [partialUpload,setPartialUpload] = useState<{index:number;previousId:string}|null>(null);
   const [partialDownload,setPartialDownload] = useState<{index:number;previousId:string}|null>(null);
   // Recovery is explicitly opt-in and contains only file names, metadata,
   // folders and endpoint identity. Never credentials, content or authSession.
   const [keepRecovery,setKeepRecovery] = useState(false);
   const recoveryEnabled=useRef(false);
-  const [savedRecovery,setSavedRecovery] = useState<RecoveryRecord|null>(()=>
-    typeof window==="undefined"?null:loadRecovery(window.localStorage,recoveryEndpoint));
+  const [savedRecoveries,setSavedRecoveries] = useState<RecoveryRecord[]>(()=>
+    typeof window==="undefined"?[]:listRecoveries(window.localStorage,recoveryEndpoint));
   const listingVersion=useRef({local:0,remote:0});
   const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
   const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
@@ -85,28 +90,30 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       window.confirm(ru?"Несохранённые изменения исчезнут. Продолжить?":"Unsaved edits will be lost. Continue?");
   }
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
+  const currentProfile=useRef(profile);
+  currentProfile.current=profile;
   useEffect(()=>{
-    setSavedRecovery(loadRecovery(window.localStorage,recoveryEndpoint));
+    setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));
     recoveryEnabled.current=false;setKeepRecovery(false);
   },[profile]);
-  function discardCheckpoint(){
-    forgetRecovery(window.localStorage,recoveryEndpoint);
-    setSavedRecovery(null);
+  function discardCheckpoint(queueId?:string){
+    forgetRecovery(window.localStorage,recoveryEndpoint,queueId);
+    setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));
   }
   function checkpoint(plan:PendingTransferPlan,items:readonly BatchItem[],
     partial:RecoveryPartial|null):void {
     if(!recoveryEnabled.current)return;
     const state:RecoveryRecord={
-      version:1,endpoint:{...recoveryEndpoint},upload:plan.upload,
+      version:1,endpoint:{...recoveryEndpoint},queueId:plan.id,upload:plan.upload,
       localDirectory:plan.localDirectory,remoteDirectory:plan.remoteDirectory,
       names:[...plan.names],sourceEntries:plan.sourceEntries.map(item=>({...item})),
       items:items.map(item=>({...item})),partial,savedAt:Date.now()
     };
     if(items.every(item=>item.state==="done")){
-      discardCheckpoint();return;
+      discardCheckpoint(plan.id);return;
     }
     if(saveRecovery(window.localStorage,state)) {
-      setSavedRecovery(state);
+      setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));
     }else{
       // Disable storage if disabled/quota exceeded; transfers still work.
       recoveryEnabled.current=false;setKeepRecovery(false);
@@ -114,26 +121,51 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         "Cannot save queue checkpoint. Recovery after restart is unavailable.");
     }
   }
-  function restoreCheckpoint(){
-    if(busy || gate.current.id || !savedRecovery)return;
+  function archiveCurrent():boolean {
+    if(!retryPlan || !batchReport.length)return true;
+    if(queueArchive.length>=7){setError(ru?"Лимит: 8 очередей. Удали одну перед созданием новой.":
+      "Limit: 8 queues. Clear one before creating another.");return false;}
+    setQueueArchive(current=>[...current,{id:retryPlan.id,plan:retryPlan,
+      items:batchReport,partialUpload,partialDownload,finished:batchFinished}]);
+    return true;
+  }
+  function selectArchivedQueue(id:string){
+    if(busy || gate.current.id)return;
+    const selected=queueArchive.find(q=>q.id===id);
+    if(!selected)return;
+    setQueueArchive(current=>[
+      ...current.filter(q=>q.id!==id),
+      ...(retryPlan && batchReport.length?[{id:retryPlan.id,plan:retryPlan,
+        items:batchReport,partialUpload,partialDownload,finished:batchFinished}]:[])
+    ]);
+    setRetryPlan(selected.plan);setBatchReport(selected.items);
+    setPartialUpload(selected.partialUpload);setPartialDownload(selected.partialDownload);
+    setBatchFinished(selected.finished);setQueueProgress(null);
+  }
+  function restoreCheckpoint(savedRecovery:RecoveryRecord){
+    if(busy || gate.current.id)return;
     if(interactive && !authReady){
       setError(ru?"Сначала выполни вход для файлов, затем загрузи сохранённую очередь.":
         "Complete Files login first, then load the saved queue.");
       return;
     }
-    const restored=loadRecovery(window.localStorage,recoveryEndpoint);
+    const restored=listRecoveries(window.localStorage,recoveryEndpoint)
+      .find(item=>item.queueId===savedRecovery.queueId && item.savedAt===savedRecovery.savedAt);
     if(!restored){
-      setSavedRecovery(null);setError(ru?"Контрольная точка устарела или недействительна.":
+      setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));setError(ru?"Контрольная точка устарела или недействительна.":
         "Recovery checkpoint expired or is invalid.");return;
     }
-    if(retryPlan && !window.confirm(ru?
-      "Заменить текущий отчёт сохранённой очередью? Незавершённые файлы НЕ будут запущены автоматически.":
-      "Replace current queue report with saved recovery? Files will NOT transfer automatically."))return;
+    if(retryPlan?.id===restored.queueId)return;
+    if(queueArchive.some(q=>q.id===restored.queueId)){
+      selectArchivedQueue(restored.queueId!);return;
+    }
+    if(!archiveCurrent())return;
     const plan:PendingTransferPlan={
+      id:restored.queueId??crypto.randomUUID(),
       names:[...restored.names],upload:restored.upload,
       localDirectory:restored.localDirectory,remoteDirectory:restored.remoteDirectory,
       sourceEntries:restored.sourceEntries.map(entry=>({...entry})),
-      connectionKey:JSON.stringify(destination),
+      connectionKey:profile,
       localVersion:listingVersion.current.local,remoteVersion:listingVersion.current.remote
     };
     setRetryPlan(plan);setBatchReport(restored.items);setBatchFinished(true);
@@ -157,7 +189,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     if (interactive && !authReady) {
       stopQueue.current = true;
-      setRemote(null); clearEditor(); setRetryPlan(null); setPartialUpload(null);setPartialDownload(null); setBatchReport([]); setBatchFinished(false); selectRemote(""); setBatchRemote([]);
+      setRemote(null); clearEditor(); selectRemote(""); setBatchRemote([]);
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
@@ -183,8 +215,12 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
-    previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
-    setRemote(null); clearEditor(); setRetryPlan(null); setPartialUpload(null);setPartialDownload(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    previous.current = next; stopQueue.current = true;
+    setRemote(null); clearEditor(); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    if(JSON.stringify([connection.host,connection.port,connection.username])!==retryPlan?.connectionKey){
+      setBatchReport([]);setBatchFinished(false);setRetryPlan(null);setQueueArchive([]);
+      setPartialUpload(null);setPartialDownload(null);
+    }
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -277,7 +313,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       remoteDirectory:plan.remoteDirectory,upload:plan.upload};
     void run(async id=>{
       for(let offset=0;offset<indexes.length;offset++){
-        if(stopQueue.current || !mounted.current || previous.current!==plan.connectionKey)
+        if(stopQueue.current || !mounted.current || currentProfile.current!==plan.connectionKey)
           throw new Error(ru?"Очередь отменена.":"Transfer queue cancelled.");
         const index=indexes[offset],name=plan.names[index];
         activePartial=resumeCandidate?.index===index?resumeCandidate:
@@ -317,7 +353,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       setStatus(ru?`Передано файлов: ${completed}/${plan.names.length}`:
         `Files transferred: ${completed}/${plan.names.length}`);
     }).then(ok=>{
-      if(!mounted.current || previous.current!==plan.connectionKey)return;
+      if(!mounted.current || currentProfile.current!==plan.connectionKey)return;
       setQueueProgress(null);
       currentItems=finishBatch(currentItems);
       checkpoint(plan,currentItems,activePartial);
@@ -336,24 +372,27 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     try{names=transferBatchPlan(draggedNames ?? (upload?batchLocal:batchRemote),source,target);}
     catch(cause){setError(String(cause));return;}
     if(!source || !target)return;
+    if(keepRecovery && listRecoveries(window.localStorage,recoveryEndpoint).length>=8){
+      setError(ru?"Хранилище восстановления заполнено (8 очередей). Удали ненужную запись.":
+        "Recovery storage is full (8 queues). Forget an old record first.");return;
+    }
     const label=upload?(ru?"Загрузить на сервер":"Upload to server"):(ru?"Скачать локально":"Download locally");
     const sample=names.slice(0,12).join("\n");
     if(!window.confirm(`${label}: ${names.length} ${ru?"файлов":"files"}\n→ ${target.path}\n${sample}${names.length>12?"\n…":""}\n${ru?"Без перезаписи. Продолжить?":"No overwrite. Continue?"}`))return;
+    if(!archiveCurrent())return;
     const plan:PendingTransferPlan={
+      id:crypto.randomUUID(),
       names,upload,localDirectory:local!.path,remoteDirectory:remote!.path,
-      connectionKey:JSON.stringify(destination),
+      connectionKey:profile,
       sourceEntries:names.map(name=>source.entries.find(entry=>entry.name===name)!),
       localVersion:listingVersion.current.local,remoteVersion:listingVersion.current.remote,
     };
-    if(keepRecovery && savedRecovery && !window.confirm(ru?
-      "Заменить сохранённую очередь новым списком? Это удалит старую точку восстановления, но не файлы .part.":
-      "Replace saved queue with new batch? Old recovery metadata is replaced, but .part files stay."))return;
     setRetryPlan(plan);setPartialUpload(null);setPartialDownload(null);
     executeBatch(plan,names.map((_,index)=>index),startBatch(names));
   }
   function retryUnfinished(resumeVerified:boolean){
     if(!retryPlan || busy || gate.current.id || !batchFinished)return;
-    if(retryPlan.connectionKey!==JSON.stringify(destination)){
+    if(retryPlan.connectionKey!==profile){
       setError(ru?"Очередь относится к другому подключению.":"Queue belongs to a different connection.");
       return;
     }
@@ -677,20 +716,28 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           "Keep unfinished queue for recovery after restart"}
       </label>
       <p className="ssh-help">{ru?
-        "По выбору сохраняются адрес сервера, имена и пути файлов, статусы и ID операции в локальном хранилище приложения без шифрования. Пароли, ключи и содержимое файлов не сохраняются. Без автоподключения и автопередачи. До 8 серверов, 7 дней.":
-        "Opt-in local metadata: server address, filenames, paths, statuses and operation ID are stored without encryption. No passwords, keys or file contents. No automatic connections or transfers. To restore: log in first, then load and refresh both panes. Up to 8 endpoints, 7 days."}</p>
-      {savedRecovery && <div className="files-ops">
+        "По выбору сохраняются адрес сервера, имена и пути файлов, статусы и ID операции в локальном хранилище приложения без шифрования. Пароли, ключи и содержимое файлов не сохраняются. Без автоподключения и автопередачи. До 8 очередей, 7 дней.":
+        "Opt-in local metadata: server address, filenames, paths, statuses and operation ID are stored without encryption. No passwords, keys or file contents. No automatic connections or transfers. To restore: log in first, then load and refresh both panes. Up to 8 queues, 7 days."}</p>
+      {savedRecoveries.map(savedRecovery=><div className="files-ops" key={savedRecovery.queueId??"legacy"}>
         <span>{ru?"Незавершённая очередь":"Saved unfinished queue"}: {savedRecovery.items.filter(item=>item.state!=="done").length} {ru?"файлов":"files"} ({savedRecovery.upload?"upload":"download"})</span>
         <button type="button" disabled={busy || !!gate.current.id || (interactive && !authReady)}
-          onClick={restoreCheckpoint}>{ru?"Загрузить очередь":"Load saved queue"}</button>
+          onClick={()=>restoreCheckpoint(savedRecovery)}>{ru?"Загрузить очередь":"Load saved queue"}</button>
         <button type="button" disabled={busy} onClick={()=>{
           if(window.confirm(ru?"Забыть сохранённую очередь? Файлы .part останутся на диске.":
             "Forget saved queue metadata? .part files remain on disk.")){
-            discardCheckpoint();recoveryEnabled.current=false;setKeepRecovery(false);
+            discardCheckpoint(savedRecovery.queueId);
           }
         }}>{ru?"Забыть очередь":"Forget saved queue"}</button>
-      </div>}
+      </div>)}
     </div>
+    {queueArchive.length>0 && <section className="files-batch-report" aria-label={ru?"Очереди передач":"Transfer queues"}>
+      <strong>{ru?"Другие очереди":"Other queues"}</strong>
+      <div className="files-ops">{queueArchive.map(queue=><button type="button" key={queue.id}
+        disabled={busy} onClick={()=>selectArchivedQueue(queue.id)}>
+        {queue.plan.upload?(ru?"Загрузка":"Upload"):(ru?"Скачивание":"Download")}: {queue.items.filter(item=>item.state==="done").length}/{queue.items.length}
+        {` · ${queue.plan.names[0]}`}
+      </button>)}</div>
+    </section>}
     {queueProgress && <p role="status">{ru ? "Очередь" : "Queue"}: {queueProgress.index}/{queueProgress.total} — {queueProgress.name}</p>}
     {batchReport.length>0 && <section className="files-batch-report" aria-label={ru ? "Отчёт о передаче" : "Transfer report"}>
       <div className="files-batch-heading">
@@ -711,7 +758,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         {batchFinished && !busy && <button type="button" onClick={() => {
           setBatchReport([]);setBatchFinished(false);setRetryPlan(null);
           setPartialUpload(null);setPartialDownload(null);
-          discardCheckpoint();
+          if(retryPlan){discardCheckpoint(retryPlan.id);setQueueArchive(current=>current.filter(q=>q.id!==retryPlan.id));}
         }}>
           {ru ? "Очистить отчёт" : "Clear report"}</button>}
       </div>

@@ -91,7 +91,7 @@ export function finishBatch(items: readonly BatchItem[]): BatchItem[] {
  */
 export function remainingBatchIndexes(items: readonly BatchItem[]): number[] {
   return items.flatMap((item,index)=>
-    item.state==="failed" || item.state==="cancelled" || item.state==="skipped"
+    item.state==="failed" || item.state==="cancelled" || item.state==="skipped" || item.state==="paused"
       ? [index] : []);
 }
 export function retryBatchPlan(

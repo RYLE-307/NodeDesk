@@ -311,6 +311,37 @@ test('paused batch keeps completed work and requires explicit verified resume',a
   expect(calls[1].request.resumeId).toBe(calls[0].id);
 });
 
+test('separate batches retain independent reports and retry only the selected queue',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    emptyRemote:true,extraLocal:true,allowTransfer:true,failOnNameOnce:'sample.bin'
+  }));
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 0/1');
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).uncheck();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  await expect(report).toContainText('File transfers: 1/1');
+  await files.getByRole('region',{name:'Transfer queues'}).getByRole('button',{name:/sample.bin/}).click();
+  await expect(report).toContainText('File transfers: 0/1');
+  await expect(report).toContainText('sample.bin');
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',d=>d.accept());
+  await report.getByRole('button',{name:'Retry unfinished'}).click();
+  await expect(report).toContainText('File transfers: 1/1');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer')
+    .map(c=>c.request.name))).toEqual(['sample.bin','extra.bin','sample.bin']);
+});
+
 test('completed batch shows per-file outcomes and correct progress label',async({page})=>{
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();

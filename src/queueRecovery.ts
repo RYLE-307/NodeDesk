@@ -16,6 +16,7 @@ export type RecoveryEndpoint = {host:string;port:number;username:string};
 export type RecoveryPartial = {index:number;previousId:string};
 export type RecoveryRecord = {
   version:1; endpoint:RecoveryEndpoint; upload:boolean;
+  queueId?:string;
   localDirectory:string; remoteDirectory:string; names:string[];
   sourceEntries:FileEntry[]; items:BatchItem[];
   partial:RecoveryPartial|null; savedAt:number;
@@ -45,6 +46,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if (!input || typeof input!=="object")return null;
   const v=input as Record<string,unknown>;
   if (v.version!==VERSION || !validEndpoint(v.endpoint) ||
+    (v.queueId!==undefined && (typeof v.queueId!=="string" || !idPattern.test(v.queueId))) ||
     typeof v.upload!=="boolean" ||
     !textField(v.localDirectory,2048) || !textField(v.remoteDirectory,2048) ||
     (typeof v.savedAt!=="number" || !Number.isSafeInteger(v.savedAt)) ||
@@ -71,6 +73,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if(items.every(item=>item.state==="done"))return null;
   return {
     version:1,endpoint:{...(v.endpoint as RecoveryEndpoint)},upload:v.upload as boolean,
+    ...(v.queueId?{queueId:v.queueId as string}:{}),
     localDirectory:v.localDirectory as string,remoteDirectory:v.remoteDirectory as string,
     names:[...(v.names as string[])],
     sourceEntries:(v.sourceEntries as FileEntry[]).map(e=>({...e})),
@@ -94,20 +97,26 @@ function readAll(store:RecoveryStore,now=Date.now()):RecoveryRecord[] {
 export function loadRecovery(store:RecoveryStore,endpoint:RecoveryEndpoint,now=Date.now()):RecoveryRecord|null {
   return readAll(store,now).find(r=>sameEndpoint(r.endpoint,endpoint)) ?? null;
 }
+export function listRecoveries(store:RecoveryStore,endpoint:RecoveryEndpoint,now=Date.now()):RecoveryRecord[] {
+  return readAll(store,now).filter(r=>sameEndpoint(r.endpoint,endpoint));
+}
 export function saveRecovery(store:RecoveryStore,record:RecoveryRecord,now=Date.now()):boolean {
   try{
     const checked=validateRecovery(record,now);
     if(!checked)return false;
-    const others=readAll(store,now).filter(r=>!sameEndpoint(r.endpoint,checked.endpoint));
-    const encoded=JSON.stringify({version:1,records:[checked,...others].slice(0,MAX_RECORDS)});
+    const others=readAll(store,now).filter(r=>!sameEndpoint(r.endpoint,checked.endpoint) ||
+      (checked.queueId!==undefined && r.queueId!==checked.queueId));
+    if(others.length>=MAX_RECORDS)return false;
+    const encoded=JSON.stringify({version:1,records:[checked,...others]});
     if(new TextEncoder().encode(encoded).length>MAX_RECORD_BYTES*MAX_RECORDS)return false;
     store.setItem(RECOVERY_KEY,encoded);
     return true;
   }catch{return false;}
 }
-export function forgetRecovery(store:RecoveryStore,endpoint:RecoveryEndpoint):void {
+export function forgetRecovery(store:RecoveryStore,endpoint:RecoveryEndpoint,queueId?:string):void {
   try{
-    const remain=readAll(store).filter(r=>!sameEndpoint(r.endpoint,endpoint));
+    const remain=readAll(store).filter(r=>!sameEndpoint(r.endpoint,endpoint) ||
+      (queueId!==undefined && r.queueId!==queueId));
     if(remain.length)store.setItem(RECOVERY_KEY,JSON.stringify({version:1,records:remain}));
     else store.removeItem(RECOVERY_KEY);
   }catch{/* Corrupt or unavailable private storage is never a reason to connect. */}

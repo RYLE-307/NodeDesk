@@ -120,4 +120,6 @@ test("retry queue includes only incomplete items and validates refreshed source 
     source,destination,snapshots),/No incomplete/);
   assert.deepEqual(remainingBatchIndexes([{name:"a",state:"done"},
     {name:"b",state:"cancelled"},{name:"c",state:"skipped"}]),[1,2]);
+  assert.deepEqual(remainingBatchIndexes([{name:"a",state:"done"},
+    {name:"b",state:"paused"}]),[1]);
 });

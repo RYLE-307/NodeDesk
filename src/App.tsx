@@ -24,6 +24,11 @@ const labels = {
     newGroup: "Новая группа",
     newConnection: "Новое подключение",
     quickConnect: "Быстрое подключение",
+    exportCatalog: "Экспорт каталога",
+    importCatalog: "Импорт каталога",
+    importFailed: "Файл каталога не прошёл проверку; данные не изменены.",
+    importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты.",
+    importDone: "Каталог импортирован",
     openConnection: "Открыть вкладку",
     duplicate: "Дублировать",
     sidebarResize: "Ширина панели подключений",
@@ -80,6 +85,11 @@ const labels = {
     newGroup: "New group",
     newConnection: "New connection",
     quickConnect: "Quick Connect",
+    exportCatalog: "Export catalog",
+    importCatalog: "Import catalog",
+    importFailed: "Catalog file failed validation; nothing changed.",
+    importConfirm: "Replace the current catalog with this file? Open sessions will close.",
+    importDone: "Catalog imported",
     openConnection: "Open tab",
     duplicate: "Duplicate",
     sidebarResize: "Connection sidebar width",
@@ -176,6 +186,7 @@ export default function App() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const importInput=useRef<HTMLInputElement>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
   function showMenu(id: string, x: number, y: number) {
@@ -224,6 +235,26 @@ export default function App() {
   }
   function quickConnect() {
     edit({kind:"quick",value:{id:crypto.randomUUID(),name:"",host:"",port:22,username:"",protocol:"SSH",groupId:null,favorite:false}});
+  }
+  function exportCatalog() {
+    const content=JSON.stringify(decode(JSON.stringify(data)),null,2);
+    const url=URL.createObjectURL(new Blob([content],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url; link.download="nodedesk-catalog.json";
+    document.body.append(link); link.click(); link.remove();
+    window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+  }
+  async function importCatalog(file:File|undefined) {
+    if(!file)return;
+    try {
+      if(file.size>2_000_000)throw new Error("Catalog too large");
+      const imported=decode(await file.text());
+      if(!window.confirm(t.importConfirm))return;
+      if(commit(imported)) {
+        setTabs([]);setActive("");setSecondary("");setQuickConnections({});
+        setNotice(t.importDone);
+      }
+    } catch {setNotice(t.importFailed);}
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -523,6 +554,12 @@ export default function App() {
                 </button>
               </div>
               <button type="button" onClick={quickConnect}><Icon name="plus"/> {t.quickConnect}</button>
+              <div className="actions">
+                <button type="button" onClick={exportCatalog} disabled={blocked}>{t.exportCatalog}</button>
+                <button type="button" onClick={()=>importInput.current?.click()} disabled={blocked}>{t.importCatalog}</button>
+              </div>
+              <input ref={importInput} type="file" accept=".json,application/json" hidden
+                onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importCatalog(file);}}/>
               <input
                 type="search"
                 aria-label={t.search}

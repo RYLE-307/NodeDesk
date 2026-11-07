@@ -23,6 +23,11 @@ No arbitrary executable path or command line crosses the WebView boundary.
 Quick Connect (UI-06) now opens a transient SSH/RDP/VNC tab using the existing
 validated connection form. It does not save the entry or start a network
 session until the user explicitly chooses a protocol action.
+Catalog JSON import/export (CAT-02) validates the existing v1 schema and
+strips unknown fields, including credential-like fields, on both paths.
+Import confirms replacement, closes old session tabs and keeps the original
+catalog on invalid input. Native WebView file download/picker acceptance and
+older-format migrations remain outstanding.
 
 ## v0.6 priorities
 

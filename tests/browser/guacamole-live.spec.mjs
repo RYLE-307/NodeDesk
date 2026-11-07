@@ -56,11 +56,10 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   // server. Do not send inputs to any production host in this fixture.
   await screen.locator("canvas").first().click({position:{x:4,y:4}});
   await page.keyboard.press("a");
-  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput),{timeout:10000})
-    .toMatchObject({mouse:expect.any(Number),key:expect.any(Number)});
-  const input=await page.evaluate(()=>window.__guacQaInput);
-  expect(input.mouse).toBeGreaterThan(0);
-  expect(input.key).toBeGreaterThan(0);
+  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.mouse),{timeout:10000})
+    .toBeGreaterThan(0);
+  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.key),{timeout:10000})
+    .toBeGreaterThan(0);
   await embedded.getByRole("button",{name:"Disconnect",exact:true}).click();
   await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();
   await embedded.getByRole("button",{name:"Sign out"}).click();

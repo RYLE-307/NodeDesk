@@ -832,6 +832,21 @@ mod tests {
         assert!(copy_upload_resume(&mut c,&source,&collision_dest,&matching_part,&op,&events).is_err());
         assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
         assert_eq!(fs::read(&matching_part).unwrap(),&bytes[..32768]);
+        let missing_part=wire::join(remote_path,".missing-resume.part").unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"missing-resume.bin").unwrap(),
+            &missing_part,&op,&events).is_err());
+        let empty_part=wire::join(remote_path,".empty-resume.part").unwrap();
+        fs::write(&empty_part,b"").unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"empty-resume.bin").unwrap(),
+            &empty_part,&op,&events).is_err());
+        let oversized=wire::join(remote_path,".oversized-resume.part").unwrap();
+        fs::write(&oversized,vec![0_u8;bytes.len()+1]).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"oversized-resume.bin").unwrap(),
+            &oversized,&op,&events).is_err());
+        let link_partial=wire::join(remote_path,".symlink-resume.part").unwrap();
+        std::os::unix::fs::symlink(&source,&link_partial).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"symlink-resume.bin").unwrap(),
+            &link_partial,&op,&events).is_err());
         let listing = remote_list(&mut c,remote_path,&op).unwrap();
         assert!(listing.entries.iter().any(|e|e.name==filename && e.kind=="file"));
         let downloaded = local.join("download.bin"); let partial = local.join(".download.part");

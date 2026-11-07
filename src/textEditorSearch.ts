@@ -30,7 +30,7 @@ export function adjacentMatch(text:string,needle:string,position:number,
   const cursor=Math.max(0,Math.min(text.length,Math.trunc(position)));
   const start=direction==="next"
     ? (()=>{const at=text.indexOf(needle,cursor);return at<0?text.indexOf(needle):at;})()
-    : (()=>{const at=text.lastIndexOf(needle,cursor-1);return at<0?text.lastIndexOf(needle):at;})();
+    : (()=>{const at=cursor===0?-1:text.lastIndexOf(needle,cursor-1);return at<0?text.lastIndexOf(needle):at;})();
   return start<0?null:{start,end:start+needle.length};
 }
 export function replaceLiteralSelection(text:string,needle:string,replacement:string,

@@ -51,3 +51,31 @@ test("RU language and launch failures never imply authenticated RDP",async({page
   await expect(workspace.getByRole("status")).toHaveCount(0);
   await expect(workspace).toContainText("Пароль вводится только там");
 });
+
+test("embedded Guacamole RDP is visible but never autoconnects",async({page})=>{
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  await expect(embedded).toBeVisible();
+  await expect(embedded).toContainText("Embedded RDP through Guacamole");
+  await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();
+  await expect(embedded.getByLabel("RDP remote screen")).toBeVisible();
+  // Reading a catalog entry or opening a tab must not contact any gateway.
+  expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+});
+
+test("embedded Guacamole rejects plaintext and credential-bearing URLs",async({page})=>{
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  for(const bad of [
+    "ws://host/tunnel",
+    "wss://user:pass@gateway.example/tunnel",
+    "wss://gateway.example/tunnel?token=secret",
+    "wss://gateway.example/tunnel#secret"
+  ]){
+    await embedded.getByRole("textbox",{name:"Guacamole WSS tunnel"}).fill(bad);
+    await embedded.getByRole("button",{name:"Connect embedded"}).click();
+    await expect(embedded.getByRole("alert")).toBeVisible();
+    await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
+    expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+  }
+});

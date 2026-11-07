@@ -61,7 +61,7 @@ test("VPN tab only lists profiles, never connects automatically, requires user c
 });
 test("RU failures cannot fake a connected VPN and do not retry",async({page})=>{
   const pane=await open(page,{language:"ru",fail:true});
-  await expect(pane).toContainText("Подключён").toHaveCount(0);
+  await expect(pane.getByText("Подключён",{exact:true})).toHaveCount(0);
   page.once("dialog",dialog=>dialog.accept());
   await pane.getByRole("button",{name:"Подключить"}).click();
   await expect(pane.getByRole("alert")).toContainText("System VPN manager rejected");

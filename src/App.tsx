@@ -44,6 +44,7 @@ const labels = {
     search: "Поиск по имени, адресу, пользователю и группе",
     all: "Все подключения",
     favorites: "Избранное",
+    recent: "Недавние",
     edit: "Изменить",
     delete: "Удалить",
     name: "Название",
@@ -105,6 +106,7 @@ const labels = {
     search: "Search names, hosts, users and groups",
     all: "All connections",
     favorites: "Favorites",
+    recent: "Recent",
     edit: "Edit",
     delete: "Delete",
     name: "Name",
@@ -143,6 +145,13 @@ const labels = {
   },
 };
 const SIDEBAR_WIDTH_KEY = "nodedesk.sidebar.width.v1";
+const RECENT_KEY = "nodedesk.recent.v1";
+function readRecent():string[] {
+  try {
+    const value=JSON.parse(window.localStorage.getItem(RECENT_KEY)??"[]");
+    return Array.isArray(value)?[...new Set(value.filter((id):id is string=>typeof id==="string"&&id.length<=200))].slice(0,20):[];
+  } catch {return [];}
+}
 function readSidebarWidth(): number {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -180,6 +189,7 @@ export default function App() {
     [active, setActive] = useState(""),
     [secondary, setSecondary] = useState("");
   const [quickConnections,setQuickConnections] = useState<Record<string,Connection>>({});
+  const [recentIds,setRecentIds] = useState(readRecent);
   const [menu, setMenu] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
@@ -252,6 +262,7 @@ export default function App() {
       if(!window.confirm(t.importConfirm))return;
       if(commit(imported)) {
         setTabs([]);setActive("");setSecondary("");setQuickConnections({});
+        setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
         setNotice(t.importDone);
       }
     } catch {setNotice(t.importFailed);}
@@ -344,6 +355,11 @@ export default function App() {
   function open(id: string) {
     setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setActive(id);
+    if(data.connections.some(c=>c.id===id)){
+      const next=[id,...recentIds.filter(x=>x!==id)].slice(0,20);
+      try{window.localStorage.setItem(RECENT_KEY,JSON.stringify(next));}catch{/* preference only */}
+      setRecentIds(next);
+    }
   }
   function close(id: string) {
     setTabs((prev) => prev.filter((x) => x !== id));
@@ -373,13 +389,13 @@ export default function App() {
   const connections = data.connections.filter(
     (c) =>
       (filter === "all" ||
-        (filter === "favorites"
-          ? c.favorite
-          : selectedGroups.has(c.groupId ?? ""))) &&
+        (filter === "favorites" ? c.favorite :
+         filter === "recent" ? recentIds.includes(c.id) :
+         selectedGroups.has(c.groupId ?? ""))) &&
       `${c.name} ${c.host} ${c.username} ${c.protocol} ${path(c.groupId)}`
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase().trim()),
-  );
+  ).sort((a,b)=>filter==="recent"?recentIds.indexOf(a.id)-recentIds.indexOf(b.id):0);
   const options = (excluded = new Set<string>()) => (
     <>
       <option value="">{t.root}</option>
@@ -457,7 +473,7 @@ export default function App() {
           <button disabled={blocked} onClick={() => {edit({kind:"group",value:{...g}});setMenu(null);}}>{t.edit}</button>
           <button disabled={blocked} onClick={() => {if(window.confirm(t.confirmGroup) && commit(removeGroup(data,g.id))) setFilter("all");setMenu(null);}}>{t.delete}</button>
         </div>}
-        {(!folded.has(g.id) || query || filter === "favorites") && tree(g.id, depth + 1)}
+        {(!folded.has(g.id) || query || filter === "favorites" || filter === "recent") && tree(g.id, depth + 1)}
       </div>)}
       {connections.filter(c => c.groupId === parent).map(c => connectionRow(c, depth))}
     </>;
@@ -588,6 +604,8 @@ export default function App() {
               >
                 <Icon name="star"/> {t.favorites}
               </button>
+              <button className={filter === "recent" ? "selected" : ""}
+                onClick={() => setFilter("recent")}>{t.recent}</button>
               <button type="button" aria-label={data.language === "ru" ? "Системные VPN" : "System VPN"}
                 className={active === SYSTEM_VPN_TAB ? "selected" : ""}
                 onClick={() => open(SYSTEM_VPN_TAB)}>

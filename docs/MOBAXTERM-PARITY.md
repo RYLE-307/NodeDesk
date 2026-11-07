@@ -92,7 +92,7 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 | SSH-06 | P0 | Password + keyboard-interactive/PAM/2FA, скрытый ввод и отмена, host-key trust до секретов, никаких сохранённых паролей по умолчанию | План | План | [#5](https://github.com/RYLE-307/NodeDesk/issues/5) |
 | UX-01 | P0 | Контекстное меню дерева: right-click пустая область/группа/сессия, новое подключение/группа, edit/duplicate/move/delete, Shift+F10 | План | План | [#6](https://github.com/RYLE-307/NodeDesk/issues/6) |
 | UX-02 | P0 | Resize sidebar мышью за разделитель, пределы ширины, сохранение, keyboard resize | План | План | [#7](https://github.com/RYLE-307/NodeDesk/issues/7) |
-| UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | Частично: Quick Connect | Частично: Quick Connect | UX |
+| UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | Частично: Quick Connect/recent | Частично: Quick Connect/recent | UX |
 | UI-07 | P1 | Drag/drop вкладок, упорядочивание, split в 2/4 панели с resize и корректным переносом активной сессии | План | План | Workspace |
 | FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | План | План | Files |
 | TERM-03 | P1 | Прозрачный clipboard, поиск/выделение, zoom/fonts, настройки кодировки, ссылки, colors/themes, safe paste | План | План | Terminal |

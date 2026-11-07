@@ -30,6 +30,8 @@ catalog on invalid input. Native WebView file download/picker acceptance and
 older-format migrations remain outstanding.
 Open workspace tabs (UI-02) can now be reordered by drag/drop or Alt+Left/Right
 without changing saved catalog entries or starting connections.
+Recent (UI-06) stores only the last 20 catalog IDs in local preferences,
+filters deleted entries and never records Quick Connect destinations.
 
 ## v0.6 priorities
 

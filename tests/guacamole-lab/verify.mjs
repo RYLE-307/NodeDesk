@@ -52,7 +52,7 @@ function assertGuacamoleSession(url){
       const chunk=String(event.data);
       // Record only Guacamole instruction opcodes, never argument bodies,
       // usernames, the tunnel auth token or remote error descriptions.
-      for(const match of chunk.matchAll(/(?:^|;)\\d+\\.([a-z]+)(?:,|;)/g)){
+      for(const match of chunk.matchAll(/(?:^|;)\d+\.([a-z]+)(?:,|;)/g)){
         if(seen.length<20)seen.push(match[1]);
       }
       if(chunk.includes("5.ready,"))ready=true;

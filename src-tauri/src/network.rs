@@ -61,7 +61,8 @@ fn ping_args(host:&str,windows:bool)->Result<Vec<String>,String>{
     if !valid_host(host){return Err("Invalid diagnostic host".into());}
     let fixed=if windows{vec!["-n","2","-w","2000"]}
         else{vec!["-n","-c","2","-W","2"]};
-    Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(host.to_owned())).collect())
+    let endpoint=host.strip_prefix('[').and_then(|v|v.strip_suffix(']')).unwrap_or(host);
+    Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(endpoint.to_owned())).collect())
 }
 fn ping(target:PingTarget)->Result<PingResult,String>{
     let started=Instant::now();
@@ -121,7 +122,8 @@ fn trace_args(host:&str,windows:bool)->Result<Vec<String>,String>{
     // Linux traceroute uses a single probe per hop, bounded to twelve hops.
     let fixed=if windows{vec!["-d","-h","8","-w","500"]}
         else{vec!["-n","-m","12","-w","1","-q","1"]};
-    Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(host.to_owned())).collect())
+    let endpoint=host.strip_prefix('[').and_then(|v|v.strip_suffix(']')).unwrap_or(host);
+    Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(endpoint.to_owned())).collect())
 }
 fn trace(target:TraceTarget)->Result<TraceResult,String>{
     let started=Instant::now();
@@ -186,6 +188,7 @@ mod tests {
     fn traceroute_is_bounded_and_disallows_user_options(){
         assert_eq!(trace_args("127.0.0.1",false).unwrap(),
             ["-n","-m","12","-w","1","-q","1","127.0.0.1"]);
+        assert_eq!(trace_args("[::1]",true).unwrap().last().unwrap(),"::1");
         assert_eq!(trace_args("example.org",true).unwrap(),
             ["-d","-h","8","-w","500","example.org"]);
         for bad in ["","-d","host; echo bad","foo\\bar","https://example.org","host\n"] {
@@ -197,6 +200,7 @@ mod tests {
     fn ping_uses_fixed_count_timeout_and_rejects_injection(){
         assert_eq!(ping_args("example.org",false).unwrap(),
             ["-n","-c","2","-W","2","example.org"]);
+        assert_eq!(ping_args("[::1]",false).unwrap().last().unwrap(),"::1");
         assert_eq!(ping_args("127.0.0.1",true).unwrap(),
             ["-n","2","-w","2000","127.0.0.1"]);
         for bad in ["-i","--help","foo;touch /tmp/x","https://example.org",

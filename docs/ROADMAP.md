@@ -1,5 +1,10 @@
 # План разработки
 
+> The strict v0.7 release gate is tracked in [V0.7-RELEASE.md](V0.7-RELEASE.md).
+> It focuses on safe, recoverable multi-queue SFTP and validation of the
+> existing desktop/workspace slice. The long-tail parity matrix is not a
+> v0.7 checklist.
+
 > **Current review: v0.6.0-alpha.0 — embedded WSS VNC, Guacamole-gateway RDP, external clients and system VPN (draft PR #11).**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.

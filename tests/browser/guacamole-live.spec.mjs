@@ -52,6 +52,15 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   }));
   expect(dimensions.width).toBeGreaterThan(0);
   expect(dimensions.height).toBeGreaterThan(0);
+  // A nonzero canvas can still be entirely blank. Confirm that Guacamole
+  // actually painted visible xrdp pixels after its first sync.
+  await expect.poll(()=>framebufferHasVisiblePixels(screen.locator("canvas").first()),
+    {timeout:30000}).toBe(true);
+  await page.setViewportSize({width:900,height:800});
+  await expect.poll(()=>screen.evaluate(surface=>{
+    const display=surface.firstElementChild;
+    return display && display.getBoundingClientRect().width<=surface.clientWidth+1;
+  }),{timeout:8000}).toBe(true);
   // Exercise mouse/keyboard against an isolated disposable Linux xrdp
   // server. Do not send inputs to any production host in this fixture.
   // Guacamole display updates continuously: Playwright's actionability
@@ -72,3 +81,15 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   await embedded.getByRole("button",{name:"Sign out"}).click();
   await expect(embedded.getByRole("button",{name:"Sign in to Guacamole"})).toBeVisible();
 });
+
+async function framebufferHasVisiblePixels(canvas){
+  return canvas.evaluate(element=>{
+    const context=element.getContext("2d",{willReadFrequently:true});
+    if(!context||!element.width||!element.height)return false;
+    const data=context.getImageData(0,0,element.width,element.height).data;
+    for(let i=0;i<data.length;i+=4){
+      if(data[i+3]>0&&(data[i]>16||data[i+1]>16||data[i+2]>16))return true;
+    }
+    return false;
+  });
+}

@@ -30,6 +30,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
   const session=useRef<Guacamole.Client|null>(null);
   const keyboard=useRef<Guacamole.Keyboard|null>(null);
   const mouse=useRef<Guacamole.Mouse|null>(null);
+  const displayObserver=useRef<ResizeObserver|null>(null);
   const auth=useRef<GuacAuth|null>(null);
   const authenticatedBase=useRef("");
   const request=useRef<AbortController|null>(null);
@@ -38,6 +39,8 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
 
   function setCurrentPhase(p:Phase){phaseRef.current=p;setPhase(p);}
   function releaseClient(){
+    displayObserver.current?.disconnect();
+    displayObserver.current=null;
     const active=session.current;
     session.current=null;
     if(keyboard.current){
@@ -140,9 +143,21 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       // Gateway access logs MUST redact query strings; the user opts in.
       const tunnel=new Guacamole.WebSocketTunnel(url);
       const client=new Guacamole.Client(tunnel);
-      const display=client.getDisplay().getElement();
+      const guacDisplay=client.getDisplay();
+      const display=guacDisplay.getElement();
       session.current=client;
       surface.current.replaceChildren(display);
+      // Guacamole positions every framebuffer and cursor layer in one display.
+      // Scale that display as a unit; shrinking individual canvases via CSS
+      // separates the image from its overlays and mouse coordinates.
+      const fitDisplay=()=>{
+        if(session.current!==client||!surface.current)return;
+        const width=guacDisplay.getWidth();
+        if(width>0)guacDisplay.scale(Math.min(1,surface.current.clientWidth/width));
+      };
+      guacDisplay.onresize=fitDisplay;
+      displayObserver.current=new ResizeObserver(fitDisplay);
+      displayObserver.current.observe(surface.current);
       display.tabIndex=0;
       display.addEventListener("mousedown",()=>display.focus());
       client.onstatechange=(state)=>{
@@ -163,7 +178,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       mouse.current=m;
       m.onEach(["mousedown","mouseup","mousemove"],(event)=>{
         if(session.current===client&&!viewOnlyRef.current)
-          client.sendMouseState((event as Guacamole.Mouse.Event).state);
+          client.sendMouseState((event as Guacamole.Mouse.Event).state,true);
       });
       const k=new Guacamole.Keyboard(display);
       keyboard.current=k;

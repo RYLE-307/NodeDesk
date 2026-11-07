@@ -470,4 +470,4 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .rdp-embedded-controls input[type="url"] { max-width:100%; width:100%; min-width:0; }
 .rdp-embedded-surface { background:#1c1c1c; border:1px solid var(--line); border-radius:6px; min-height:320px; height:min(62dvh,680px); overflow:auto; outline-offset:3px; }
 .rdp-embedded-surface:focus-visible { outline:2px solid currentColor; }
-.rdp-embedded-surface canvas { display:block; max-width:100%; }
+.rdp-embedded-surface canvas { display:block; }

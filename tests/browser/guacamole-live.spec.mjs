@@ -17,7 +17,7 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
     const nativeSend=WebSocket.prototype.send;
     WebSocket.prototype.send=function(data){
       if(typeof data==="string"){
-        const opcode=data.match(/^\\d+\\.(key|mouse),/);
+        const opcode=data.match(/^\d+\.(key|mouse),/);
         if(opcode)window.__guacQaInput[opcode[1]]++;
       }
       return nativeSend.call(this,data);

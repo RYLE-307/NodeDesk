@@ -200,5 +200,19 @@ remote keyboard/mouse are supported in code. This is **not** the raw TCP
 VNC external X.509 launcher and does **not** enforce that same RFB
 authentication type or guarantee the origin's access policy. Credentials
 are transiently handled in the WebView and not persisted. Real Arch/Windows
-WSS desktop tests remain pending. **RDP is not embedded**.
+WSS desktop tests remain pending. **RDP is embedded via a separate Guacamole
+gateway, not a native Rust RDP engine**. The gateway authentication session
+must be configured separately; no live RDP tests yet.
 [Architecture / acceptance](V0.6-EMBEDDED-DESKTOP.md).
+
+## In-tab Guacamole RDP (draft PR #11)
+
+The RDP workspace contains a Guacamole 1.6 browser client rendering remote
+canvas layers and forwarding keyboard/mouse inside the NodeDesk tab over
+an operator-configured authenticated WSS tunnel. Apache Guacamole + guacd must
+be deployed and trusted separately. This is **not a native RDP TCP client**;
+Guacamole login/session cookies and RDP target identity are managed by the
+upstream gateway and may require an application-specific integration.
+The existing external FreeRDP/mstsc launcher remains unchanged.
+No real RDP screen or server-certificate identity has been manually accepted.
+[Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).

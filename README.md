@@ -1,7 +1,7 @@
 # NodeDesk
 
 > **Release candidate: v0.7.0-rc.1, NOT yet released.** SFTP multi-queue, pause, verified upload/download resume and manual recovery are in draft PR #11.
-> Native Windows and Arch GUI acceptance is required before v0.7.0 is tagged or merged.
+> Native Windows/Arch GUI acceptance is **deferred by request to v0.9–v1.0**. This candidate is CI-only, not production-ready.
 > See [v0.7 release gates](docs/V0.7-RELEASE.md) and [candidate acceptance](docs/V0.7-ACCEPTANCE.md).
 
 [Русский](README.ru.md) · **EN**
@@ -48,7 +48,7 @@ Keep `package-lock.json`; use `npm ci` on Arch and Windows. Before pulling, insp
 lock files. Dependency installation needs internet; normal catalog use does not.
 Bundled installers remain disabled pending manual platform validation. A successful `tauri build -- --no-bundle` produces a developer binary, not a signed/validated installer.
 
-CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. The user confirmed the v0.5 Arch GUI launched and uploaded a file to a real server. Windows GUI acceptance remains separate.
+CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. The user confirmed an earlier v0.5 Arch GUI launched and uploaded a file. No native GUI acceptance of the integrated v0.7 candidate has been performed; combined manual verification is planned for v0.9–v1.0.
 Cargo.lock is tracked. Real-server SFTP integration runs in Linux CI; Windows
 runs native integration against an independent loopback SSH/SFTP peer, unit tests and Tauri builds. Desktop GUI acceptance is pending.
 

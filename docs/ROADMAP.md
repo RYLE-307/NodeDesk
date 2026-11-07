@@ -1,13 +1,36 @@
 # План разработки
 
-> The strict v0.7 release gate is tracked in [V0.7-RELEASE.md](V0.7-RELEASE.md).
+> The automated v0.7 engineering gate is tracked in [V0.7-RELEASE.md](V0.7-RELEASE.md).
 > It focuses on safe, recoverable multi-queue SFTP and validation of the
 > existing desktop/workspace slice. The long-tail parity matrix is not a
 > v0.7 checklist.
 
-> **Current review: v0.6.0-alpha.0 — embedded WSS VNC, Guacamole-gateway RDP, external clients and system VPN (draft PR #11).**
+> **Current engineering candidate: v0.7.0-rc.1 — SFTP transfer reliability and existing desktop integrations. Native GUI acceptance deliberately deferred to v0.9–v1.0.**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
+
+## Revised validation & release policy — 7 November 2026
+
+The operator requested **one consolidated manual test campaign at v0.9–v1.0**.
+Until then, do not request repeated native Windows/Arch acceptance after each
+small feature. Develop and integrate bounded functionality using automated
+Windows/Ubuntu desktop builds, browser scenarios, real disposable SSH/SFTP,
+Guacamole and VNC fixtures. **Green CI only establishes automated coverage;
+it is not manual GUI acceptance or production readiness.** No corporate VPN
+or customer/production systems may be used for implicit tests.
+
+| Stage | Goal | Exit criteria |
+| --- | --- | --- |
+| **v0.7 (engineering RC)** | Multi-queue SFTP, pause, verified upload/download resume, bounded opt-in recovery, existing desktop foundation | Green exact-head automated CI, checked metadata/notices/docs; no native GUI sign-off required |
+| **v0.8 (functional development)** | Finish high-value sysadmin features, beginning with guarded POSIX SFTP permission changes, SSH/SFTP diagnostics and further protocol/queue reliability | Automated regression and disposable integration tests on Windows/Linux; release as an **experimental development milestone** |
+| **v0.9 (combined acceptance)** | Operator tests the integrated workflows on **native Windows and Arch**, including SSH/SFTP, desktops, VPN read-only, workspace and network tools | Record defects, reproduce, repair, rerun CI and manual scenarios; no invented test passes |
+| **v1.0 (stabilization and design)** | Fix final defects, redesign UI/UX, accessibility and performance, evaluate missing high-priority features and finish documentation, packaging and licenses | Complete agreed native acceptance, security/license reviews and signed or clearly labeled release artifacts |
+
+Version numbers are engineering milestones, **not a claim of full MobaXterm
+parity**. CI-only candidate builds may be merged to keep GitHub maintainable,
+but must remain explicitly marked unverified until v0.9 native testing.
+Do not describe these builds as production-ready or silently turn on
+connections, VPNs, remote filesystem writes, or credential storage.
 
 ## Full product scope requested on 7 November 2026
 
@@ -18,8 +41,8 @@ and local terminal foundations; (2) SSH/SFTP and transfer/editor/tunnels;
 (3) remote desktop and additional protocols; (4) VPN and infrastructure
 integrations; (5) packaging, license notices and release hardening. Each
 finished change still needs automated tests and Windows/Linux build checks.
-Combined manual acceptance and visual design review are deferred until the
-planned functionality is implemented. A green CI job is not a substitute for
+Combined native manual acceptance is now planned for **v0.9**, followed by
+bug fixes and visual redesign during **v1.0**. A green CI job is not a substitute for
 real network/protocol acceptance, and the draft PR must not be called a release.
 
 The first new foundation is a local shell tab (SH-01): fixed system PowerShell

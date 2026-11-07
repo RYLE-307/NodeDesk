@@ -2,8 +2,9 @@
 
 **Status: v0.7.0-rc.1 is under review in draft PR #11; this is NOT a published
 GitHub release.** These notes describe implemented functionality on the release
-candidate branch; final release requires green exact-HEAD CI, license review,
-native Windows/Arch acceptance and an approved merge.
+candidate branch; the automated engineering milestone requires green exact-HEAD CI, license
+review and an approved merge. Manual Windows/Arch acceptance is reserved
+for the consolidated v0.9–v1.0 campaign; v0.7 is **CI-only unverified GUI**.
 
 ## Major changes since stable v0.5
 
@@ -47,7 +48,7 @@ native Windows/Arch acceptance and an approved merge.
   MikroTik, native credential vault, and durable unattended queue scheduling
   are **not v0.7 release claims**.
 - Native Windows and Arch manual GUI testing and validated installer bundles
-  are **still required before final v0.7.0**.
+  are **not yet complete**; native testing is deferred until v0.9–v1.0.
 
 ## Release verification and assets
 
@@ -61,5 +62,5 @@ For manual checks and build instructions, see
 [license notices](THIRD-PARTY-NOTICES.md).
 
 **Publishing policy:** do not merge PR #11, tag `v0.7.0`, upload installers
-or declare native acceptance until the explicit gates in
+or declare native acceptance until the applicable automated engineering gates in
 [v0.7 release plan](V0.7-RELEASE.md) have passed.

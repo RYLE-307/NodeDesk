@@ -83,3 +83,11 @@ test("recovery never accepts an all-done queue or stale expired metadata",()=>{
   assert.equal(saveRecovery(store,record(),now),true);
   assert.equal(loadRecovery(store,endpoint,now+8*24*60*60*1000),null);
 });
+test("a paused item remains incomplete after restart",()=>{
+  const store=fakeStorage();
+  assert.equal(saveRecovery(store,record({items:[
+    {name:"done.bin",state:"done"},{name:"part.bin",state:"paused"}
+  ]}),now),true);
+  assert.deepEqual(loadRecovery(store,endpoint,now).items.map(item=>item.state),
+    ["done","paused"]);
+});

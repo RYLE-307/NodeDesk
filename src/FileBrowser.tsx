@@ -50,6 +50,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [batchReport,setBatchReport] = useState<BatchItem[]>([]);
   const [batchFinished,setBatchFinished] = useState(false);
   const stopQueue = useRef(false);
+  const pauseQueue = useRef(false);
   const [retryPlan,setRetryPlan] = useState<PendingTransferPlan|null>(null);
   const [partialUpload,setPartialUpload] = useState<{index:number;previousId:string}|null>(null);
   const [partialDownload,setPartialDownload] = useState<{index:number;previousId:string}|null>(null);
@@ -260,6 +261,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     resumeCandidate?:{index:number;previousId:string}){
     if(busy || gate.current.id || !indexes.length)return;
     stopQueue.current=false;
+    pauseQueue.current=false;
     setBatchReport(report);setBatchFinished(false);setQueueProgress(null);
     let completed=report.filter(item=>item.state==="done").length;
     let currentItems=report.map(item=>({...item}));
@@ -299,7 +301,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           if(plan.upload)setPartialUpload(interrupted);
           else setPartialDownload(interrupted);
           activePartial=interrupted;
-          mark(index,stopQueue.current?"cancelled":"failed");
+          mark(index,pauseQueue.current?"paused":stopQueue.current?"cancelled":"failed");
           throw new Error(`${name}: ${String(cause)}`);
         }
         activePartial=null;
@@ -388,6 +390,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const report=batchReport.map((item,index)=>toRetry.has(index)?
       {...item,state:"queued" as BatchItemState}:item);
     executeBatch(nextPlan,indexes,report,candidate || undefined);
+  }
+  async function pauseActiveQueue(){
+    if(!queueProgress || !gate.current.id)return;
+    pauseQueue.current=true;
+    stopQueue.current=true;
+    const id=gate.current.id;
+    try{await invoke("files_cancel",{id});}
+    catch(e){setError(String(e));}
   }
   function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
     if (name !== null) (isRemote ? selectRemote : selectLocal)(name);
@@ -543,6 +553,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     } catch { /* ignore external and invalid drops */ }
   }
   async function cancel() {
+    pauseQueue.current = false;
     stopQueue.current = true;
     const id = gate.current.id; if (!id) return; setCancelling(true);
     try { await invoke("files_cancel",{id}); } catch(e) { if (!queueProgress) setError(String(e)); }
@@ -684,6 +695,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {batchReport.length>0 && <section className="files-batch-report" aria-label={ru ? "Отчёт о передаче" : "Transfer report"}>
       <div className="files-batch-heading">
         <strong>{ru ? "Передача файлов" : "File transfers"}: {batchReport.filter(item => item.state==="done").length}/{batchReport.length}</strong>
+        {!batchFinished && queueProgress && <button type="button" disabled={cancelling || pauseQueue.current}
+          onClick={()=>void pauseActiveQueue()}>{ru?"Приостановить очередь":"Pause queue"}</button>}
         {batchFinished && retryPlan && remainingBatchIndexes(batchReport).length>0 && <button type="button"
           disabled={busy} onClick={()=>retryUnfinished(false)}>
           {ru?"Повторить незавершённые":"Retry unfinished"}
@@ -709,8 +722,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       <ol>{batchReport.map((item,index) => <li key={index} className={`files-batch-${item.state}`}>
         <span>{item.name}</span>
         <span>{ru
-          ? ({queued:"Ожидает",active:"Передаётся",done:"Готово",failed:"Ошибка",cancelled:"Отменён",skipped:"Не запускался"} as const)[item.state]
-          : ({queued:"Queued",active:"Transferring",done:"Done",failed:"Failed",cancelled:"Cancelled",skipped:"Not started"} as const)[item.state]}</span>
+          ? ({queued:"Ожидает",active:"Передаётся",done:"Готово",failed:"Ошибка",cancelled:"Отменён",skipped:"Не запускался",paused:"Приостановлен"} as const)[item.state]
+          : ({queued:"Queued",active:"Transferring",done:"Done",failed:"Failed",cancelled:"Cancelled",skipped:"Not started",paused:"Paused"} as const)[item.state]}</span>
       </li>)}</ol>
     </section>}
     {progress && <div className="files-progress"><progress aria-label={ru ? "Передано" : "Transferred"} max={100} value={progressPercent(progress)}/><span>{progress.bytes} / {progress.total ?? "?"} {ru ? "байт" : "bytes"}</span></div>}

@@ -40,7 +40,7 @@ function validFileEntry(v:unknown):v is FileEntry {
     (e.modified===null || typeof e.modified==="number" && Number.isSafeInteger(e.modified) && e.modified>=0) &&
     (e.permissions===null || typeof e.permissions==="number" && Number.isSafeInteger(e.permissions) && e.permissions>=0);
 }
-const states=new Set(["queued","active","done","failed","cancelled","skipped"]);
+const states=new Set(["queued","active","done","failed","cancelled","skipped","paused"]);
 export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|null {
   if (!input || typeof input!=="object")return null;
   const v=input as Record<string,unknown>;

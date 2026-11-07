@@ -69,7 +69,7 @@ export function transferBatchPlan(names: readonly string[], source: Listing | nu
 }
 
 /** Ephemeral transfer report. No credentials or session identifiers. */
-export type BatchItemState = "queued" | "active" | "done" | "failed" | "cancelled" | "skipped";
+export type BatchItemState = "queued" | "active" | "done" | "failed" | "cancelled" | "skipped" | "paused";
 export type BatchItem = { name: string; state: BatchItemState };
 export function startBatch(names: readonly string[]): BatchItem[] {
   return names.map(name => ({name, state:"queued"}));

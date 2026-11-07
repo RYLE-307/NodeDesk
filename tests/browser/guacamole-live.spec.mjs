@@ -54,11 +54,18 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   expect(dimensions.height).toBeGreaterThan(0);
   // Exercise mouse/keyboard against an isolated disposable Linux xrdp
   // server. Do not send inputs to any production host in this fixture.
-  await screen.locator("canvas").first().click({position:{x:4,y:4}});
+  // Guacamole display updates continuously: Playwright's actionability
+  // heuristics can wait indefinitely for a "stable" canvas. Dispatch
+  // explicit pointer events through the real display and focus its keyboard.
+  const frame=screen.locator("canvas").first();
+  await frame.dispatchEvent("mousemove",{bubbles:true,clientX:24,clientY:24});
+  await frame.dispatchEvent("mousedown",{bubbles:true,button:0,clientX:24,clientY:24});
+  await frame.dispatchEvent("mouseup",{bubbles:true,button:0,clientX:24,clientY:24});
+  await screen.locator("[tabindex='0']").first().focus({timeout:5000});
   await page.keyboard.press("a");
-  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.mouse),{timeout:10000})
+  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.mouse),{timeout:8000})
     .toBeGreaterThan(0);
-  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.key),{timeout:10000})
+  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput.key),{timeout:8000})
     .toBeGreaterThan(0);
   await embedded.getByRole("button",{name:"Disconnect",exact:true}).click();
   await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();

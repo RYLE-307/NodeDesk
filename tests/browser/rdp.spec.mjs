@@ -25,7 +25,7 @@ async function open(page,language="en",launchError=false) {
     };
   },{language,launchError});
   await page.goto("/");
-  await page.getByRole("button",{name:/Fixture RDP/}).dblclick();
+  await page.locator(".connection-open").filter({hasText:"Fixture RDP"}).dblclick();
   return page.getByRole("region",{name:language==="en"?"RDP remote desktop":"Удалённый рабочий стол RDP"});
 }
 test("RDP never autoconnects; explicit launch sends only catalog target",async({page})=>{

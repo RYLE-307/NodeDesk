@@ -40,7 +40,7 @@ test("RDP never autoconnects; explicit launch sends only catalog target",async({
   expect(calls[0]).toEqual({cmd:"rdp_launch",args:{
     target:{host:"rdp.example.test",port:3390,username:"LAB\\alice"}
   }});
-  await expect(workspace).toContainText("not embedded in this tab");
+  await expect(workspace).toContainText("embedded viewer above requires a separately configured Guacamole/WSS gateway");
   await expect(workspace).toContainText("Verify the server certificate");
 });
 test("RU language and launch failures never imply authenticated RDP",async({page})=>{

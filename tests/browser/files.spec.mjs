@@ -365,7 +365,9 @@ test('two opt-in queues on one endpoint survive restart without network activity
   // Changing this control may erase multiple queue checkpoints. A refused
   // confirmation must preserve the opt-in and both saved queue records.
   page.once('dialog',d=>d.dismiss());
-  await files.getByRole('checkbox',{name:'Keep queue recovery'}).uncheck();
+  // Playwright .uncheck() asserts a state change, whereas declining the
+  // confirmation must intentionally leave this controlled checkbox checked.
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).click();
   await expect(files.getByRole('checkbox',{name:'Keep queue recovery'})).toBeChecked();
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nodedesk.sftp.recovery.v1')).records.length)).toBe(2);
   await page.reload();

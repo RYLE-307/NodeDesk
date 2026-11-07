@@ -1106,8 +1106,10 @@ mod tests {
         let cancel_stress=Arc::new(Operation::default());
         let mut stress_c=open("trusted-gui",&cancel_stress).unwrap();
         let abort=cancel_stress.clone();
-        let stress_events=Channel::<Progress>::new(move |p|{
-            if p.bytes>=128*1024 {abort.cancel();}
+        let callbacks=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted=callbacks.clone();
+        let stress_events=Channel::<Progress>::new(move |_|{
+            if counted.fetch_add(1,Ordering::SeqCst)>=3 {abort.cancel();}
             Ok(())
         });
         let large_partial=local.join(".large-down.part");

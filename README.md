@@ -21,7 +21,7 @@ React, TypeScript and Rust. Current development version: **0.6.0-alpha.0**.
 Real SSH/SFTP consoles support key/agent/password/PAM. The v0.5 Files GUI
 supports structured SFTP browsing and binary transfer with Linux password/PAM
 auth bridge, Windows native password/keyboard-interactive or direct key/agent auth.
-The first RDP launcher opens an external mstsc/FreeRDP window on explicit click. Embedded RDP/VNC, VPN, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
+The RDP workspace now offers an external mstsc/FreeRDP window or an embedded Guacamole 1.6 frontend with standard HTTPS account login, authorized RDP discovery and WSS rendering. Embedded noVNC and OS-owned VPN profile control are also in the draft. Live monitoring and protected persistent secret storage remain future work. No automatic connections, fake terminals, telemetry
 or credentials are collected. Catalog storage is local WebView profile storage,
 not encryption or backup. [Storage contract and acceptance checks](docs/V0.2.md).
 
@@ -130,7 +130,7 @@ the same as X509Vnc-only external TigerVNC authentication. No direct raw
 TCP VNC, no anonymous-gateway security guarantee, and no native Arch/Windows
 live WSS acceptance yet.
 
-Embedded **RDP through Guacamole** is now present in the RDP tab, using a separately installed, authenticated WSS Guacamole gateway. This mode renders pixels and sends input in NodeDesk, but is **not a native Rust RDP engine** and cannot connect to raw TCP:3389. Existing external FreeRDP/mstsc works separately. Native IronRDP needs certificate identity verification; gateway integration still needs live manual acceptance.
+Embedded **RDP through Guacamole** now includes standard HTTPS account login, a list of the user's authorized RDP profiles, and explicit WSS connection inside a NodeDesk tab. A separately installed Guacamole/guacd server and exact-origin CORS configuration are required. Guacamole 1.6 places an ephemeral token in WSS query parameters, so the proxy must redact URL query logs; NodeDesk requires acknowledgement and never persists passwords or tokens. It is **not a native Rust RDP engine** and cannot connect directly to TCP:3389. Real Windows/Arch gateway acceptance is pending.
 
 [Embedded desktop architecture and license notices](docs/V0.6-EMBEDDED-DESKTOP.md).
 

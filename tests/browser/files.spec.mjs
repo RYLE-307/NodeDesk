@@ -374,6 +374,37 @@ test('two opt-in queues on one endpoint survive restart without network activity
   await expect(files.getByRole('button',{name:'Load saved queue'})).toHaveCount(2);
 });
 
+test('interactive login can reconnect after pause without losing the queue report',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true,pauseTransfers:true
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await report.getByRole('button',{name:'Pause queue'}).click();
+  await expect(report.getByRole('listitem')).toContainText('Paused');
+  await page.evaluate(()=>{window.fixture.ready=false;});
+  await expect(files.getByText('Waiting for login',{exact:true})).toBeVisible();
+  await files.getByRole('button',{name:'Disconnect / cancel'}).click();
+  await expect(report).toContainText('sample.bin');
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;window.fixture.pauseTransfers=false;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',d=>d.accept());
+  await report.getByRole('button',{name:'Resume verified upload'}).click();
+  await expect(report).toContainText('File transfers: 1/1');
+});
+
 test('completed batch shows per-file outcomes and correct progress label',async({page})=>{
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();

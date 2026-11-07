@@ -513,3 +513,10 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-editor-search label { display:flex; flex:1 1 180px; flex-direction:column; gap:5px; min-width:140px; }
 .files-editor-search input { width:100%; min-width:0; }
 .files-editor-search [role="status"] { flex-basis:100%; overflow-wrap:anywhere; }
+
+
+/* Opt-in checkpoint controls remain compact; no remote data is rendered here. */
+.files-recovery { margin:10px 0; padding:10px; border:1px solid var(--line); border-radius:6px; }
+.files-recovery > label { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.files-recovery .files-ops { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.files-recovery .files-ops span { overflow-wrap:anywhere; }

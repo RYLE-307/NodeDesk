@@ -5,7 +5,7 @@
  * leaking passwords to browser history, proxies, logs or the connection UI.
  */
 export function vncWebsocketEndpoint(input: string): string {
-  if (typeof input !== "string" || !input || input !== input.trim() ||
+  if (typeof input !== "string" || !input.startsWith("wss://") || input !== input.trim() ||
       input.length > 2048 || /[\u0000-\u001f\u007f]/.test(input)) {
     throw new Error("Enter a valid WSS endpoint without whitespace or control characters");
   }

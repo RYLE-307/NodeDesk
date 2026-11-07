@@ -39,9 +39,14 @@ panes. A tab keeps the same mounted component when moved between panes, so an
 active terminal is not closed by the layout change. Column/row splitters can
 be adjusted with pointer or arrow keys and save their ratios. Native desktop
 acceptance remains outstanding.
-Network diagnostics (NET-01) now resolves a manually entered host and probes
-one manually entered TCP port, with bounded connection attempts and no
-background requests or port ranges. Ping, traceroute, cancelable DNS and
+Network diagnostics (NET-01) resolves a manually entered host, probes one TCP
+port and offers an explicitly triggered system ICMP ping with two echo requests.
+The ping process has fixed argument lists, no shell, no user-controlled binary,
+a 10-second hard timeout and bounded display output. A reachable ICMP reply does
+not prove TCP service availability; a silent ping does not prove the host is
+down (ICMP may be filtered). No background requests or port ranges are used.
+Frontend/Rust tests cover invocation and argument validation; native manual
+Windows/Linux ping acceptance is pending. Traceroute, cancellation of DNS and
 multi-port scans are still planned.
 Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
 requires confirmation because pasted commands may execute immediately. Clipboard

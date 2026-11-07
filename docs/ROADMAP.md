@@ -5,7 +5,7 @@
 > existing desktop/workspace slice. The long-tail parity matrix is not a
 > v0.7 checklist.
 
-> **Current engineering candidate: v0.7.0-rc.1 — SFTP transfer reliability and existing desktop integrations. Native GUI acceptance deliberately deferred to v0.9–v1.0.**
+> **Current development: v0.8.0-alpha.0 — guarded SFTP POSIX chmod and diagnostic result isolation atop v0.7.0-rc.1. Manual native GUI acceptance deliberately deferred to v0.9–v1.0.**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 

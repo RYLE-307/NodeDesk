@@ -10,10 +10,10 @@ const config=JSON.parse(read("package.json"));
 const lock=JSON.parse(read("package-lock.json"));
 const tauri=JSON.parse(read("src-tauri/tauri.conf.json"));
 
-test("release candidate versions stay aligned across npm, Tauri, Cargo and lockfiles",()=>{
+test("development versions stay aligned across npm, Tauri, Cargo and lockfiles",()=>{
   const version=config.version;
-  assert.match(version,/^\d+\.\d+\.\d+-rc\.\d+$/);
-  assert.equal(version,"0.7.0-rc.1");
+  assert.match(version,/^\d+\.\d+\.\d+-(?:rc|alpha)\.\d+$/);
+  assert.equal(version,"0.8.0-alpha.0");
   assert.equal(lock.version,version);
   assert.equal(lock.packages[""].version,version);
   assert.equal(tauri.version,version);

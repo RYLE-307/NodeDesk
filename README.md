@@ -1,13 +1,13 @@
 # NodeDesk
 
-> **Release candidate: v0.7.0-rc.1, NOT yet released.** SFTP multi-queue, pause, verified upload/download resume and manual recovery are in draft PR #11.
+> **Development: v0.8.0-alpha.0 — not a stable release.** SFTP multi-queue, pause, byte-verified resume, opt-in recovery and guarded remote POSIX permissions are in the development branch.
 > Native Windows/Arch GUI acceptance is **deferred by request to v0.9–v1.0**. This candidate is CI-only, not production-ready.
-> See [v0.7 release gates](docs/V0.7-RELEASE.md) and [candidate acceptance](docs/V0.7-ACCEPTANCE.md).
+> See [v0.8 functional plan](docs/V0.8-PLAN.md), [v0.7 engineering gates](docs/V0.7-RELEASE.md), and the [deferred native QA checklist](docs/V0.7-ACCEPTANCE.md).
 
 [Русский](README.ru.md) · **EN**
 
 Offline-first infrastructure workspace for Windows and Linux, built with Tauri 2,
-React, TypeScript and Rust. Release candidate version: **0.7.0-rc.1** (not yet released).
+React, TypeScript and Rust. Development version: **0.8.0-alpha.0** (experimental; native GUI QA deferred).
 
 ## Available
 

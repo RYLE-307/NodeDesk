@@ -342,6 +342,38 @@ test('separate batches retain independent reports and retry only the selected qu
     .map(c=>c.request.name))).toEqual(['sample.bin','extra.bin','sample.bin']);
 });
 
+test('two opt-in queues on one endpoint survive restart without network activity',async({page})=>{
+  let files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    emptyRemote:true,extraLocal:true,allowTransfer:true,failOnNameOnce:'sample.bin'
+  }));
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('File transfers: 0/1');
+  await page.evaluate(()=>{window.fixture.failOnNameOnce='extra.bin';});
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).uncheck();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('nodedesk.sftp.recovery.v1')).records.length)).toBe(2);
+  await page.reload();
+  await page.getByRole('button',{name:/Fixture SSH/}).dblclick();
+  await page.getByRole('tab',{name:'Files',exact:true}).click();
+  files=page.getByRole('region',{name:'SFTP file manager'});
+  await expect(files.getByRole('button',{name:'Load saved queue'})).toHaveCount(2);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'))).toHaveLength(0);
+  await files.locator('.files-ops').filter({hasText:'sample.bin'})
+    .getByRole('button',{name:'Load saved queue'}).click();
+  await expect(files.getByRole('region',{name:'Transfer report'})).toContainText('sample.bin');
+  await expect(files.getByRole('button',{name:'Load saved queue'})).toHaveCount(2);
+});
+
 test('completed batch shows per-file outcomes and correct progress label',async({page})=>{
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();

@@ -719,7 +719,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         "По выбору сохраняются адрес сервера, имена и пути файлов, статусы и ID операции в локальном хранилище приложения без шифрования. Пароли, ключи и содержимое файлов не сохраняются. Без автоподключения и автопередачи. До 8 очередей, 7 дней.":
         "Opt-in local metadata: server address, filenames, paths, statuses and operation ID are stored without encryption. No passwords, keys or file contents. No automatic connections or transfers. To restore: log in first, then load and refresh both panes. Up to 8 queues, 7 days."}</p>
       {savedRecoveries.map(savedRecovery=><div className="files-ops" key={savedRecovery.queueId??"legacy"}>
-        <span>{ru?"Незавершённая очередь":"Saved unfinished queue"}: {savedRecovery.items.filter(item=>item.state!=="done").length} {ru?"файлов":"files"} ({savedRecovery.upload?"upload":"download"})</span>
+        <span>{ru?"Незавершённая очередь":"Saved unfinished queue"}: {savedRecovery.items.filter(item=>item.state!=="done").length} {ru?"файлов":"files"} ({savedRecovery.upload?"upload":"download"}) · {savedRecovery.names[0]}</span>
         <button type="button" disabled={busy || !!gate.current.id || (interactive && !authReady)}
           onClick={()=>restoreCheckpoint(savedRecovery)}>{ru?"Загрузить очередь":"Load saved queue"}</button>
         <button type="button" disabled={busy} onClick={()=>{

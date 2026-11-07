@@ -1,6 +1,6 @@
 # NodeDesk
 
-> **Current development: v0.6.0-alpha.0** — external RDP and certificate-restricted VNC launchers for Linux/Windows in draft PR #11.
+> **Current development: v0.6.0-alpha.0** — external RDP/VNC launchers and system VPN profile control in draft PR #11.
 > v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
 > First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
 
@@ -103,3 +103,16 @@ automatic reconnection or catalog credentials. Linux needs the `tigervnc`
 package; Windows needs the official TigerVNC Viewer installation. This is
 **not** an embedded VNC screen and still needs native manual acceptance.
 [VNC security and QA](docs/V0.6-VNC.md).
+
+### v0.6 system VPN manager (draft)
+
+**System VPN** is a separate tool tab, not a connection catalog item.
+It lists existing OS-managed profiles with status, and allows explicit
+Connect/Disconnect with a confirmation about route, DNS and remote-access
+changes. On Linux it supports NetworkManager VPN/WireGuard profiles identified
+by UUID. On Windows it covers current-user built-in IKEv2/L2TP/SSTP profiles
+with required encryption, using OS-managed credentials. NodeDesk neither
+imports nor stores passwords, keys, credentials, DNS settings or routes.
+Unsupported third-party VPN clients, Windows all-user profiles and old PPTP
+are intentionally excluded. Native Windows/Arch live VPN acceptance is
+still pending. [VPN scope and safety](docs/V0.6-VPN.md).

@@ -1,9 +1,18 @@
 # План разработки
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive; direct key/agent on both.
-> mkdir/rename/delete, context menus and a bounded 50-file transfer queue are implemented; manual acceptance pending.
-> Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> **Current review: v0.6.0-alpha.0 — RDP external-launch MVP (draft PR #11).**
+> v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
+> First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
+
+## v0.6 priorities
+
+1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
+2. **Embedded or managed RDP:** investigate FreeRDP library/embedding and licensing, session lifecycle, reconnect, clipboard/fullscreen/multi-monitor. The launcher is not the final integration.
+3. **VNC:** select an auditable cross-platform viewer and implement real authentication and disconnect testing.
+4. **VPN:** explicit profile-driven user actions and integration with system VPN clients, no silent routing changes or stored plaintext secrets.
+5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
+
+
 
 ## v0.2 alpha
 

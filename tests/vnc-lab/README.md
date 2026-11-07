@@ -39,8 +39,8 @@ private local file without pasting it into chat or logs:
 cat generated/vnc-password
 ```
 
-Enter it only in NodeDesk's VNC password prompt. Verify the blue desktop and
-white terminal are visible **inside** the tab, mouse and keyboard input work,
+Enter it only in NodeDesk's VNC password prompt. Verify the desktop and
+light terminal are visible **inside** the tab, mouse and keyboard input work,
 view-only blocks input, then disconnect and close the tab. Test an incorrect
 password and an untrusted certificate separately. The classic VNC password
 scheme uses eight bytes; this lab is restricted to loopback and disposable

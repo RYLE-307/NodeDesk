@@ -3,7 +3,7 @@ import {test,expect} from "@playwright/test";
 
 test.skip(process.env.NODEDESK_VNC_LIVE!=="1","Requires disposable VNC lab");
 
-test("trusted WSS VNC authenticates and paints pixels in the NodeDesk tab",async({page})=>{
+test("trusted WSS VNC authenticates and paints terminal pixels in the NodeDesk tab",async({page})=>{
   test.setTimeout(90000);
   const password=readFileSync("tests/vnc-lab/generated/vnc-password","utf8").trim();
   expect(password).toHaveLength(8);
@@ -33,13 +33,17 @@ test("trusted WSS VNC authenticates and paints pixels in the NodeDesk tab",async
     const d=c.getContext("2d",{willReadFrequently:true})?.getImageData(0,0,c.width,c.height).data;
     if(!d)return "no 2D pixels";
     let nonblack=0;
+    let light=0;
     for(let i=0;i<d.length;i+=4){
-      if(d[i+3]>0&&d[i+2]>60&&d[i+2]>d[i])return "blue framebuffer pixels";
-      if(d[i+3]>0&&(d[i]||d[i+1]||d[i+2]))nonblack++;
+      if(d[i+3]>0){
+        if(d[i]||d[i+1]||d[i+2])nonblack++;
+        if(d[i]>180&&d[i+1]>180&&d[i+2]>180)light++;
+      }
     }
+    if(light>1000)return "light terminal pixels";
     const middle=Math.floor(c.height/2)*c.width+Math.floor(c.width/2);
-    return `canvas ${c.width}x${c.height}, nonblack=${nonblack}, center=${[...d.slice(middle*4,middle*4+4)]}`;
-  }),{timeout:30000}).toBe("blue framebuffer pixels");
+    return `canvas ${c.width}x${c.height}, nonblack=${nonblack}, light=${light}, center=${[...d.slice(middle*4,middle*4+4)]}`;
+  }),{timeout:30000}).toBe("light terminal pixels");
   await viewer.getByRole("checkbox",{name:"View only"}).check();
   await viewer.getByRole("checkbox",{name:"View only"}).uncheck();
   await viewer.getByRole("button",{name:"Disconnect",exact:true}).click();

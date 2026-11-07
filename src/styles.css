@@ -450,3 +450,14 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .vpn-table th { color:var(--muted); }
 .vpn-table td:first-child { overflow-wrap:anywhere; }
 .vpn-table button { min-width:88px; }
+
+/* v0.6 embedded noVNC view; auto-resize stays inside the workspace. */
+.vnc-embedded { margin:8px 0 20px; border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+.vnc-embedded h3 { margin:4px 0 8px; }
+.vnc-embedded-controls,.vnc-embedded-password { display:flex; align-items:end; flex-wrap:wrap; gap:10px; margin:8px 0; }
+.vnc-embedded-controls label:first-child { flex:1 1 270px; min-width:0; }
+.vnc-embedded-controls input[type="url"] { width:100%; max-width:100%; min-width:0; }
+.vnc-embedded-password label { flex:1 1 180px; }
+.vnc-embedded-password input { display:block; max-width:100%; width:100%; }
+.vnc-embedded-surface { min-height:320px; height:min(62dvh,680px); width:100%; overflow:hidden; background:#242424; border:1px solid var(--line); border-radius:6px; }
+.vnc-embedded-surface canvas { max-width:100%; }

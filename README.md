@@ -1,6 +1,6 @@
 # NodeDesk
 
-> **Current development: v0.6.0-alpha.0** — external RDP/VNC launchers and system VPN profile control in draft PR #11.
+> **Current development: v0.6.0-alpha.0** — embedded WSS VNC, external RDP/TigerVNC and system VPN control in draft PR #11.
 > v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
 > First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
 
@@ -100,8 +100,7 @@ installed TigerVNC viewer. A strict `X509Vnc,X509Plain` allowlist rejects
 unauthenticated or anonymous-transport VNC. Viewer password/certificate prompts
 remain outside NodeDesk; no passwords, insecure fallback, clipboard sharing,
 automatic reconnection or catalog credentials. Linux needs the `tigervnc`
-package; Windows needs the official TigerVNC Viewer installation. This is
-**not** an embedded VNC screen and still needs native manual acceptance.
+package; Windows needs the official TigerVNC Viewer installation. The **new embedded viewer** uses noVNC inside the NodeDesk tab over an independently configured authenticated **wss://** gateway. It cannot connect directly to raw TCP 5900. Its security depends on trusted gateway TLS and enforced VNC/gateway authentication, unlike the external client's X.509-only setting. Live manual acceptance is pending.
 [VNC security and QA](docs/V0.6-VNC.md).
 
 ### v0.6 system VPN manager (draft)
@@ -116,3 +115,21 @@ imports nor stores passwords, keys, credentials, DNS settings or routes.
 Unsupported third-party VPN clients, Windows all-user profiles and old PPTP
 are intentionally excluded. Native Windows/Arch live VPN acceptance is
 still pending. [VPN scope and safety](docs/V0.6-VPN.md).
+
+### v0.6 embedded desktop status
+
+Embedded **VNC** now uses noVNC 1.7.0 (MPL-2.0) to render a live RFB
+framebuffer and send keyboard/mouse events inside the NodeDesk tab. It needs
+an explicit operator-controlled `wss://` WebSocket/RFB gateway with a
+certificate trusted by the operating system, and an authentication policy
+enforced by the gateway/origin server. Connection and credential entry are
+manual and transient; the URL and password are not persisted. This is not
+the same as X509Vnc-only external TigerVNC authentication. No direct raw
+TCP VNC, no anonymous-gateway security guarantee, and no native Arch/Windows
+live WSS acceptance yet.
+
+Embedded **RDP is not implemented**: current RDP still launches OS FreeRDP
+or mstsc externally. A native FreeRDP binding or independently installed
+authenticated Guacamole gateway is under evaluation.
+
+[Embedded desktop architecture and license notices](docs/V0.6-EMBEDDED-DESKTOP.md).

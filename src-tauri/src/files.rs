@@ -519,7 +519,7 @@ mod tests {
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
-        assert!(decode_preview(b"binary\\0data".to_vec()).is_err());
+        assert!(decode_preview(b"binary\0data".to_vec()).is_err());
         assert!(decode_preview(vec![0xff,0xfe]).is_err());
         assert!(decode_preview(vec![0x1b,0x5b,0x6d]).is_err());
         assert!(decode_preview(vec![b'a';PREVIEW_LIMIT+1]).is_err());

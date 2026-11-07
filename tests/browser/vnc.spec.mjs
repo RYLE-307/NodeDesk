@@ -78,3 +78,80 @@ test("embedded VNC refuses URL password and query-token leakage",async({page})=>
     await expect(viewer.getByRole("alert")).toContainText("Only wss://");
   }
 });
+
+/**
+ * Isolated WebSocket-backed RFB 3.8 peer. Unlike a Tauri invoke mock, this
+ * exercises noVNC's real protocol handshake and canvas lifecycle.
+ * Deliberately a test-only peer; no production credentials or server used.
+ */
+function rfbPeer(ws,securityType){
+  let stage="version",sentFrame=false;
+  ws.onMessage(message=>{
+    const data=Buffer.isBuffer(message)?message:Buffer.from(message);
+    if(stage==="version"){
+      if(data.toString()!=="RFB 003.008\n")return;
+      stage="security";
+      ws.send(Buffer.from([1,securityType]));
+    }else if(stage==="security"){
+      if(data[0]!==securityType)return;
+      if(securityType===2){
+        stage="answer";
+        ws.send(Buffer.alloc(16,0x2a));
+      }else{
+        stage="clientinit";
+        ws.send(Buffer.alloc(4)); // SecurityResult success
+      }
+    }else if(stage==="answer"){
+      if(data.length!==16)return;
+      stage="clientinit";
+      ws.send(Buffer.alloc(4)); // Accept disposable VNCAuth response
+    }else if(stage==="clientinit"){
+      if(data.length!==1)return;
+      stage="active";
+      const name=Buffer.from("NodeDesk RFB test");
+      const init=Buffer.alloc(24+name.length);
+      init.writeUInt16BE(320,0);init.writeUInt16BE(240,2);
+      init.set([32,24,0,1],4); // bpp, depth, endian, true color
+      init.writeUInt16BE(255,8);init.writeUInt16BE(255,10);init.writeUInt16BE(255,12);
+      init.set([16,8,0],14);
+      init.writeUInt32BE(name.length,20);name.copy(init,24);
+      ws.send(init);
+    }else if(stage==="active" && data[0]===3 && !sentFrame){
+      sentFrame=true;
+      const update=Buffer.alloc(20);
+      update.writeUInt16BE(1,2); // one rectangle
+      update.writeUInt16BE(0,4);update.writeUInt16BE(0,6);
+      update.writeUInt16BE(1,8);update.writeUInt16BE(1,10);
+      update.writeInt32BE(0,12); // Raw encoding
+      update.set([0,0,255,0],16); // red pixel, little endian
+      ws.send(update);
+    }
+  });
+  ws.send(Buffer.from("RFB 003.008\n"));
+}
+
+test("embedded noVNC rejects a server that skips RFB authentication",async({page})=>{
+  await page.routeWebSocket("wss://rfb.test/vnc",ws=>rfbPeer(ws,1));
+  const workspace=await open(page);
+  const viewer=workspace.locator(".vnc-embedded");
+  await viewer.getByRole("textbox",{name:"WSS endpoint"}).fill("wss://rfb.test/vnc");
+  await viewer.getByRole("button",{name:"Connect embedded"}).click();
+  await expect(viewer.getByRole("alert")).toContainText("did not request authentication");
+  await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
+});
+
+test("noVNC negotiates password-authenticated RFB and displays an in-tab framebuffer",async({page})=>{
+  await page.routeWebSocket("wss://rfb.test/vnc",ws=>rfbPeer(ws,2));
+  const workspace=await open(page);
+  const viewer=workspace.locator(".vnc-embedded");
+  await viewer.getByRole("textbox",{name:"WSS endpoint"}).fill("wss://rfb.test/vnc");
+  await viewer.getByRole("button",{name:"Connect embedded"}).click();
+  await expect(viewer.getByRole("textbox",{name:"VNC password"})).toBeVisible();
+  await viewer.getByRole("textbox",{name:"VNC password"}).fill("disposable-test-only");
+  await viewer.getByRole("button",{name:"Authenticate"}).click();
+  await expect(viewer.getByRole("status")).toContainText("VNC connected");
+  await expect(viewer.locator(".vnc-embedded-surface canvas")).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+  await viewer.getByRole("button",{name:"Disconnect"}).click();
+  await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
+});

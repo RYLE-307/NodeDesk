@@ -125,3 +125,44 @@ test("Guacamole account login discovers only authorized RDP machines and clears 
   await expect(embedded.getByRole("button",{name:"Sign in to Guacamole"})).toBeVisible();
   await expect.poll(()=>routes.includes("logout")).toBe(true);
 });
+
+test("explicit RDP connection uses only a server-authorized Guacamole profile",async({page})=>{
+  await page.addInitScript(()=>{
+    const NativeWebSocket=window.WebSocket;
+    window.testGuacSockets=[];
+    // Intercept only the Guacamole WSS transport; keep Vite HMR working.
+    window.WebSocket=function(url,protocol){
+      if(String(url).startsWith("wss://guacamole.example.org/")){
+        window.testGuacSockets.push({url:String(url),protocol});
+        return {readyState:1,send(){},close(){}};
+      }
+      return new NativeWebSocket(url,protocol);
+    };
+  });
+  await mockGuac(page);
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  await embedded.getByRole("textbox",{name:"Guacamole HTTPS URL"}).fill(
+    "https://guacamole.example.org/guacamole/");
+  await embedded.getByRole("textbox",{name:"Guacamole username"}).fill("qa");
+  await embedded.getByRole("textbox",{name:"Guacamole password"}).fill("test-only-secret");
+  await embedded.getByRole("checkbox").check();
+  await embedded.getByRole("button",{name:"Sign in to Guacamole"}).click();
+  await expect(embedded.getByRole("combobox")).toHaveValue("postgresql:42");
+  expect(await page.evaluate(()=>window.testGuacSockets.length)).toBe(0);
+  await embedded.getByRole("button",{name:"Connect embedded"}).click();
+  const captures=await page.evaluate(()=>window.testGuacSockets);
+  expect(captures).toHaveLength(1);
+  const {url,protocol}=captures[0];
+  const parsed=new URL(url);
+  expect(protocol).toBe("guacamole");
+  expect(parsed.protocol).toBe("wss:");
+  expect(parsed.pathname).toBe("/guacamole/websocket-tunnel");
+  expect(parsed.searchParams.get("GUAC_ID")).toBe("42");
+  expect(parsed.searchParams.get("GUAC_DATA_SOURCE")).toBe("postgresql");
+  expect(parsed.searchParams.get("GUAC_TYPE")).toBe("c");
+  expect(parsed.searchParams.get("token")).toBe("opaque-qa-token");
+  expect(parsed.searchParams.has("password")).toBe(false);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
+  await expect(embedded).not.toContainText("opaque-qa-token");
+});

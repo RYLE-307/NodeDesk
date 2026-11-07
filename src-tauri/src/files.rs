@@ -818,6 +818,17 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let resume_tmp=local.join(".resumed.part");
     copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events,false).unwrap();
     assert_eq!(fs::read(&resume_local).unwrap(),bytes);
+    // Windows native ssh2: verified byte-offset download and corrupt prefix.
+    let download_part=local.join(".native-down-resume.part");
+    fs::write(&download_part,&bytes[..40000]).unwrap();
+    let down_resumed=local.join("down-resumed.bin");
+    copy_download_resume(&mut c,&remote,&down_resumed,&download_part,&op,&events).unwrap();
+    assert_eq!(fs::read(&down_resumed).unwrap(),bytes);
+    assert!(!download_part.exists());
+    let bad_part=local.join(".native-bad.part");
+    fs::write(&bad_part,vec![0xff_u8;30000]).unwrap();
+    assert!(copy_download_resume(&mut c,&remote,&local.join("bad-down.bin"),&bad_part,&op,&events).is_err());
+    assert_eq!(fs::read(&bad_part).unwrap(),vec![0xff_u8;30000]);
     let target=local.join("download.bin");let partial=local.join(".download.part");
     copy_download(&mut c,&remote,&target,&partial,&op,&events,false).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
@@ -997,6 +1008,40 @@ mod tests {
         copy_download(&mut c,&dest,&downloaded,&partial,&op,&events,false).unwrap();
         assert_eq!(fs::read(&downloaded).unwrap(),bytes); assert!(!partial.exists());
         assert!(copy_download(&mut c,&dest,&downloaded,&partial,&op,&events,false).is_err());
+        // Recover an interrupted local download by validating every prefix
+        // byte through real SFTP before writing any additional data.
+        let resume_partial=local.join(".nodedesk-resume-download.part");
+        fs::write(&resume_partial,&bytes[..45000]).unwrap();
+        let resumed=local.join("download-resumed.bin");
+        copy_download_resume(&mut c,&dest,&resumed,&resume_partial,&op,&events).unwrap();
+        assert_eq!(fs::read(&resumed).unwrap(),bytes);
+        assert!(!resume_partial.exists());
+        assert!(copy_download_resume(&mut c,&dest,&resumed,&resume_partial,&op,&events).is_err());
+        // An incorrect prefix fails closed, leaving the partial unchanged.
+        let corrupt_partial=local.join(".nodedesk-corrupted.part");
+        fs::write(&corrupt_partial,vec![0xff_u8;40000]).unwrap();
+        let denied=local.join("denied-resume.bin");
+        assert!(copy_download_resume(&mut c,&dest,&denied,&corrupt_partial,&op,&events).is_err());
+        assert!(!denied.exists());
+        assert_eq!(fs::read(&corrupt_partial).unwrap(),vec![0xff_u8;40000]);
+        // Missing/empty/oversized/symlinked/hard-linked partials all refuse.
+        let missing_partial=local.join(".missing.part");
+        assert!(copy_download_resume(&mut c,&dest,&denied,&missing_partial,&op,&events).is_err());
+        let empty_partial=local.join(".empty.part");fs::write(&empty_partial,b"").unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&empty_partial,&op,&events).is_err());
+        let oversize_partial=local.join(".oversize.part");
+        fs::write(&oversize_partial,vec![b'x';bytes.len()+1]).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&oversize_partial,&op,&events).is_err());
+        let symlink_partial=local.join(".symlink.part");
+        std::os::unix::fs::symlink(&source,&symlink_partial).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&symlink_partial,&op,&events).is_err());
+        let hardlink_partial=local.join(".hardlink.part");
+        fs::hard_link(&corrupt_partial,&hardlink_partial).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&hardlink_partial,&op,&events).is_err());
+        // Prevent publishing into an existing target without touching either.
+        let existing=local.join("existing.bin");fs::write(&existing,b"untouched").unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&existing,&corrupt_partial,&op,&events).is_err());
+        assert_eq!(fs::read(&existing).unwrap(),b"untouched");
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
         // Read-only UTF-8 preview uses the same authenticated SFTP transport.

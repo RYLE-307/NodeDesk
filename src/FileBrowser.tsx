@@ -42,6 +42,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
   const filteredRemote = useMemo(() => visibleEntries(remote?.entries ?? [],remoteFilter),[remote,remoteFilter]);
   const [context, setContext] = useState<{isRemote:boolean;name:string|null;x:number;y:number}|null>(null);
+  const [preview, setPreview] = useState<{name:string;content:string;bytes:number}|null>(null);
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
   useEffect(() => {
@@ -56,7 +57,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     if (interactive && !authReady) {
       stopQueue.current = true;
-      setRemote(null); selectRemote(""); setBatchRemote([]);
+      setRemote(null); setPreview(null); selectRemote(""); setBatchRemote([]);
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
@@ -83,7 +84,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
     previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
-    setRemote(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    setRemote(null); setPreview(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -109,7 +110,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   function list(isRemote: boolean, path: string) {
     if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
     void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
-      if (isRemote) { setRemote(listing); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
+      if (isRemote) { setRemote(listing); setPreview(null); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
       else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); setBatchLocal([]); }
       setStatus(ru ? "Каталог прочитан" : "Directory loaded");
     });
@@ -215,6 +216,20 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       isRemote,name,
       x:Math.max(8,Math.min(x,window.innerWidth-198)),
       y:Math.max(8,Math.min(y,window.innerHeight-190)),
+    });
+  }
+  function previewRemote(nameOverride?:string|null) {
+    setContext(null);
+    if (!remote || busy || (interactive && !authReady)) return;
+    const name=nameOverride ?? remoteSelection;
+    const entry=remote.entries.find(item=>item.name===name);
+    if(!entry || entry.kind!=="file" || !portableName(name))return;
+    setPreview(null);
+    void run(id=>invoke<{name:string;content:string;bytes:number}>("files_preview",{
+      id,request:{destination,directory:remote.path,name}
+    }),view=>{
+      setPreview(view);
+      setStatus(ru?"Текст прочитан только для просмотра":"Read-only text preview loaded");
     });
   }
   function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete", nameOverride?: string|null) {
@@ -333,6 +348,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           onClick={() => (isRemote ? setBatchRemote : setBatchLocal)([])}>{ru ? "Снять выделение" : "Clear selection"}</button>
       </div>
       <div className="files-ops">
+        {isRemote && <button type="button"
+          disabled={busy || (interactive && !authReady) || !listing || !listing.entries.some(e=>e.name===selection&&e.kind==="file"&&portableName(e.name))}
+          onClick={()=>previewRemote()}>
+          {ru?"Текст: просмотр":"Preview text"}
+        </button>}
         <button type="button" disabled={busy || !listing || (isRemote && interactive && !authReady)} onClick={() => mutate(isRemote,"mkdir")}>{ru ? "Новая папка" : "New folder"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name === selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"rename")}>{ru ? "Переименовать" : "Rename"}</button>
         <button type="button" disabled={busy || !listing || !listing.entries.some(e => e.name===selection && ["file","directory"].includes(e.kind))} onClick={() => mutate(isRemote,"delete")}>{ru ? "Удалить" : "Delete"}</button>
@@ -410,6 +430,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
     <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>
     <div className="files-panels">{panel(false)}{panel(true)}</div>
+    {preview && <section className="files-preview" aria-label={ru?"Предпросмотр удалённого файла":"Remote file preview"}>
+      <div className="files-preview-heading">
+        <strong>{ru?"Только чтение":"Read-only"}: {preview.name} ({preview.bytes} {ru?"байт":"bytes"})</strong>
+        <button type="button" onClick={()=>setPreview(null)}>{ru?"Закрыть просмотр":"Close preview"}</button>
+      </div>
+      <pre>{preview.content}</pre>
+      <p className="ssh-help">{ru?"Предпросмотр не изменяет файл и не сохраняет его локально. Не открывайте через него файлы с секретами.":"Preview does not modify or save the file locally. Avoid previewing files that contain secrets."}</p>
+    </section>}
     {context && (() => {
       const listing=context.isRemote ? remote : local;
       const entry=listing?.entries.find(e => e.name===context.name);
@@ -427,6 +455,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           onClick={() => mutate(context.isRemote,"rename",context.name)}>{ru ? "Переименовать" : "Rename"}</button>
         <button role="menuitem" type="button" disabled={!allowed || !valid}
           onClick={() => mutate(context.isRemote,"delete",context.name)}>{ru ? "Удалить…" : "Delete…"}</button>
+        {context.isRemote && <button role="menuitem" type="button"
+          disabled={!allowed || !valid || entry?.kind!=="file"}
+          onClick={()=>previewRemote(context.name)}>
+          {ru?"Просмотреть текст":"Preview text"}
+        </button>}
         <button role="menuitem" type="button" disabled={!allowed || !valid || entry?.kind!=="file" || !local || !remote}
           onClick={() => {
             setContext(null);

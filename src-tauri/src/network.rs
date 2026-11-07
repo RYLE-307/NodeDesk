@@ -107,6 +107,64 @@ pub async fn network_ping(target:PingTarget)->Result<PingResult,String>{
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct TraceTarget {host:String}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct TraceResult {elapsed_ms:u128,output:String}
+
+fn trace_args(host:&str,windows:bool)->Result<Vec<String>,String>{
+    if !valid_host(host){return Err("Invalid diagnostic host".into());}
+    // Windows tracert sends three probes per hop; limit it to eight hops.
+    // Linux traceroute uses a single probe per hop, bounded to twelve hops.
+    let fixed=if windows{vec!["-d","-h","8","-w","500"]}
+        else{vec!["-n","-m","12","-w","1","-q","1"]};
+    Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(host.to_owned())).collect())
+}
+fn trace(target:TraceTarget)->Result<TraceResult,String>{
+    let started=Instant::now();
+    let args=trace_args(&target.host,cfg!(windows))?;
+    #[cfg(windows)]
+    let executable=std::env::var_os("SystemRoot")
+        .map(|root|std::path::PathBuf::from(root).join("System32").join("tracert.exe"))
+        .ok_or_else(||"Windows traceroute utility unavailable".to_string())?;
+    #[cfg(not(windows))]
+    let executable=std::path::PathBuf::from("/usr/bin/traceroute");
+    let mut child=Command::new(executable).args(args)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|_|"System traceroute utility unavailable".to_string())?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_))=>break,
+            Ok(None) if started.elapsed()<Duration::from_secs(25)=>{
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None)=>{
+                let _=child.kill();let _=child.wait();
+                return Err("Traceroute timed out".into());
+            }
+            Err(_)=>{
+                let _=child.kill();let _=child.wait();
+                return Err("Traceroute process failed".into());
+            }
+        }
+    }
+    let mut bytes=Vec::new();
+    if let Some(stdout)=child.stdout.take(){
+        let _=stdout.take(8192).read_to_end(&mut bytes);
+    }
+    let output=String::from_utf8_lossy(&bytes).chars()
+        .filter(|c|!c.is_control()||matches!(c,'\n'|'\r'|'\t')).collect();
+    Ok(TraceResult{elapsed_ms:started.elapsed().as_millis(),output})
+}
+#[tauri::command]
+pub async fn network_trace(target:TraceTarget)->Result<TraceResult,String>{
+    tauri::async_runtime::spawn_blocking(move||trace(target)).await
+        .map_err(|_|"Diagnostic worker failed".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +181,17 @@ mod tests {
         let result=probe(ProbeTarget{host:"127.0.0.1".into(),port}).unwrap();
         assert!(result.tcp_reachable);
         assert_eq!(result.addresses,vec!["127.0.0.1".to_string()]);
+    }
+    #[test]
+    fn traceroute_is_bounded_and_disallows_user_options(){
+        assert_eq!(trace_args("127.0.0.1",false).unwrap(),
+            ["-n","-m","12","-w","1","-q","1","127.0.0.1"]);
+        assert_eq!(trace_args("example.org",true).unwrap(),
+            ["-d","-h","8","-w","500","example.org"]);
+        for bad in ["","-d","host; echo bad","foo\\bar","https://example.org","host\n"] {
+            assert!(trace_args(bad,false).is_err());
+            assert!(trace_args(bad,true).is_err());
+        }
     }
     #[test]
     fn ping_uses_fixed_count_timeout_and_rejects_injection(){

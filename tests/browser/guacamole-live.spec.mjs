@@ -6,6 +6,7 @@ import {test,expect} from "@playwright/test";
 test.skip(process.env.NODEDESK_GUAC_LIVE!=="1","Requires isolated Guacamole lab");
 
 test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",async({page})=>{
+  test.setTimeout(120000);
   const user=process.env.QA_USER,password=process.env.QA_PASSWORD;
   expect(user).toBeTruthy();expect(password).toBeTruthy();
   await page.addInitScript(()=>{

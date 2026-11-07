@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
+import { VpnWorkspace } from "./VpnWorkspace";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -137,6 +138,7 @@ function readSidebarWidth(): number {
     return Number.isFinite(value) && value >= 220 && value <= 640 ? value : 310;
   } catch { return 310; }
 }
+const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
 type Editor =
   | { kind: "group"; value: Group }
   | { kind: "connection"; value: Connection };
@@ -411,7 +413,12 @@ export default function App() {
       {connections.filter(c => c.groupId === parent).map(c => connectionRow(c, depth))}
     </>;
   }
+  function tabTitle(id: string) {
+    return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      (data.connections.find((c) => c.id === id)?.name ?? id);
+  }
   function pane(id: string) {
+    if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id);
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
@@ -523,6 +530,11 @@ export default function App() {
               >
                 <Icon name="star"/> {t.favorites}
               </button>
+              <button type="button" aria-label={data.language === "ru" ? "Системные VPN" : "System VPN"}
+                className={active === SYSTEM_VPN_TAB ? "selected" : ""}
+                onClick={() => open(SYSTEM_VPN_TAB)}>
+                <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
+              </button>
 
             </div>
             <div className="connection-list" onContextMenu={e => {if(!(e.target as HTMLElement).closest(".group-row, .connection-row, .root-target, .row-menu")) contextMenu(e,"catalog");}} onDragOver={e => {
@@ -622,10 +634,10 @@ export default function App() {
                 aria-pressed={active === id}
                 onClick={() => setActive(id)}
               >
-                {data.connections.find((c) => c.id === id)?.name}
+                {tabTitle(id)}
               </button>
               <button
-                aria-label={`${t.close}: ${data.connections.find((c) => c.id === id)?.name}`}
+                aria-label={`${t.close}: ${tabTitle(id)}`}
                 onClick={() => close(id)}
               >
                 ×
@@ -652,7 +664,7 @@ export default function App() {
               >
                 {tabs.map((id) => (
                   <option key={id} value={id}>
-                    {data.connections.find((c) => c.id === id)?.name}
+                    {tabTitle(id)}
                   </option>
                 ))}
               </select>

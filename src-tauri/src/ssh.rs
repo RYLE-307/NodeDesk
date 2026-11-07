@@ -17,7 +17,7 @@ pub enum AuthMode { Auto, Key, Password }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum TerminalKind { Ssh, Sftp, FilesAuth }
+pub enum TerminalKind { Ssh, Sftp, FilesAuth, Local, LocalCmd }
 
 #[derive(Default)]
 pub struct Sessions(Mutex<HashMap<String, Session>>);
@@ -130,6 +130,27 @@ fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Resu
     args.push(format!("{username}@{destination_host}"));
     Ok(args)
 }
+fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
+    #[cfg(windows)] {
+        let root=std::env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
+        let suffix:&[&str]=match kind {
+            TerminalKind::Local => &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+            TerminalKind::LocalCmd => &["System32", "cmd.exe"],
+            _ => return Err("Unsupported local shell".into()),
+        };
+        let path=std::path::PathBuf::from(root).join(suffix.iter().collect::<std::path::PathBuf>());
+        if !path.is_file() {return Err("Local Windows shell unavailable".into());}
+        let args=if kind==TerminalKind::Local {vec!["-NoLogo".into(),"-NoProfile".into()]}
+            else {vec!["/Q".into()]};
+        return Ok((path.to_string_lossy().into_owned(),args));
+    }
+    #[cfg(not(windows))] {
+        if kind!=TerminalKind::Local {return Err("CMD is supported only on Windows".into());}
+        let path="/bin/sh";
+        if !std::path::Path::new(path).is_file() {return Err("Local shell unavailable".into());}
+        Ok((path.into(),vec!["-i".into()]))
+    }
+}
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
@@ -139,6 +160,7 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
         TerminalKind::Ssh => ("ssh", arguments(&host, port, &username, auth)?),
         TerminalKind::Sftp => ("sftp", sftp_arguments(&host, port, &username, auth)?),
         TerminalKind::FilesAuth => ("ssh", bridge.as_ref().unwrap().arguments(auth)?),
+        TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
     if sessions.contains_key(&id) || sessions.len() >= 16 { return Err("Session already exists or limit reached".into()); }
@@ -146,10 +168,10 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     let mut command = CommandBuilder::new(program);
     command.args(args);
     command.env("TERM", "xterm-256color");
-    command.env("SSH_ASKPASS_REQUIRE", "never");
+    if !matches!(kind, TerminalKind::Local | TerminalKind::LocalCmd) {command.env("SSH_ASKPASS_REQUIRE", "never");}
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start OpenSSH: {e}"))?;
+    let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start terminal: {e}"))?;
     drop(pair.slave);
     let child = Arc::new(Mutex::new(child));
     if let Some(auth_bridge)=&bridge {
@@ -250,6 +272,24 @@ mod tests {
     }
     #[test] fn dimensions() { assert!(size(0,24).is_err()); assert!(size(80,24).is_ok()); }
     #[test] fn close_is_idempotent() { let sessions = Sessions::default(); assert!(sessions.0.lock().unwrap().remove("missing").is_none()); }
+    #[test]
+    fn local_shell_command_is_fixed_and_contains_no_user_input() {
+        let (program,args)=local_command(TerminalKind::Local).unwrap();
+        assert!(std::path::Path::new(&program).is_absolute());
+        #[cfg(windows)] {
+            assert!(program.ends_with("powershell.exe"));
+            assert_eq!(args,vec!["-NoLogo".to_string(),"-NoProfile".to_string()]);
+            let (cmd,cmd_args)=local_command(TerminalKind::LocalCmd).unwrap();
+            assert!(cmd.ends_with("cmd.exe"));
+            assert_eq!(cmd_args,vec!["/Q".to_string()]);
+        }
+        #[cfg(not(windows))] {
+            assert_eq!(program,"/bin/sh");
+            assert_eq!(args,vec!["-i".to_string()]);
+            assert!(local_command(TerminalKind::LocalCmd).is_err());
+        }
+        assert!(local_command(TerminalKind::Ssh).is_err());
+    }
     #[cfg(unix)]
     #[test]
     fn real_files_password_pam_bridge() {

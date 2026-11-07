@@ -4,6 +4,23 @@
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 
+## Full product scope requested on 7 November 2026
+
+The intended feature set is the entire [MobaXterm parity matrix](MOBAXTERM-PARITY.md)
+plus VPN, Proxmox, Zabbix, MikroTik and opt-in monitoring, rather than only
+the v0.6 slice. Implement and verify in dependency order: (1) session/catalog
+and local terminal foundations; (2) SSH/SFTP and transfer/editor/tunnels;
+(3) remote desktop and additional protocols; (4) VPN and infrastructure
+integrations; (5) packaging, license notices and release hardening. Each
+finished change still needs automated tests and Windows/Linux build checks.
+Combined manual acceptance and visual design review are deferred until the
+planned functionality is implemented. A green CI job is not a substitute for
+real network/protocol acceptance, and the draft PR must not be called a release.
+
+The first new foundation is a local shell tab (SH-01): fixed system PowerShell
+or CMD on Windows, `/bin/sh` on Linux, explicit start/stop and PTY lifecycle.
+No arbitrary executable path or command line crosses the WebView boundary.
+
 ## v0.6 priorities
 
 1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.

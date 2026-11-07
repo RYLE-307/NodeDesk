@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SshWorkspace } from "./SshTerminal";
+import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
@@ -139,6 +139,7 @@ function readSidebarWidth(): number {
   } catch { return 310; }
 }
 const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
+const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
 type Editor =
   | { kind: "group"; value: Group }
   | { kind: "connection"; value: Connection };
@@ -415,10 +416,12 @@ export default function App() {
   }
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
       (data.connections.find((c) => c.id === id)?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
+    if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id);
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
@@ -534,6 +537,11 @@ export default function App() {
                 className={active === SYSTEM_VPN_TAB ? "selected" : ""}
                 onClick={() => open(SYSTEM_VPN_TAB)}>
                 <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Локальный терминал" : "Local terminal"}
+                className={active === LOCAL_SHELL_TAB ? "selected" : ""}
+                onClick={() => open(LOCAL_SHELL_TAB)}>
+                <Icon name="SSH"/> {data.language === "ru" ? "Локальный терминал" : "Local terminal"}
               </button>
 
             </div>

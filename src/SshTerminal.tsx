@@ -7,9 +7,10 @@ import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
 
 type AuthMode = "auto" | "key" | "password";
-export type TerminalKind = "ssh" | "sftp" | "filesauth";
+export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
 type Event = { kind: "data"; value: number[] } | { kind: "exit"; value: number } | { kind: "error"; value: string };
 export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnly = false, onSession }: { connection: Connection; language: "ru" | "en"; kind?: TerminalKind; passwordOnly?: boolean; onSession?: (id: string | null) => void }) {
+  const local = kind === "local" || kind === "localcmd";
   const sessionCallback = useRef(onSession); sessionCallback.current = onSession;
   const container = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
@@ -23,7 +24,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     const fit = new FitAddon(); term.loadAddon(fit); term.open(container.current!); terminal.current = term;
     const input = term.onData(data => {
       const id = session.current;
-      if (id) pending.current = pending.current.then(() => invoke("ssh_write", { id, data })).catch(() => { setStatus("SSH input failed"); });
+      if (id) pending.current = pending.current.then(() => invoke("ssh_write", { id, data })).catch(() => { setStatus("Terminal input failed"); });
     });
     const observer = new ResizeObserver(() => {
       if (!container.current?.clientWidth || !container.current.clientHeight) return;
@@ -45,10 +46,10 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     if (id) await invoke("ssh_disconnect", { id }).catch(e => setStatus(String(e)));
   }
   async function connect() {
-    if (!isTauri()) { setStatus(ru ? "SSH доступен в приложении Tauri" : "SSH requires the Tauri desktop app"); return; }
+    if (!isTauri()) { setStatus(ru ? "Терминал доступен в настольном приложении" : "Terminal requires the desktop app"); return; }
     const term = terminal.current!;
     const id = crypto.randomUUID(); session.current = id;
-    setBusy(true); setStatus(kind === "sftp"
+    setBusy(true); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
     const events = new Channel<Event>();
@@ -62,25 +63,25 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: c.host, port: c.port, username: c.username, auth, kind, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
   }
   return <section className="ssh-pane" aria-label={c.name}>
-    <div className="ssh-toolbar"><strong>{kind === "filesauth" ? (ru ? "Вход для файлов" : "Files login") : kind === "sftp" ? "SFTP" : "SSH"} · {c.name}</strong><span>{c.username}@{c.host}:{c.port}</span>
-      <label className="ssh-auth">
+    <div className="ssh-toolbar"><strong>{local ? (kind === "localcmd" ? "CMD" : navigator.userAgent.includes("Windows") ? "PowerShell" : (ru ? "Локальная оболочка" : "Local shell")) : kind === "filesauth" ? (ru ? "Вход для файлов" : "Files login") : kind === "sftp" ? "SFTP" : "SSH"} · {c.name}</strong>{!local && <span>{c.username}@{c.host}:{c.port}</span>}
+      {!local && <label className="ssh-auth">
         <span>{ru ? "Вход" : "Authentication"}</span>
         <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => setAuth(e.target.value as AuthMode)}>
           <option value="auto">{ru ? "Авто" : "Auto"}</option>
           <option value="key" disabled={passwordOnly}>{ru ? "SSH-ключ / агент" : "SSH key / agent"}</option>
           <option value="password">{ru ? "Пароль / PAM" : "Password / PAM"}</option>
         </select>
-      </label>
-      <button disabled={busy} onClick={() => void connect()}>{ru ? "Подключить / повторить" : "Connect / reconnect"}</button>
-      <button disabled={!busy} onClick={() => void stop()}>{ru ? "Отключить / отменить" : "Disconnect / cancel"}</button>
+      </label>}
+      <button disabled={busy} onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
+      <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
-    <p className="ssh-help">{kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
+    <p className="ssh-help">{local ? (ru ? "Оболочка запускается только по нажатию. Команды выполняются на этом компьютере с вашими правами; закрытие вкладки завершает процесс. PowerShell запускается без профиля." : "The shell starts only when you click Start. Commands run on this computer with your permissions; closing the tab ends the process. PowerShell starts without a profile.") : kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
       ? (ru
         ? "Настоящий OpenSSH SFTP. После входа используйте pwd, ls, cd, get, put и help. Сначала проверьте SHA256 ключа сервера; пароли не сохраняются. Локальный каталог передачи задавайте командой lcd — по умолчанию он зависит от запуска NodeDesk. Для графического управления файлами откройте вкладку «Файлы»."
         : "Real OpenSSH SFTP. After login use pwd, ls, cd, get, put and help. Independently verify the SHA256 host fingerprint. Passwords are not saved. Set the local transfer directory using lcd; otherwise it depends on how NodeDesk was started. For the graphical file manager, open the Files tab.")
@@ -88,6 +89,19 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         ? "SSH-ключи, агент или пароль/PAM. Сначала сверьте SHA256 нового ключа сервера по доверенному каналу. Пароль и passphrase вводятся скрыто прямо в терминале и не сохраняются."
         : "SSH keys, agent or password/PAM. Independently verify a new host SHA256 fingerprint. Passwords and passphrases are entered directly at the hidden terminal prompt and are never saved.")}</p>
     <div className="ssh-screen" ref={container}/><div role="status">{status || (ru ? "Не подключено" : "Disconnected")}</div>
+  </section>;
+}
+
+export function LocalWorkspace({language}:{language:"ru"|"en"}) {
+  const windows=navigator.userAgent.includes("Windows");
+  const [kind,setKind]=useState<"local"|"localcmd">("local");
+  const connection:Connection={id:"__local_shell__",name:language==="ru"?"Локальный терминал":"Local terminal",host:"",port:0,username:"",protocol:"SSH",groupId:null,favorite:false};
+  return <section className="ssh-tools-workspace">
+    {windows && <div className="ssh-tool-switcher" role="tablist" aria-label={language==="ru"?"Локальные оболочки":"Local shells"}>
+      <button type="button" role="tab" aria-selected={kind==="local"} onClick={()=>setKind("local")}>PowerShell</button>
+      <button type="button" role="tab" aria-selected={kind==="localcmd"} onClick={()=>setKind("localcmd")}>CMD</button>
+    </div>}
+    <SshTerminal key={kind} connection={connection} language={language} kind={kind}/>
   </section>;
 }
 

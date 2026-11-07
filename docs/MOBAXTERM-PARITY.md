@@ -37,7 +37,7 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | MSH-01 | Mosh: roaming/reconnect, внешние компоненты явно указаны | План | План | Паритет |
 | X-01 | X11 server/display: запуск GUI, clipboard, OpenGL/Composite/RandR — отдельные проверки | План | План | Паритет |
 | X-02 | XDMCP: удалённая X-сессия и управление жизненным циклом | План | План | Паритет |
-| SH-01 | Local shell: PowerShell/CMD на W, системные shell на L, Bash где доступен | План | План | Протоколы |
+| SH-01 | Local shell: PowerShell/CMD на W, системные shell на L, Bash где доступен | Реализация: PowerShell/CMD | Реализация: `/bin/sh` | Протоколы; ручная приёмка ожидается |
 | SH-02 | Unix tools, rsync, выбор среды на W; установка/обновление дополнительных пакетов | План | План | Паритет |
 | TERM-01 | Эмуляция VT, ANSI/256/truecolor, Unicode, scrollback, selection, clipboard, search | План | План | Протоколы |
 | TERM-02 | Логи, настройка подсветки, ссылки, безопасная многострочная вставка | План | План | Паритет |

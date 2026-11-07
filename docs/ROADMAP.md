@@ -46,8 +46,12 @@ a 10-second hard timeout and bounded display output. A reachable ICMP reply does
 not prove TCP service availability; a silent ping does not prove the host is
 down (ICMP may be filtered). No background requests or port ranges are used.
 Frontend/Rust tests cover invocation and argument validation; native manual
-Windows/Linux ping acceptance is pending. Traceroute, cancellation of DNS and
-multi-port scans are still planned.
+Windows/Linux acceptance is pending. An explicitly triggered, bounded system
+traceroute is also provided: Windows tracert.exe (8 hops, 500 ms per probe) or
+Linux /usr/bin/traceroute (12 hops, one probe per hop), with a 25-second hard
+timeout. An absent platform tool reports an error without fallback to a shell.
+DNS cancellation, multi-port scans, persistent reports and reverse-DNS enrichment
+are still planned.
 Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
 requires confirmation because pasted commands may execute immediately. Clipboard
 copy/link handling, persisted font preferences and native acceptance remain open.

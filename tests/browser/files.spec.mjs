@@ -14,7 +14,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
       unregisterCallback(id) {callbacks.delete(id);},
       async invoke(cmd,args) {
         // Never record terminal input, even in this test harness.
-        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer'].includes(cmd)?args?.request:undefined});
+        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer','files_preview'].includes(cmd)?args?.request:undefined});
         if (cmd==='files_capabilities') return window.fixture.caps;
         if (cmd==='ssh_connect') {window.fixture.session=args.id; window.fixture.loginAuth=args.auth; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
@@ -26,6 +26,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
               {name:'sample.bin',kind:'file',size:128,modified:null,permissions:384},
               ...(!args.destination && window.fixture.extraLocal ? [{name:'extra.bin',kind:'file',size:256,modified:null,permissions:384}] : [])
             ]};
+        if (cmd==='files_preview') return {name:args.request.name,content:'Remote UTF-8: привет\\n<svg onload=alert(1)>',bytes:47};
         if (cmd==='files_transfer') {
           if (window.fixture.allowTransfer) {
             if (window.fixture.pauseTransfers) return new Promise((_,reject)=>{window.fixture.rejectPending=reject;});
@@ -361,4 +362,27 @@ test('Windows native login offers password/PAM, gates remote access and clears l
   await files.getByRole('button',{name:'Disconnect / cancel'}).click();
   await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
   await expect(files.getByText('Waiting for login',{exact:true})).toBeVisible();
+});
+
+
+test('read-only SFTP preview is opt-in, session-scoped and text-only',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await expect(remote.getByRole('button',{name:'sample.bin',exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_preview'))).toHaveLength(0);
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
+  await remote.getByRole('button',{name:'Preview text',exact:true}).click();
+  const preview=files.getByRole('region',{name:'Remote file preview'});
+  await expect(preview).toContainText('Remote UTF-8: привет');
+  await expect(preview).toContainText('<svg onload=alert(1)>');
+  await expect(preview.locator('svg')).toHaveCount(0);
+  const previews=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_preview'));
+  expect(previews).toHaveLength(1);
+  expect(previews[0].request).toMatchObject({
+    name:'sample.bin',directory:'/remote',destination:{host:'localhost',port:22229,username:'fixture'}
+  });
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'||c.cmd==='files_transfer'))).toHaveLength(0);
+  await preview.getByRole('button',{name:'Close preview'}).click();
+  await expect(preview).toHaveCount(0);
 });

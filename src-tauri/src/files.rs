@@ -615,6 +615,12 @@ fn copy_download_resume(c:&mut Sftp,remote:&str,target:&Path,temp:&Path,
     if !local_before.is_file() || local_before.is_symlink() {
         return Err("Local partial must be a regular file".into());
     }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if local_before.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point partial refused".into());
+        }
+    }
     #[cfg(unix)] {
         use std::os::unix::fs::MetadataExt;
         if local_before.nlink()!=1 {return Err("Hard-linked partial refused".into());}
@@ -723,6 +729,29 @@ fn copy_download_resume(c:&mut Sftp,remote:&str,target:&Path,temp:&Path,
         check_at+=chunk.len() as u64;
     }
     c.close(&check)?;op.check()?;
+    let final_source=c.lstat(remote)?;
+    if final_source.kind()!="file" || final_source.size!=source_before.size ||
+        final_source.modified!=source_before.modified {
+        return Err("Remote source changed before publication".into());
+    }
+    let final_partial=fs::symlink_metadata(temp).map_err(|_|"Local partial vanished")?;
+    if !final_partial.is_file() || final_partial.is_symlink() ||
+        final_partial.len()!=total {
+        return Err("Local partial changed before publication".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if final_partial.dev()!=local_open.dev() || final_partial.ino()!=local_open.ino() ||
+            final_partial.nlink()!=1 {
+            return Err("Local partial replaced before publication".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if final_partial.file_attributes() & 0x400 != 0 {
+            return Err("Local partial changed to a reparse point".into());
+        }
+    }
     drop(f);
     // Atomic no-replace local publication, same as ordinary download.
     fs::hard_link(temp,target).map_err(|_|"Cannot publish download without overwrite".to_string())?;

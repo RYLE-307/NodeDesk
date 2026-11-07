@@ -208,11 +208,13 @@ must be configured separately; no live RDP tests yet.
 ## In-tab Guacamole RDP (draft PR #11)
 
 The RDP workspace contains a Guacamole 1.6 browser client rendering remote
-canvas layers and forwarding keyboard/mouse inside the NodeDesk tab over
-an operator-configured authenticated WSS tunnel. Apache Guacamole + guacd must
-be deployed and trusted separately. This is **not a native RDP TCP client**;
-Guacamole login/session cookies and RDP target identity are managed by the
-upstream gateway and may require an application-specific integration.
+canvas layers and forwarding keyboard/mouse inside the NodeDesk tab. It now
+supports standard HTTPS account login, enumerates authorized RDP profiles and
+opens an explicit Guacamole WSS tunnel. Apache Guacamole + guacd must
+be deployed and trusted separately; exact-origin CORS is required and
+WSS URL query strings containing session tokens must be redacted by proxies. This is **not a native RDP TCP client**;
+NodeDesk uses short-lived Guacamole tokens in memory; the upstream gateway
+still governs RDP target identity, NLA and server trust.
 The existing external FreeRDP/mstsc launcher remains unchanged.
 No real RDP screen or server-certificate identity has been manually accepted.
 [Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).

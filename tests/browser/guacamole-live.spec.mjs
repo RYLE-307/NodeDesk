@@ -10,6 +10,18 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   const user=process.env.QA_USER,password=process.env.QA_PASSWORD;
   expect(user).toBeTruthy();expect(password).toBeTruthy();
   await page.addInitScript(()=>{
+    // Observe only Guacamole instruction names, never auth tokens, RDP
+    // contents, usernames or WSS URLs. Proves actual user-input messages
+    // travel from the in-tab viewer toward the real disposable gateway.
+    window.__guacQaInput={key:0,mouse:0};
+    const nativeSend=WebSocket.prototype.send;
+    WebSocket.prototype.send=function(data){
+      if(typeof data==="string"){
+        const opcode=data.match(/^\\d+\\.(key|mouse),/);
+        if(opcode)window.__guacQaInput[opcode[1]]++;
+      }
+      return nativeSend.call(this,data);
+    };
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],language:"en",theme:"dark",monitoring:false,
       connections:[{id:"qa-rdp",name:"Disposable RDP",host:"127.0.0.1",
@@ -40,6 +52,15 @@ test("live Guacamole RDP renders the xrdp framebuffer inside the NodeDesk tab",a
   }));
   expect(dimensions.width).toBeGreaterThan(0);
   expect(dimensions.height).toBeGreaterThan(0);
+  // Exercise mouse/keyboard against an isolated disposable Linux xrdp
+  // server. Do not send inputs to any production host in this fixture.
+  await screen.locator("canvas").first().click({position:{x:4,y:4}});
+  await page.keyboard.press("a");
+  await expect.poll(()=>page.evaluate(()=>window.__guacQaInput),{timeout:10000})
+    .toMatchObject({mouse:expect.any(Number),key:expect.any(Number)});
+  const input=await page.evaluate(()=>window.__guacQaInput);
+  expect(input.mouse).toBeGreaterThan(0);
+  expect(input.key).toBeGreaterThan(0);
   await embedded.getByRole("button",{name:"Disconnect",exact:true}).click();
   await expect(embedded.getByRole("button",{name:"Connect embedded"})).toBeVisible();
   await embedded.getByRole("button",{name:"Sign out"}).click();

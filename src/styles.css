@@ -433,3 +433,9 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-batch-report li span:last-child { flex-shrink:0; }
 .files-batch-done span:last-child { color:var(--accent); }
 .files-batch-failed span:last-child, .files-batch-cancelled span:last-child { color:var(--danger); }
+
+/* v0.6 external RDP launcher — distinct from the embedded SSH/SFTP workspaces. */
+.rdp-workspace { padding:16px; max-width:900px; }
+.rdp-workspace h2 { margin:0 0 14px; }
+.rdp-workspace p { overflow-wrap:anywhere; }
+.rdp-workspace button { margin:10px 0; }

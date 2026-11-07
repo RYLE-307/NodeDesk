@@ -89,4 +89,3 @@ test("Guacamole connection discovery distinguishes an empty list from failed sou
     assert.deepEqual(await guacConnections("https://guac.example/guacamole/",result),[]);
   }finally{globalThis.fetch=prior;}
 });
-

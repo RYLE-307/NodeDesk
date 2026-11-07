@@ -114,4 +114,3 @@ export async function guacLogout(base:string,auth:GuacAuth):Promise<void>{
   const u=new URL("api/tokens/"+encodeURIComponent(auth.authToken),guacBase(base));
   try{await fetch(u.href,{...fetchOptions,method:"DELETE",mode:"cors"});}catch{/* UI clears token regardless */}
 }
-

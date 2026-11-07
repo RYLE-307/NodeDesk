@@ -184,10 +184,17 @@ checks; any error or user cancellation stops the rest, and prior successful
 files remain. A new **Retry unfinished** action (draft PR #11) requires manual
 refresh of BOTH filesystem listings and fresh explicit confirmation, rechecks
 original source size/mtime/type and destination collisions, and never replays
-already successful files. Every incomplete file restarts **from byte zero**;
-there is no unsafe reuse of orphaned .part files. No queue is persisted, and
-byte-level resume/checkpointing is still planned. Native Windows/Arch manual
-acceptance remains open. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+already successful files. Normal retry restarts **from byte zero**. The user
+can instead explicitly choose **Resume verified upload** for the latest failed
+upload in the same tab/session: NodeDesk reads and compares every byte of its
+random-ID remote .part against the current local source *before any write*,
+writes only the missing suffix, then reads and verifies the entire completed
+remote copy before non-overwriting publish. Missing, symlinked, full-size,
+corrupt or changed partials are rejected. Neither remote partial nor local
+source is silently deleted on failure. No queue or partial reference survives
+a tab/app restart. Download byte-level resume, persistent checkpointing,
+cryptographic provenance for long-lived partials, and native Windows/Arch GUI
+manual acceptance are still planned. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
 
 ### v0.5 review addition: transfer visibility
 

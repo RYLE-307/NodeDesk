@@ -1,13 +1,13 @@
 # NodeDesk
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive or OpenSSH key/agent; bounded CRUD, selected-file Drag & Drop and a 50-file sequential queue (draft, pending manual acceptance).
-> Full scope and acceptance: [V0.5](docs/V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> **Current development: v0.6.0-alpha.0** — external RDP launcher for Linux/Windows in draft PR #11.
+> v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
+> First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
 
 [Русский](README.ru.md) · **EN**
 
 Offline-first infrastructure workspace for Windows and Linux, built with Tauri 2,
-React, TypeScript and Rust. Current review version: **0.5.0-alpha.0**.
+React, TypeScript and Rust. Current development version: **0.6.0-alpha.0**.
 
 ## Available
 
@@ -21,7 +21,7 @@ React, TypeScript and Rust. Current review version: **0.5.0-alpha.0**.
 Real SSH/SFTP consoles support key/agent/password/PAM. The v0.5 Files GUI
 supports structured SFTP browsing and binary transfer with Linux password/PAM
 auth bridge, Windows native password/keyboard-interactive or direct key/agent auth.
-RDP, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
+The first RDP launcher opens an external mstsc/FreeRDP window on explicit click. Embedded RDP, VNC, VPN, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
 or credentials are collected. Catalog storage is local WebView profile storage,
 not encryption or backup. [Storage contract and acceptance checks](docs/V0.2.md).
 
@@ -48,12 +48,11 @@ Keep `package-lock.json`; use `npm ci` on Arch and Windows. Before pulling, insp
 lock files. Dependency installation needs internet; normal catalog use does not.
 Installers remain disabled pending platform validation and release preparation.
 
-CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. Arch launch of
-v0.1–v0.4 was confirmed by the user; v0.5 latest GUI still needs manual acceptance.
+CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. The user confirmed the v0.5 Arch GUI launched and uploaded a file to a real server. Windows GUI acceptance remains separate.
 Cargo.lock is tracked. Real-server SFTP integration runs in Linux CI; Windows
 runs native integration against an independent loopback SSH/SFTP peer, unit tests and Tauri builds. Desktop GUI acceptance is pending.
 
-[Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[RDP v0.6 notes](docs/V0.6-RDP.md) · [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [MobaXterm parity goals](docs/MOBAXTERM-PARITY.md) · [MIT](LICENSE)
 
 

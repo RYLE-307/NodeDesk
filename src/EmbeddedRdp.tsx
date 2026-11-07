@@ -22,6 +22,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
   const keyboard=useRef<Guacamole.Keyboard|null>(null);
   const mouse=useRef<Guacamole.Mouse|null>(null);
   const phaseRef=useRef<Phase>("idle");
+  const viewOnlyRef=useRef(false);
 
   function setCurrentPhase(p:Phase){phaseRef.current=p;setPhase(p);}
   function disconnect(){
@@ -34,9 +35,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       keyboard.current=null;
     }
     if(mouse.current){
-      mouse.current.onmousedown=null;
-      mouse.current.onmouseup=null;
-      mouse.current.onmousemove=null;
+      mouse.current.reset();
       mouse.current=null;
     }
     try{active?.disconnect();}catch{/* already disconnected */}
@@ -67,6 +66,8 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       const display=client.getDisplay().getElement();
       session.current=client;
       surface.current.replaceChildren(display);
+      display.tabIndex=0;
+      display.addEventListener("mousedown",()=>display.focus());
       client.onstatechange=(state)=>{
         if(session.current!==client)return;
         // Guacamole.Client.State.CONNECTED=3, DISCONNECTED=5.
@@ -89,21 +90,19 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       };
       const m=new Guacamole.Mouse(display);
       mouse.current=m;
-      const sendMouse=(state:Guacamole.Mouse.State)=>{
-        if(session.current===client && !viewOnly)client.sendMouseState(state);
-      };
-      m.onmousedown=sendMouse;
-      m.onmouseup=sendMouse;
-      m.onmousemove=sendMouse;
+      m.onEach(["mousedown","mouseup","mousemove"],(event)=>{
+        if(session.current===client && !viewOnlyRef.current)
+          client.sendMouseState((event as Guacamole.Mouse.Event).state);
+      });
       const k=new Guacamole.Keyboard(display);
       keyboard.current=k;
       k.onkeydown=(keysym)=>{
-        if(session.current!==client||viewOnly)return false;
+        if(session.current!==client||viewOnlyRef.current)return false;
         client.sendKeyEvent(1,keysym);
         return false; // avoid sending remote shortcuts to the host page
       };
       k.onkeyup=(keysym)=>{
-        if(session.current!==client||viewOnly)return;
+        if(session.current!==client||viewOnlyRef.current)return;
         client.sendKeyEvent(0,keysym);
       };
       // No clipboard, file, audio or local device redirection is requested.
@@ -116,7 +115,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
     }
   }
   function updateViewOnly(value:boolean){
-    if(!value) {setViewOnly(false);return;}
+    if(!value) {viewOnlyRef.current=false;setViewOnly(false);return;}
     // On entering read-only mode, synthesize key release via disconnect:
     // avoid a remote keyboard with keys held when input is disabled.
     if(session.current) {
@@ -125,6 +124,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
       kb?.reset();
       if(session.current!==current)return;
     }
+    viewOnlyRef.current=true;
     setViewOnly(true);
   }
 

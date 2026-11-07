@@ -1,5 +1,5 @@
-import {finishBatch, portableName} from "./filesModel";
-import type {BatchItem, FileEntry} from "./filesModel";
+import {finishBatch, portableName} from "./filesModel.ts";
+import type {BatchItem, FileEntry} from "./filesModel.ts";
 
 /** Recovery metadata is an OPT-IN local WebView record, never credentials or file bytes.
  * The record is not an authorization to connect or write: fresh listings,

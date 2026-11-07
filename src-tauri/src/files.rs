@@ -365,6 +365,88 @@ pub async fn files_preview(id: String, mut request: PreviewRequest, app: tauri::
     }).await.map_err(|_|"File preview task failed".to_string())?
 }
 
+
+/** Non-destructive SFTP text editing: the original file is never opened for
+ * writing. Save creates a *new* file with SSH_FXF_CREAT|SSH_FXF_EXCL; a remote
+ * editor cannot honestly promise atomic compare-and-swap with SFTP v3.
+ */
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SaveTextCopyRequest {
+    destination: Destination,
+    directory: String,
+    original_name: String,
+    original_content: String,
+    new_name: String,
+    content: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct SavedTextCopy {name:String,bytes:usize,source_unchanged:bool}
+
+fn save_text_copy(c:&mut Sftp,request:&SaveTextCopyRequest,op:&Operation)->Result<SavedTextCopy>{
+    wire::path(&request.directory)?;
+    wire::name(&request.original_name)?;
+    wire::name(&request.new_name)?;
+    if request.new_name==request.original_name {
+        return Err("Choose a different filename; original cannot be overwritten".into());
+    }
+    // Both texts are sent in memory; neither is logged, stored or saved locally.
+    decode_preview(request.original_content.as_bytes().to_vec())?;
+    decode_preview(request.content.as_bytes().to_vec())?;
+    op.check()?;
+    let original=preview_remote(c,&request.directory,&request.original_name,op)?;
+    if original.content!=request.original_content {
+        return Err("Original file changed since opening; copy was not created".into());
+    }
+    let parent=c.realpath(&request.directory)?;op.check()?;
+    let target=wire::join(&parent,&request.new_name)?;
+    // The exclusive-create flag makes collisions fail *at the server*.
+    // Never use RENAME or POSIX rename here: both could overwrite a target.
+    let handle=c.open(&target,2|8|32)?;
+    let bytes=request.content.as_bytes();
+    let mut written=0usize;
+    while written<bytes.len(){
+        if let Err(e)=op.check(){
+            let _=c.close(&handle);
+            return Err(format!("{e}; new copy may be incomplete"));
+        }
+        let end=usize::min(written+CHUNK,bytes.len());
+        if let Err(e)=c.write(&handle,written as u64,&bytes[written..end]){
+            let _=c.close(&handle);
+            return Err(format!("{e}; new copy may be incomplete"));
+        }
+        written=end;
+    }
+    if let Err(e)=c.close(&handle){
+        return Err(format!("{e}; inspect newly created copy before retrying"));
+    }
+    op.check().map_err(|e|format!("{e}; new copy may exist"))?;
+    let saved=preview_remote(c,&request.directory,&request.new_name,op)
+        .map_err(|e|format!("New copy created but verification failed: {e}"))?;
+    if saved.content!=request.content {
+        return Err("New copy content verification failed; inspect manually".into());
+    }
+    // A concurrent, uncooperative writer may alter the source after the first
+    // comparison. Original is untouched; report its latest observable state.
+    let source_unchanged=preview_remote(c,&request.directory,&request.original_name,op)
+        .map(|now|now.content==request.original_content).unwrap_or(false);
+    Ok(SavedTextCopy{name:request.new_name.clone(),bytes:bytes.len(),source_unchanged})
+}
+#[tauri::command]
+pub async fn files_save_text_copy(id:String,mut request:SaveTextCopyRequest,app:tauri::AppHandle)->Result<SavedTextCopy>{
+    wire::path(&request.directory)?;
+    wire::name(&request.original_name)?;
+    wire::name(&request.new_name)?;
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        save_text_copy(&mut client,&request,&guard.op)
+    }).await.map_err(|_|"Text copy task failed".to_string())?
+}
+
 #[tauri::command]
 pub fn files_cancel(id: String, state: State<'_,Operations>) -> Result<()> {
     operation_id(&id)?;

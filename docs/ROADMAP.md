@@ -64,13 +64,17 @@ OpenSSH runs without a shell or password prompt using an already trusted host ke
 and key/agent authentication. The tunnel stops with the tab or application.
 Remote/dynamic forwards, password/PAM tunnel auth and real target acceptance
 remain open.
-The next FS-02 foundation is an explicitly user-triggered **read-only** remote UTF-8
-preview in the SFTP Files pane (up to 128 KiB). It reuses authenticated and
-host-key-verified SFTP, checks regular-file type and before/after size/mtime,
-rejects binary/control text, and never writes or caches data persistently.
-The preview is cleared on close, profile change, and interactive login loss.
-A full remote editor with conflict-safe save, encoding selection and recovery
-remains open; native Windows/Arch preview acceptance is still pending. Linux CI uses its disposable trusted sshd fixture to pass bytes
+FS-02 now includes explicit UTF-8 remote text preview and an in-memory editor
+(128 KiB maximum). **Save as new copy** checks the original against the exact
+text read when the editor opened, then creates a distinct remote filename with
+SFTP v3 EXCL|CREAT. The original is never opened for writing, and an existing
+copy cannot be overwritten. It verifies the written copy and rechecks the
+source; if the source changed during saving, that conflict is reported.
+A failed write may leave an incomplete new file for manual inspection.
+There is no silent autosave, shell, persistent cache, or local temporary copy.
+SFTP v3 cannot provide a true atomic compare-and-swap overwrite: direct saving
+to the original, encoding selection, 3-way merge, recovery and manual native
+Windows/Arch acceptance remain open. The editor clears on profile/auth change. Linux CI uses its disposable trusted sshd fixture to pass bytes
 through the local forward to a loopback target; native Windows and user-owned
 target acceptance remain open.
 

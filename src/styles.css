@@ -359,6 +359,7 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .network-fields label { display:flex; flex-direction:column; gap:4px; }
 .network-fields input { max-width:260px; }
 .network-fields input[type="number"] { width:110px; }
+.network-ping-output { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; overflow:auto; font-size:12px; padding:10px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
 
 /* SSH authentication selection is local to an open terminal tab; never persisted. */
 .ssh-auth { display:flex; align-items:center; gap:6px; font-size:12px; }

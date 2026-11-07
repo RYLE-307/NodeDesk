@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { SshWorkspace } from "./SshTerminal";
+import { RdpWorkspace } from "./RdpWorkspace";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -54,7 +55,7 @@ const labels = {
     monitoring: "Мониторинг",
     unavailable: "Источники мониторинга ещё не подключены.",
     offline: "Не подключено",
-    info: "Карточка подключения. Сетевые сессии SSH/RDP появятся позже.",
+    info: "Карточка подключения. Другие протоколы удалённого доступа появятся позже.",
     close: "Закрыть",
     split: "Разделить",
     unsplit: "Одна панель",
@@ -109,7 +110,7 @@ const labels = {
     monitoring: "Monitoring",
     unavailable: "Monitoring sources are not connected yet.",
     offline: "Disconnected",
-    info: "Connection details. SSH/RDP network sessions will be added later.",
+    info: "Connection details. Additional remote protocols are planned for future versions.",
     close: "Close",
     split: "Split",
     unsplit: "Single pane",
@@ -411,7 +412,8 @@ export default function App() {
   }
   function pane(id: string) {
     const c = data.connections.find((c) => c.id === id);
-    return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> : c ? (
+    return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
+      c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}
@@ -444,7 +446,7 @@ export default function App() {
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.5</small>
+              NodeDesk <small>0.6</small>
             </strong>
           )}
           <button

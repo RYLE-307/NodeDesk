@@ -5,7 +5,7 @@ export type Connection = {
   host: string;
   port: number;
   username: string;
-  protocol: "SSH" | "RDP";
+  protocol: "SSH" | "RDP" | "VNC";
   groupId: string | null;
   favorite: boolean;
 };
@@ -82,7 +82,7 @@ export function decode(raw: string): Catalog {
       !c.host ||
       /[\s/@?#\\]/.test(c.host) ||
       !text(c.username) ||
-      !["SSH", "RDP"].includes(c.protocol) ||
+      !["SSH", "RDP", "VNC"].includes(c.protocol) ||
       !Number.isInteger(c.port) ||
       c.port < 1 ||
       c.port > 65535 ||

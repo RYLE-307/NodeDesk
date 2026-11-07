@@ -46,6 +46,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [batchFinished,setBatchFinished] = useState(false);
   const stopQueue = useRef(false);
   const [retryPlan,setRetryPlan] = useState<PendingTransferPlan|null>(null);
+  const [partialUpload,setPartialUpload] = useState<{index:number;previousId:string}|null>(null);
   const listingVersion=useRef({local:0,remote:0});
   const [localFilter,setLocalFilter] = useState(""), [remoteFilter,setRemoteFilter] = useState("");
   const filteredLocal = useMemo(() => visibleEntries(local?.entries ?? [],localFilter),[local,localFilter]);
@@ -84,7 +85,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     if (interactive && !authReady) {
       stopQueue.current = true;
-      setRemote(null); clearEditor(); setRetryPlan(null); setBatchReport([]); setBatchFinished(false); selectRemote(""); setBatchRemote([]);
+      setRemote(null); clearEditor(); setRetryPlan(null); setPartialUpload(null); setBatchReport([]); setBatchFinished(false); selectRemote(""); setBatchRemote([]);
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
@@ -111,7 +112,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
     previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
-    setRemote(null); clearEditor(); setRetryPlan(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    setRemote(null); clearEditor(); setRetryPlan(null); setPartialUpload(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -152,7 +153,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if (target.entries.some(e => e.name === name)) { setError(ru ? "Имя уже существует. Перезапись отключена." : "Destination name exists. Overwrite is disabled."); return; }
     if (!window.confirm(`${upload ? (ru ? "Загрузить на сервер" : "Upload to remote") : (ru ? "Скачать локально" : "Download locally")}\n${name}\n→ ${target.path}\n${ru ? "Без перезаписи" : "No overwrite"}?`)) return;
     const targetPath = target.path;
-    setRetryPlan(null); setBatchReport([]); setBatchFinished(false);
+    setRetryPlan(null);setPartialUpload(null);setBatchReport([]);setBatchFinished(false);
     void run(id => {
       const events = new Channel<Progress>();
       events.onmessage = p => { if (mounted.current && gate.current.owns(id)) setProgress(p); };
@@ -183,7 +184,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   /** Every attempt starts the named file from byte zero. Never auto-resume an
    * orphaned .part file: that would need authenticated prefix validation.
    */
-  function executeBatch(plan:PendingTransferPlan,indexes:readonly number[],report:BatchItem[]){
+  function executeBatch(plan:PendingTransferPlan,indexes:readonly number[],report:BatchItem[],
+    resumeCandidate?:{index:number;previousId:string}){
     if(busy || gate.current.id || !indexes.length)return;
     stopQueue.current=false;
     setBatchReport(report);setBatchFinished(false);setQueueProgress(null);
@@ -207,12 +209,19 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           if(mounted.current && gate.current.owns(id) && !stopQueue.current)setProgress(value);
         };
         try{
-          await invoke("files_transfer",{id,request:{...request,name},events});
+          await invoke("files_transfer",{id,request:{
+            ...request,name,...(resumeCandidate?.index===index?{resumeId:resumeCandidate.previousId}:{})
+          },events});
         }catch(cause){
+          if(plan.upload){
+            setPartialUpload(resumeCandidate?.index===index?resumeCandidate:
+              {index,previousId:id});
+          }
           mark(index,stopQueue.current?"cancelled":"failed");
           throw new Error(`${name}: ${String(cause)}`);
         }
         mark(index,"done");completed++;
+        if(resumeCandidate?.index===index)setPartialUpload(null);
       }
     },()=>{
       if(plan.upload){setRemote(null);selectRemote("");setBatchRemote([]);}
@@ -246,10 +255,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       sourceEntries:names.map(name=>source.entries.find(entry=>entry.name===name)!),
       localVersion:listingVersion.current.local,remoteVersion:listingVersion.current.remote,
     };
-    setRetryPlan(plan);
+    setRetryPlan(plan);setPartialUpload(null);
     executeBatch(plan,names.map((_,index)=>index),startBatch(names));
   }
-  function retryUnfinished(){
+  function retryUnfinished(resumeVerified:boolean){
     if(!retryPlan || busy || gate.current.id || !batchFinished)return;
     if(retryPlan.connectionKey!==JSON.stringify(destination)){
       setError(ru?"Очередь относится к другому подключению.":"Queue belongs to a different connection.");
@@ -269,16 +278,23 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       const source=retryPlan.upload?local:remote,target=retryPlan.upload?remote:local;
       ({indexes,names}=retryBatchPlan(retryPlan.names,batchReport,source,target,retryPlan.sourceEntries));
     }catch(cause){setError(String(cause));return;}
-    if(!window.confirm(ru
-      ? `Повторить ${names.length} незавершённых файлов с НУЛЕВОГО байта?\n${names.join("\n")}\nГотовые файлы не затрагиваются. Частичные .part могут остаться; перезапись запрещена.`
-      : `Retry ${names.length} unfinished files FROM BYTE ZERO?\n${names.join("\n")}\nCompleted files are untouched. Orphan .part files may remain; overwrite is disabled.`))return;
+    const candidate=resumeVerified && retryPlan.upload &&
+      partialUpload && indexes.includes(partialUpload.index) ? partialUpload:null;
+    if(resumeVerified && !candidate){
+      setError(ru?"Нет подтверждённой предыдущей частичной загрузки.":"No previous partial upload is available.");
+      return;
+    }
+    const label=resumeVerified
+      ? (ru?"Проверить все байты .part и загрузить только недостающую часть? Если проверка не пройдёт — прерваться без записи.":"Verify every .part prefix byte, then upload only remaining bytes? Mismatch stops without writing.")
+      : (ru?"Каждый незавершённый файл начнётся с нулевого байта.":"Every unfinished file restarts from byte zero.");
+    if(!window.confirm(`${label}\n${names.join("\n")}\n${ru?"Готовые файлы не затрагиваются, перезапись запрещена.":"Completed files untouched; overwrite disabled."}`))return;
     const nextPlan={...retryPlan,localVersion:listingVersion.current.local,
       remoteVersion:listingVersion.current.remote};
     setRetryPlan(nextPlan);
     const toRetry=new Set(indexes);
     const report=batchReport.map((item,index)=>toRetry.has(index)?
       {...item,state:"queued" as BatchItemState}:item);
-    executeBatch(nextPlan,indexes,report);
+    executeBatch(nextPlan,indexes,report,candidate || undefined);
   }
   function showContext(isRemote: boolean, name: string|null, x: number, y: number) {
     if (name !== null) (isRemote ? selectRemote : selectLocal)(name);
@@ -550,15 +566,18 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       <div className="files-batch-heading">
         <strong>{ru ? "Передача файлов" : "File transfers"}: {batchReport.filter(item => item.state==="done").length}/{batchReport.length}</strong>
         {batchFinished && retryPlan && remainingBatchIndexes(batchReport).length>0 && <button type="button"
-          disabled={busy} onClick={retryUnfinished}>
+          disabled={busy} onClick={()=>retryUnfinished(false)}>
           {ru?"Повторить незавершённые":"Retry unfinished"}
         </button>}
-        {batchFinished && !busy && <button type="button" onClick={() => {setBatchReport([]);setBatchFinished(false);setRetryPlan(null);}}>
+        {batchFinished && !busy && retryPlan?.upload && partialUpload &&
+          remainingBatchIndexes(batchReport).includes(partialUpload.index) && <button type="button"
+          onClick={()=>retryUnfinished(true)}>{ru?"Возобновить с проверкой":"Resume verified upload"}</button>}
+        {batchFinished && !busy && <button type="button" onClick={() => {setBatchReport([]);setBatchFinished(false);setRetryPlan(null);setPartialUpload(null);}}>
           {ru ? "Очистить отчёт" : "Clear report"}</button>}
       </div>
       {batchFinished && retryPlan && remainingBatchIndexes(batchReport).length>0 && <p className="ssh-help">
-        {ru?"Перед повтором обнови ОБЕ панели. Повторяется весь файл с начала, а не частичный .part; готовые файлы не повторяются.":
-          "Refresh BOTH panes before retry. Each unfinished file restarts from byte zero, never from an orphan .part; completed files are not retried."}
+        {ru?"Перед повтором обнови ОБЕ панели. Обычный повтор начинает файл с нуля; Resume verified проверяет каждый байт .part и отправляет только остаток. Готовые файлы не повторяются.":
+          "Refresh BOTH panes. Normal retry starts at byte zero. Resume verified compares every byte of the partial prefix and sends only the remainder; completed files are untouched."}
       </p>}
       <ol>{batchReport.map((item,index) => <li key={index} className={`files-batch-${item.state}`}>
         <span>{item.name}</span>

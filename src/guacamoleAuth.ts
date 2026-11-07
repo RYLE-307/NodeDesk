@@ -8,7 +8,7 @@ export type GuacConnection = {id:string;name:string;source:string;protocol:"rdp"
 export function guacBase(input:string):string {
   if(typeof input!=="string"||!input.startsWith("https://")||
      input!==input.trim()||input.length>2048||
-     /[\u0000-\u001f\u007f]/.test(input)) {
+     /[\u0000-\u001f\u007f]/.test(input)||/%2e|%2f|%5c|%00/i.test(input)) {
     throw new Error("Only a secure HTTPS Guacamole server URL is allowed");
   }
   let u:URL;

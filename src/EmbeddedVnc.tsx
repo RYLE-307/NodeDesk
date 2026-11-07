@@ -33,10 +33,14 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
     if(passwordInput.current)passwordInput.current.value="";
     setPhaseBoth("idle");
   }
-  useEffect(()=>()=>{
-    const current=client.current;
-    client.current=null;
-    try{current?.disconnect();}catch{/* window or tab was destroyed */}
+  useEffect(()=>{
+    setPhaseBoth("idle");
+    setError("");setMessage("");
+    return ()=>{
+      const current=client.current;
+      client.current=null;
+      try{current?.disconnect();}catch{/* window or tab was destroyed */}
+    };
   },[connection.id,connection.host,connection.port]);
 
   function connect(){
@@ -61,14 +65,24 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
       rfb.clipViewport=true;
       rfb.resizeSession=false;
       rfb.viewOnly=viewOnly;
+      let challenged=false;
       rfb.addEventListener("connect",()=>{
         if(client.current!==rfb)return;
+        // WSS authenticates the gateway, not necessarily the RFB origin.
+        // Reject servers that offered an unauthenticated RFB session.
+        if(!challenged){
+          setError(ru?"VNC-сервер не запросил пароль. Встроенное соединение отклонено.":
+            "VNC server did not request authentication. Embedded connection refused.");
+          disconnect();
+          return;
+        }
         setPhaseBoth("connected");
         setMessage(ru?"VNC-подключение установлено. Экран внутри NodeDesk.":
           "VNC connected. Remote framebuffer is inside NodeDesk.");
       });
       rfb.addEventListener("credentialsrequired",()=>{
         if(client.current!==rfb)return;
+        challenged=true;
         setPhaseBoth("credentials");
         setMessage(ru?"Введите пароль VNC для этого соединения.":
           "Enter the VNC password for this connection.");

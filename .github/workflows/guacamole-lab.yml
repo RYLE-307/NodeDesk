@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - "tests/guacamole-lab/**"
+      - "tests/browser/guacamole-live.spec.mjs"
       - ".github/workflows/guacamole-lab.yml"
   workflow_dispatch:
 permissions:
@@ -26,6 +27,9 @@ jobs:
           bash tests/guacamole-lab/prepare.sh
           docker compose -f tests/guacamole-lab/compose.yaml config --quiet
       - name: Boot Guacamole, PostgreSQL, xrdp and loopback TLS
+        # Playwright serves NodeDesk on port 1437 (not Tauri dev's 1420).
+        env:
+          NODEDESK_ORIGIN: http://127.0.0.1:1437
         run: docker compose -f tests/guacamole-lab/compose.yaml up -d
       - name: Extract temporary lab CA
         shell: bash
@@ -54,6 +58,28 @@ jobs:
           source tests/guacamole-lab/.env
           set +a
           NODE_EXTRA_CA_CERTS="$PWD/tests/guacamole-lab/generated/caddy-root.crt"             node --experimental-strip-types tests/guacamole-lab/verify.mjs
+      - name: Trust disposable localhost CA in ephemeral Linux Chromium runner
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3-tools
+          sudo install -m 0644 tests/guacamole-lab/generated/caddy-root.crt \
+            /usr/local/share/ca-certificates/nodedesk-guac-lab.crt
+          sudo update-ca-certificates >/dev/null
+          mkdir -p "$HOME/.pki/nssdb"
+          certutil -N --empty-password -d sql:"$HOME/.pki/nssdb"
+          certutil -A -d sql:"$HOME/.pki/nssdb" -n "NodeDesk ephemeral QA" -t "C,," \
+            -i tests/guacamole-lab/generated/caddy-root.crt
+      - name: Test real xrdp pixels inside NodeDesk Chromium workspace
+        shell: bash
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          set -a
+          source tests/guacamole-lab/.env
+          set +a
+          NODEDESK_GUAC_LIVE=1 \
+            npx playwright test tests/browser/guacamole-live.spec.mjs --workers=1 --reporter=line
       - name: Tear down the disposable network and volumes
         if: always()
         run: |

@@ -3,6 +3,15 @@ name: nodedesk-guacamole-qa
 # Disposable local RDP test lab. Only reverse-proxy HTTPS binds the host.
 # All credentials are generated in an ignored .env file by prepare.sh.
 services:
+  # Bootstrap files contain disposable credentials and stay 0600 on the host.
+  # Copy them to a private Docker volume readable by PostgreSQL's uid.
+  init-sql:
+    image: busybox:1.37
+    command: ["sh", "-c", "cp /source/*.sql /init/ && chmod 0444 /init/*.sql"]
+    volumes:
+      - ./generated/init:/source:ro
+      - bootstrap:/init
+    networks: [lab]
   postgres:
     image: postgres:17-alpine
     environment:
@@ -10,8 +19,11 @@ services:
       POSTGRES_USER: guacamole_user
       POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?Run prepare.sh first}
     volumes:
-      - ./generated/init:/docker-entrypoint-initdb.d:ro
+      - bootstrap:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
+    depends_on:
+      init-sql:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
       interval: 5s
@@ -63,5 +75,6 @@ networks:
     internal: true
 
 volumes:
+  bootstrap:
   pgdata:
   caddy_data:

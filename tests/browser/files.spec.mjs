@@ -471,7 +471,7 @@ test('SFTP find is literal, selects UTF-8 text and replace selected stays local'
   expect(await area.evaluate(el=>el.value.slice(el.selectionStart,el.selectionEnd))).toBe('привет');
   await search.getByRole('textbox',{name:'Replacement text'}).fill('мир');
   await search.getByRole('button',{name:'Replace selected'}).click();
-  await expect(area).toContainText('Remote UTF-8: мир');
+  await expect(area).toHaveValue(/Remote UTF-8: мир/);
   await expect(search.getByRole('status',{name:'Matches'})).toContainText('0');
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'))).toHaveLength(0);
   await editor.getByRole('button',{name:'Read-only view'}).click();

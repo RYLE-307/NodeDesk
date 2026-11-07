@@ -113,11 +113,19 @@ Compose project**. Do not run it from another project's directory.
 
 The GitHub Actions workflow
 [Disposable Guacamole RDP integration](../../.github/workflows/guacamole-lab.yml)
-builds this same isolated fixture, verifies HTTPS with the generated CA,
-does a **real remote xrdp/Guacamole WSS protocol handshake**, and tears
-down the volumes and credentials on completion. It does not check pixel
-appearance, keyboard layouts, user input accuracy, WebView CA trust,
-Guacamole CORS on the packaged app or a Windows RDP server.
+builds this isolated fixture, verifies HTTPS/WSS with the generated CA,
+observes **real xrdp/Guacamole screen instructions** and also launches
+**NodeDesk in Chromium**: it signs in, selects the authorized RDP
+connection, waits for the embedded Guacamole stream, confirms the canvas
+is visible with nonzero dimensions, disconnects and signs out. Chromium
+trusts the temporary QA CA installed into its ephemeral Linux runner.
+No screenshot, token or password artifact is uploaded. It destroys the
+containers, credentials and volumes after testing.
+
+This confirms a functioning live **browser-based NodeDesk rendering
+pipeline**, but not the *visual correctness of pixels*, keyboard layouts,
+mouse input precision, native Tauri/WebView2/WebKitGTK CA stores, CORS for
+packaged desktop app origins, or a real Windows RDP server.
 
 These remain separate manual acceptance items before PR #11 can be
 merged. Keep the existing v0.5 main branch untouched until then.

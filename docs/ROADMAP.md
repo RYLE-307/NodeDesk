@@ -192,9 +192,16 @@ writes only the missing suffix, then reads and verifies the entire completed
 remote copy before non-overwriting publish. Missing, symlinked, full-size,
 corrupt or changed partials are rejected. Neither remote partial nor local
 source is silently deleted on failure. No queue or partial reference survives
-a tab/app restart. Download byte-level resume, persistent checkpointing,
-cryptographic provenance for long-lived partials, and native Windows/Arch GUI
-manual acceptance are still planned. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+a tab/app restart. The same verified, user-confirmed workflow is now available
+for **download in a batch**: interrupted downloads retain their private local
+partial (unlike single-file downloads, which still remove partials on failure),
+compare all retained bytes to the remote source BEFORE appending, then fetch
+only the remaining suffix. Before a no-overwrite local hard-link publish,
+NodeDesk checks the full downloaded contents byte-for-byte via a new SFTP read.
+Source changes, missing/unsafe or corrupt partials fail closed; no silent
+cleanup of retained failed-batch partials. Persistent checkpointing, resuming
+after app restart, cryptographic provenance for long-lived partials, and
+native Windows/Arch GUI manual acceptance are still planned. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
 
 ### v0.5 review addition: transfer visibility
 

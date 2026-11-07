@@ -7,7 +7,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps,changedSource:false,existingCopy:false,failOnNameOnce:null,collisionName:null,changedSourceMeta:false};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps,changedSource:false,existingCopy:false,failOnNameOnce:null,collisionName:null,changedSourceMeta:false,rejectResume:false};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
@@ -42,6 +42,8 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
         }
         if (cmd==='files_transfer') {
           if (window.fixture.allowTransfer) {
+            if(args.request.resumeId && window.fixture.rejectResume)
+              throw new Error('Partial differs from source; no write');
             if (window.fixture.failOnNameOnce===args.request.name) {
               window.fixture.failOnNameOnce=null;throw new Error('transient-test-error');
             }
@@ -623,4 +625,75 @@ test('cancelled queue can retry unfinished files using a fresh operation ID',asy
   expect(attempts.map(x=>x.request.name)).toEqual(['sample.bin','sample.bin','extra.bin']);
   expect(attempts[0].id).not.toEqual(attempts[1].id);
   expect(attempts[1].id).toEqual(attempts[2].id);
+});
+
+
+test('explicit verified SFTP upload resume uses prior partial ID and never replays done files',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true,failOnNameOnce:'extra.bin'
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  await expect(report.getByRole('listitem').first()).toContainText('Done');
+  const resume=report.getByRole('button',{name:'Resume verified upload'});
+  await expect(resume).toBeVisible();
+  await resume.click();
+  await expect(files.getByRole('alert')).toContainText('Refresh BOTH filesystem panes before retry');
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',dialog=>dialog.dismiss());
+  await resume.click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(2);
+  page.once('dialog',dialog=>dialog.accept());
+  await resume.click();
+  await expect(report).toContainText('File transfers: 2/2');
+  const requests=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'));
+  expect(requests.map(c=>c.request.name)).toEqual(['sample.bin','extra.bin','extra.bin']);
+  expect(requests[2].request.resumeId).toEqual(requests[1].id);
+  expect(requests[2].id).not.toEqual(requests[1].id);
+  expect(requests[0].request.resumeId).toBeUndefined();
+  await expect(resume).toHaveCount(0);
+});
+
+test('verified upload resume fails closed on corrupted partial and preserves report',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true,
+    failOnNameOnce:'extra.bin',rejectResume:true
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',dialog=>dialog.accept());
+  await report.getByRole('button',{name:'Resume verified upload'}).click();
+  await expect(files.getByRole('alert')).toContainText('Partial differs from source; no write');
+  await expect(report).toContainText('File transfers: 1/2');
+  await expect(report.getByRole('listitem').first()).toContainText('Done');
+  await expect(report.getByRole('listitem').last()).toContainText('Failed');
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer'));
+  expect(calls).toHaveLength(3);
+  expect(calls[2].request.resumeId).toBe(calls[1].id);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'))).toHaveLength(0);
 });

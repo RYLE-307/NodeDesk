@@ -53,9 +53,9 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
     !v.names.every(x=>typeof x==="string"&&portableName(x)) ||
     new Set(v.names).size!==v.names.length ||
     !Array.isArray(v.sourceEntries) || v.sourceEntries.length!==v.names.length ||
-    !v.sourceEntries.every((item,i)=>validFileEntry(item)&&item.name===v.names[i]) ||
+    !v.sourceEntries.every((item,i)=>validFileEntry(item)&&item.name===(v.names as string[])[i]) ||
     !Array.isArray(v.items) || v.items.length!==v.names.length ||
-    !v.items.every((item,i)=>item && item.name===v.names[i] && states.has(item.state)))
+    !v.items.every((item,i)=>item && item.name===(v.names as string[])[i] && states.has(item.state)))
       return null;
   const partial=v.partial;
   if (partial!==null) {

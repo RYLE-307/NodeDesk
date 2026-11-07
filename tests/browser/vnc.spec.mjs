@@ -60,7 +60,7 @@ test("embedded VNC is a real in-tab viewer but never autoconnects",async({page})
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vnc_launch"))).toHaveLength(0);
   await viewer.getByRole("textbox",{name:"WSS endpoint"}).fill("ws://unsecured.example/rfb");
   await viewer.getByRole("button",{name:"Connect embedded"}).click();
-  await expect(viewer.getByRole("alert")).toContainText("Only wss://");
+  await expect(viewer.getByRole("alert")).toContainText("Enter a valid WSS endpoint");
   await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
   expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
 });

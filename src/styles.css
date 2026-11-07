@@ -498,3 +498,11 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-preview-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
 .files-preview-heading strong { overflow-wrap:anywhere; }
 .files-preview pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:340px; overflow:auto; border:1px solid var(--line); background:var(--panel); padding:12px; font-size:12px; user-select:text; }
+
+
+/* SFTP editor: plain text only, no local persistence and no automatic saving. */
+.files-editor-label { display:flex; flex-direction:column; gap:6px; margin:10px 0; }
+.files-editor-textarea { font-family:monospace; width:100%; min-height:210px; max-height:500px; resize:vertical; white-space:pre; overflow:auto; tab-size:4; }
+.files-editor-footer { display:flex; align-items:end; flex-wrap:wrap; gap:10px; margin:10px 0; }
+.files-editor-footer label { flex:1; min-width:180px; display:flex; flex-direction:column; gap:6px; }
+.files-editor-footer input { width:100%; min-width:0; }

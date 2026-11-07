@@ -35,6 +35,18 @@ jobs:
             sleep 2
           done
           test -s tests/guacamole-lab/generated/caddy-root.crt
+      - name: Wait for isolated xrdp TCP listener
+        shell: bash
+        run: |
+          for attempt in {1..50}; do
+            if docker compose -f tests/guacamole-lab/compose.yaml exec -T rdp \
+              bash -c 'echo >/dev/tcp/127.0.0.1/3389' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Disposable xrdp container did not open port 3389" >&2
+          exit 1
       - name: Verify Guacamole user login + real RDP WSS framebuffer negotiation
         shell: bash
         run: |

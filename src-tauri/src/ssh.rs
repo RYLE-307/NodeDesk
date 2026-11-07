@@ -346,7 +346,16 @@ mod tests {
             while std::time::Instant::now()<deadline {
                 if let Ok(bytes)=rx.recv_timeout(std::time::Duration::from_millis(100)) { output.push_str(&String::from_utf8_lossy(&bytes)); }
                 if !answered && output.contains("Are you sure") { writer.write_all(reply.as_bytes()).unwrap(); writer.flush().unwrap(); answered=true; }
-                if child.try_wait().unwrap().is_some() { while let Ok(bytes)=rx.try_recv() { output.push_str(&String::from_utf8_lossy(&bytes)); } break; }
+                if child.try_wait().unwrap().is_some() {
+                    // The PTY reader forwards output on a separate thread; the
+                    // child can exit before that thread flushes its last lines.
+                    // Wait briefly for buffered host-key errors instead of
+                    // flaking on an empty channel immediately after exit.
+                    while let Ok(bytes)=rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                        output.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    break;
+                }
             }
             if child.try_wait().unwrap().is_none() { let _=child.kill(); let _=child.wait(); panic!("SSH fixture timed out: {output}"); }
             assert!(output.contains(expected), "Expected {expected}: {output}");

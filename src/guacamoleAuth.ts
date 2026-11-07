@@ -93,6 +93,7 @@ export async function guacLogin(base:string,username:string,password:string,sign
 
 export async function guacConnections(base:string,auth:GuacAuth,signal?:AbortSignal):Promise<GuacConnection[]> {
   const all:GuacConnection[]=[];
+  let successfulSources=0;
   for(const source of auth.availableDataSources){
     const u=new URL("api/session/data/"+encodeURIComponent(source)+"/connections",guacBase(base));
     // Guacamole 1.6 REST API expects the auth token in a query parameter.
@@ -100,8 +101,11 @@ export async function guacConnections(base:string,auth:GuacAuth,signal?:AbortSig
     u.searchParams.set("token",auth.authToken);
     const res=await fetch(u.href,{...fetchOptions,method:"GET",mode:"cors",signal});
     if(!res.ok)continue;
+    successfulSources++;
     all.push(...parseRdpConnections(await res.json(),source));
   }
+  if(auth.availableDataSources.length>0&&successfulSources===0)
+    throw new Error("Guacamole connection discovery failed for every data source");
   return all.slice(0,200).sort((a,b)=>a.name.localeCompare(b.name));
 }
 export async function guacLogout(base:string,auth:GuacAuth):Promise<void>{
@@ -110,3 +114,4 @@ export async function guacLogout(base:string,auth:GuacAuth):Promise<void>{
   const u=new URL("api/tokens/"+encodeURIComponent(auth.authToken),guacBase(base));
   try{await fetch(u.href,{...fetchOptions,method:"DELETE",mode:"cors"});}catch{/* UI clears token regardless */}
 }
+

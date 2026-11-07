@@ -79,3 +79,14 @@ test("Guacamole standard login and connection listing use controlled HTTPS fetch
 test("Guacamole login rejects empty password before a network request",async()=>{
   await assert.rejects(()=>guacLogin("https://guac.example/guacamole/","u",""));
 });
+test("Guacamole connection discovery distinguishes an empty list from failed sources",async()=>{
+  const prior=globalThis.fetch;
+  try{
+    globalThis.fetch=async()=>({ok:false,status:403});
+    await assert.rejects(()=>guacConnections("https://guac.example/guacamole/",result),
+      /discovery failed/);
+    globalThis.fetch=async()=>({ok:true,json:async()=>({})});
+    assert.deepEqual(await guacConnections("https://guac.example/guacamole/",result),[]);
+  }finally{globalThis.fetch=prior;}
+});
+

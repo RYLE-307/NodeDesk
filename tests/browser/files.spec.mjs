@@ -7,7 +7,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps,changedSource:false,existingCopy:false,failOnNameOnce:null,collisionName:null,changedSourceMeta:false,rejectResume:false};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,emptyLocal:false,extraRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps,changedSource:false,existingCopy:false,failOnNameOnce:null,collisionName:null,changedSourceMeta:false,rejectResume:false};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
@@ -28,11 +28,13 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
         if (cmd==='ssh_disconnect') {window.fixture.ready=false; window.fixture.session=null; return;}
         if (cmd==='files_cancel') {window.fixture.rejectPending?.(new Error('cancelled'));window.fixture.rejectPending=null;return;}
         if (cmd==='files_list') return {path:args.destination ? '/remote' : '/local',
-          entries:args.destination && window.fixture.emptyRemote
+          entries:(args.destination && window.fixture.emptyRemote) ||
+                  (!args.destination && window.fixture.emptyLocal)
             ? (window.fixture.collisionName ? [{name:window.fixture.collisionName,kind:'file',size:256,modified:null,permissions:384}] : []) :
             [
               {name:'sample.bin',kind:'file',size:128,modified:null,permissions:384},
-              ...(!args.destination && window.fixture.extraLocal ? [{name:'extra.bin',kind:'file',size:window.fixture.changedSourceMeta?999:256,modified:null,permissions:384}] : [])
+              ...((args.destination ? window.fixture.extraRemote : window.fixture.extraLocal)
+                ? [{name:'extra.bin',kind:'file',size:window.fixture.changedSourceMeta?999:256,modified:null,permissions:384}] : [])
             ]};
         if (cmd==='files_preview') return {name:args.request.name,content:'Remote UTF-8: привет\\n<svg onload=alert(1)>',bytes:47};
         if(cmd==='files_save_text_copy'){
@@ -696,4 +698,78 @@ test('verified upload resume fails closed on corrupted partial and preserves rep
   expect(calls).toHaveLength(3);
   expect(calls[2].request.resumeId).toBe(calls[1].id);
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'))).toHaveLength(0);
+});
+
+
+test('verified download resume requires fresh panes, consent and old operation ID',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyLocal:true,extraRemote:true,allowTransfer:true,
+    failOnNameOnce:'extra.bin'
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await remote.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Download selected (2)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  const resume=report.getByRole('button',{name:'Resume verified download'});
+  await expect(resume).toBeVisible();
+  await resume.click();
+  await expect(files.getByRole('alert')).toContainText('Refresh BOTH filesystem panes before retry');
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',dialog=>dialog.dismiss());
+  await resume.click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_transfer').length)).toBe(2);
+  page.once('dialog',dialog=>dialog.accept());
+  await resume.click();
+  await expect(report).toContainText('File transfers: 2/2');
+  const req=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_transfer'));
+  expect(req.map(x=>x.request.name)).toEqual(['sample.bin','extra.bin','extra.bin']);
+  expect(req.every(x=>x.request.retainPartial===true)).toBe(true);
+  expect(req[0].request.resumeId).toBeUndefined();
+  expect(req[2].request.resumeId).toBe(req[1].id);
+  expect(req[2].id).not.toBe(req[1].id);
+  expect(req[2].request.upload).toBe(false);
+  await expect(resume).toHaveCount(0);
+});
+
+test('corrupted local SFTP download partial refuses retry without writes',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyLocal:true,extraRemote:true,allowTransfer:true,
+    failOnNameOnce:'extra.bin',rejectResume:true
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await remote.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Download selected (2)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  page.once('dialog',dialog=>dialog.accept());
+  await report.getByRole('button',{name:'Resume verified download'}).click();
+  await expect(files.getByRole('alert')).toContainText('Partial differs from source; no write');
+  await expect(report).toContainText('File transfers: 1/2');
+  await expect(report.getByRole('listitem').first()).toContainText('Done');
+  await expect(report.getByRole('listitem').last()).toContainText('Failed');
+  const req=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_transfer'));
+  expect(req).toHaveLength(3);
+  expect(req[2].request.resumeId).toBe(req[1].id);
+  expect(req[2].request.upload).toBe(false);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_mutate'))).toHaveLength(0);
 });

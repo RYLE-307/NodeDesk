@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
-type VpnProfile = {id:string;name:string;kind:string;active:boolean};
+type VpnProfile = {id:string;name:string;kind:string;active:boolean;controlAllowed:boolean};
 
 /**
  * System VPN control only: never collects credentials or edits VPN profiles.
@@ -40,7 +40,7 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
     finally{if(alive.current)setLoading(false);}
   }
   async function toggle(profile:VpnProfile){
-    if(loading||busy)return;
+    if(loading||busy||!profile.controlAllowed)return;
     const connect=!profile.active;
     const question=ru
       ? (connect?"Подключить":"Отключить")+" системный VPN «"+profile.name+"»?\nМаршруты и DNS могут измениться, а текущий удалённый доступ — прерваться. Продолжить?"
@@ -85,14 +85,15 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
         <td>{p.name}</td>
         <td>{p.kind}</td>
         <td>{p.active?(ru?"Подключён":"Connected"):(ru?"Отключён":"Disconnected")}</td>
-        <td><button type="button" disabled={loading||!!busy}
+        <td>{p.controlAllowed ? <button type="button" disabled={loading||!!busy}
           onClick={()=>void toggle(p)}>{busy===p.id?(ru?"Выполняется…":"Working…"):
-          p.active?(ru?"Отключить":"Disconnect"):(ru?"Подключить":"Connect")}</button></td>
+          p.active?(ru?"Отключить":"Disconnect"):(ru?"Подключить":"Connect")}</button> :
+          <span>{ru?"Только просмотр — проверьте шифрование в Windows":"Read only — review encryption in Windows"}</span>}</td>
       </tr>)}</tbody>
     </table></div>}
     <p className="ssh-help">{ru
-      ? "Arch/Linux: NetworkManager (VPN и WireGuard). Windows: VPN-профили текущего пользователя — IKEv2/L2TP/SSTP с обязательным шифрованием. Профили других программ не показываются."
-      : "Arch/Linux: NetworkManager VPN and WireGuard profiles. Windows: current-user IKEv2/L2TP/SSTP profiles requiring encryption. Third-party VPN clients are not managed."}</p>
+      ? "Arch/Linux: NetworkManager (VPN и WireGuard). Windows: VPN-профили текущего пользователя — IKEv2/L2TP/SSTP. Профили с шифрованием Optional/Custom/NoEncryption доступны только для просмотра. Профили других программ не показываются."
+      : "Arch/Linux: NetworkManager VPN and WireGuard profiles. Windows: current-user IKEv2/L2TP/SSTP profiles. Optional/Custom/NoEncryption profiles are read only. Third-party VPN clients are not managed."}</p>
     <p className="ssh-help">{ru
       ? "Система должна уже иметь необходимые учётные данные или агент ввода пароля. Если авторизация не настроена, подключение может завершиться ошибкой. Нажмите «Обновить VPN», чтобы перечитать статус."
       : "The OS must already have the required credentials or a compatible secret agent. Authentication may fail otherwise. Refresh VPNs to reread system status."}</p>

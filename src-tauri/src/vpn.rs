@@ -10,6 +10,8 @@ pub struct VpnProfile {
     name: String,    // display only (Windows rasdial requires it as one argv)
     kind: String,    // NetworkManager VPN/WireGuard or Windows IKEv2/L2TP/SSTP
     active: bool,
+    #[serde(default)]
+    control_allowed: bool, // unsupported encryption policies remain read-only
 }
 
 fn uuid_ok(id: &str) -> bool {
@@ -21,6 +23,10 @@ fn uuid_ok(id: &str) -> bool {
 }
 fn safe_name(name:&str) -> bool {
     !name.is_empty() && name.len()<=200 && !name.chars().any(|c|c.is_control())
+}
+fn require_control_allowed(profile:&VpnProfile)->Result<(),String> {
+    if profile.control_allowed {Ok(())}
+    else {Err("VPN profile encryption policy is read-only in NodeDesk".into())}
 }
 
 /// Capture only specifically requested non-secret fields. Discard stderr and
@@ -57,7 +63,7 @@ fn list_impl()->Result<Vec<VpnProfile>,String> {
         if !safe_name(name) {continue;}
         profiles.push(VpnProfile {
             id:uuid.to_ascii_lowercase(),name:name.into(),kind:kind.into(),
-            active:active_ids.contains(uuid),
+            active:active_ids.contains(uuid),control_allowed:true,
         });
     }
     profiles.sort_by(|a,b|a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -84,13 +90,13 @@ const WINDOWS_QUERY:&str=r#"
  [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
  $rows = @()
  foreach($p in @(Get-VpnConnection)) {
-   if(([string]$p.TunnelType -notin @('Ikev2','Sstp','L2tp')) -or
-      ([string]$p.EncryptionLevel -notin @('Required','Maximum'))) { continue }
+   if([string]$p.TunnelType -notin @('Ikev2','Sstp','L2tp')) { continue }
    $rows += [pscustomobject]@{
      id=(([string]$p.Guid) -replace '[{}]','').ToLowerInvariant()
      name=[string]$p.Name
      kind=[string]$p.TunnelType
      active=([string]$p.ConnectionStatus -eq 'Connected')
+     controlAllowed=([string]$p.EncryptionLevel -in @('Required','Maximum'))
    }
  }
  ConvertTo-Json -InputObject $rows -Compress -Depth 2
@@ -150,6 +156,7 @@ pub async fn vpn_set(profile_id:String,connect:bool)->Result<Vec<VpnProfile>,Str
         let before=list_impl()?;
         let selected=before.iter().find(|p|p.id.eq_ignore_ascii_case(&profile_id))
             .ok_or("System VPN profile is missing or unsupported")?;
+        require_control_allowed(selected)?;
         if selected.active!=connect {execute_impl(selected,connect)?;}
         // Always re-read OS status; success means OS tool accepted action,
         // not that VPN traffic/routes have been independently audited.
@@ -188,7 +195,7 @@ function Get-VpnConnection {
   @(
     [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174000}';Name='Work L2TP';TunnelType='L2tp';EncryptionLevel='Required';ConnectionStatus='Disconnected';ServerAddress='private.example';L2tpIPsecAuth='Psk'},
     [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174001}';Name='Connected IKE';TunnelType='Ikev2';EncryptionLevel='Maximum';ConnectionStatus='Connected';ServerAddress='private.example'},
-    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174002}';Name='Weak L2TP';TunnelType='L2tp';EncryptionLevel='Optional';ConnectionStatus='Disconnected'},
+    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174002}';Name='Optional L2TP';TunnelType='L2tp';EncryptionLevel='Optional';ConnectionStatus='Disconnected'},
     [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174003}';Name='PPTP';TunnelType='Pptp';EncryptionLevel='Required';ConnectionStatus='Connected'}
   )
 }
@@ -199,11 +206,16 @@ function Get-VpnConnection {
         assert!(!raw.contains("private.example"));
         assert!(!raw.contains("Psk"));
         let profiles=parse_windows_profiles(&raw).unwrap();
-        assert_eq!(profiles.len(),2);
+        assert_eq!(profiles.len(),3);
         assert_eq!(profiles[0].name,"Work L2TP");
         assert_eq!(profiles[0].kind,"L2tp");
         assert!(!profiles[0].active);
+        assert!(profiles[0].control_allowed);
         assert!(profiles[1].active);
+        assert!(profiles[1].control_allowed);
+        assert_eq!(profiles[2].name,"Optional L2TP");
+        assert!(!profiles[2].control_allowed);
+        assert!(require_control_allowed(&profiles[2]).is_err());
     }
     #[cfg(windows)]
     #[test]

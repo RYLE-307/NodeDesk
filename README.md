@@ -109,8 +109,9 @@ package; Windows needs the official TigerVNC Viewer installation. The **new embe
 It lists existing OS-managed profiles with status, and allows explicit
 Connect/Disconnect with a confirmation about route, DNS and remote-access
 changes. On Linux it supports NetworkManager VPN/WireGuard profiles identified
-by UUID. On Windows it covers current-user built-in IKEv2/L2TP/SSTP profiles
-with required encryption, using OS-managed credentials. NodeDesk neither
+by UUID. On Windows it lists current-user built-in IKEv2/L2TP/SSTP profiles;
+only Required/Maximum encryption profiles allow control with OS-managed
+credentials. Other encryption settings are visible read-only. NodeDesk neither
 imports nor stores passwords, keys, credentials, DNS settings or routes.
 Unsupported third-party VPN clients, Windows all-user profiles and old PPTP
 are intentionally excluded. Native Windows/Arch live VPN acceptance is

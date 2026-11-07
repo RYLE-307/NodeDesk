@@ -1,14 +1,14 @@
 import {test,expect} from "@playwright/test";
 
 const UUID="123e4567-e89b-12d3-a456-426614174000";
-async function open(page,{language="en",empty=false,fail=false}={}) {
-  await page.addInitScript(({language,empty,fail,uuid})=>{
+async function open(page,{language="en",empty=false,fail=false,readOnly=false}={}) {
+  await page.addInitScript(({language,empty,fail,readOnly,uuid})=>{
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],connections:[],language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};window.isTauri=true;
     window.fixture={
-      calls:[], fail, profiles:empty?[]:[{id:uuid,name:"Office VPN",kind:"vpn",active:false}]
+      calls:[], fail, profiles:empty?[]:[{id:uuid,name:"Office VPN",kind:"vpn",active:false,controlAllowed:!readOnly}]
     };
     let next=0;
     window.__TAURI_INTERNALS__={
@@ -26,7 +26,7 @@ async function open(page,{language="en",empty=false,fail=false}={}) {
         throw new Error("Unexpected native command: "+cmd);
       }
     };
-  },{language,empty,fail,uuid:UUID});
+  },{language,empty,fail,readOnly,uuid:UUID});
   await page.goto("/");
   await page.locator(".catalog-tools").getByRole("button",{
     name: language==="en"?"System VPN":"Системные VPN",exact:true
@@ -76,6 +76,13 @@ test("RU failures cannot fake a connected VPN and do not retry",async({page})=>{
 test("empty system VPN list is not populated with fake connections",async({page})=>{
   const pane=await open(page,{empty:true});
   await expect(pane).toContainText("No supported VPN profiles found");
+  await expect(pane.getByRole("button",{name:"Connect",exact:true})).toHaveCount(0);
+  expect(await page.evaluate(()=>window.fixture.calls.filter(v=>v.cmd==="vpn_set"))).toHaveLength(0);
+});
+test("read-only Windows profile is visible but cannot be dialed",async({page})=>{
+  const pane=await open(page,{readOnly:true});
+  await expect(pane).toContainText("Office VPN");
+  await expect(pane).toContainText("Read only — review encryption in Windows");
   await expect(pane.getByRole("button",{name:"Connect",exact:true})).toHaveCount(0);
   expect(await page.evaluate(()=>window.fixture.calls.filter(v=>v.cmd==="vpn_set"))).toHaveLength(0);
 });

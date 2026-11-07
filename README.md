@@ -1,13 +1,13 @@
 # NodeDesk
 
-> **Current development: v0.6.0-alpha.0** — embedded Guacamole/WSS RDP, embedded VNC, external desktop launchers and OS VPN control in draft PR #11.
-> v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
-> First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
+> **Release candidate: v0.7.0-rc.1, NOT yet released.** SFTP multi-queue, pause, verified upload/download resume and manual recovery are in draft PR #11.
+> Native Windows and Arch GUI acceptance is required before v0.7.0 is tagged or merged.
+> See [v0.7 release gates](docs/V0.7-RELEASE.md) and [candidate acceptance](docs/V0.7-ACCEPTANCE.md).
 
 [Русский](README.ru.md) · **EN**
 
 Offline-first infrastructure workspace for Windows and Linux, built with Tauri 2,
-React, TypeScript and Rust. Current development version: **0.6.0-alpha.0**.
+React, TypeScript and Rust. Release candidate version: **0.7.0-rc.1** (not yet released).
 
 ## Available
 
@@ -46,13 +46,13 @@ npm run tauri build -- --no-bundle
 Keep `package-lock.json`; use `npm ci` on Arch and Windows. Before pulling, inspect
 `git status` and commit or stash local edits; do not delete conflicting icons or
 lock files. Dependency installation needs internet; normal catalog use does not.
-Installers remain disabled pending platform validation and release preparation.
+Bundled installers remain disabled pending manual platform validation. A successful `tauri build -- --no-bundle` produces a developer binary, not a signed/validated installer.
 
 CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. The user confirmed the v0.5 Arch GUI launched and uploaded a file to a real server. Windows GUI acceptance remains separate.
 Cargo.lock is tracked. Real-server SFTP integration runs in Linux CI; Windows
 runs native integration against an independent loopback SSH/SFTP peer, unit tests and Tauri builds. Desktop GUI acceptance is pending.
 
-[RDP v0.6 notes](docs/V0.6-RDP.md) · [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[v0.7 release notes](docs/RELEASE-NOTES-V0.7.0.md) · [candidate acceptance](docs/V0.7-ACCEPTANCE.md) · [third-party license notices](docs/THIRD-PARTY-NOTICES.md) · [RDP v0.6 notes](docs/V0.6-RDP.md) · [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [MobaXterm parity goals](docs/MOBAXTERM-PARITY.md) · [MIT](LICENSE)
 
 

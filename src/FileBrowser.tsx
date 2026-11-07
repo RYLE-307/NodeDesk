@@ -709,6 +709,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         <input type="checkbox" aria-label={ru?"Хранить восстановление очереди":"Keep queue recovery"}
           checked={keepRecovery} onChange={event=>{
             const enabled=event.target.checked;
+            if(!enabled && savedRecoveries.length>0 && !window.confirm(ru
+              ? "Отключение восстановления удалит ВСЕ сохранённые очереди для этого подключения. Частичные .part файлы останутся. Продолжить?"
+              : "Disabling recovery forgets ALL saved queues for this connection. Partial .part files remain. Continue?"))return;
             recoveryEnabled.current=enabled;setKeepRecovery(enabled);
             if(!enabled)discardCheckpoint();
           }}/>

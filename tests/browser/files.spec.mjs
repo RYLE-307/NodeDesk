@@ -362,6 +362,12 @@ test('two opt-in queues on one endpoint survive restart without network activity
   page.once('dialog',d=>d.accept());
   await files.getByRole('button',{name:'Upload selected (1)'}).click();
   await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('nodedesk.sftp.recovery.v1')).records.length)).toBe(2);
+  // Changing this control may erase multiple queue checkpoints. A refused
+  // confirmation must preserve the opt-in and both saved queue records.
+  page.once('dialog',d=>d.dismiss());
+  await files.getByRole('checkbox',{name:'Keep queue recovery'}).uncheck();
+  await expect(files.getByRole('checkbox',{name:'Keep queue recovery'})).toBeChecked();
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nodedesk.sftp.recovery.v1')).records.length)).toBe(2);
   await page.reload();
   await page.getByRole('button',{name:/Fixture SSH/}).dblclick();
   await page.getByRole('tab',{name:'Files',exact:true}).click();

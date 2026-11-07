@@ -10,8 +10,8 @@ pub struct LocalForward {ssh_host:String,ssh_port:u16,username:String,local_port
 #[serde(tag="kind",content="value",rename_all="camelCase")]
 pub enum TunnelEvent { Exit(u32), Error(String) }
 
-struct Running(Arc<Mutex<Child>>);
-impl Drop for Running {fn drop(&mut self){if let Ok(mut child)=self.0.lock(){let _=child.kill();}}}
+struct Running {child:Arc<Mutex<Child>>,local_port:u16}
+impl Drop for Running {fn drop(&mut self){if let Ok(mut child)=self.child.lock(){let _=child.kill();}}}
 #[derive(Default)]
 pub struct Tunnels(Mutex<HashMap<String,Running>>);
 impl Tunnels {pub fn shutdown(&self){if let Ok(mut tunnels)=self.0.lock(){tunnels.clear();}}}
@@ -31,6 +31,12 @@ fn arguments(spec:&LocalForward)->Result<Vec<String>,String>{
         "-L".into(),forward,destination]);
     Ok(args)
 }
+fn check_local_port(port:u16)->Result<(),String>{
+    let listener=std::net::TcpListener::bind(("127.0.0.1",port))
+        .map_err(|_|"Local port unavailable".to_string())?;
+    drop(listener);
+    Ok(())
+}
 
 #[tauri::command]
 pub fn tunnel_start(id:String,spec:LocalForward,events:Channel<TunnelEvent>,state:State<'_,Tunnels>,app:tauri::AppHandle)->Result<(),String>{
@@ -38,10 +44,14 @@ pub fn tunnel_start(id:String,spec:LocalForward,events:Channel<TunnelEvent>,stat
     let args=arguments(&spec)?;
     let mut tunnels=state.0.lock().map_err(|_|"Tunnel lock failed")?;
     if tunnels.contains_key(&id)||tunnels.len()>=8{return Err("Tunnel already exists or limit reached".into());}
+    if tunnels.values().any(|running|running.local_port==spec.local_port){return Err("Local port already used by a NodeDesk tunnel".into());}
+    // Give a useful error before OpenSSH starts. ssh's ExitOnForwardFailure
+    // remains authoritative if another process races this short preflight.
+    check_local_port(spec.local_port)?;
     let child=Command::new("ssh").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().map_err(|_|"Cannot start OpenSSH tunnel".to_string())?;
     let child=Arc::new(Mutex::new(child));
-    tunnels.insert(id.clone(),Running(child.clone()));
+    tunnels.insert(id.clone(),Running{child:child.clone(),local_port:spec.local_port});
     std::thread::spawn(move||loop{
         std::thread::sleep(Duration::from_millis(200));
         let status=match child.lock(){Ok(mut process)=>process.try_wait(),Err(_)=>break};
@@ -83,5 +93,10 @@ mod tests{
         spec=sample();spec.local_port=80;assert!(arguments(&spec).is_err());
         spec=sample();spec.ssh_host="-oProxyCommand=evil".into();assert!(arguments(&spec).is_err());
         spec=sample();spec.target_host="::1".into();assert!(arguments(&spec).unwrap().contains(&"127.0.0.1:15432:[::1]:5432".into()));
+    }
+    #[test]fn occupied_loopback_port_is_detectable_without_ssh(){
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port=listener.local_addr().unwrap().port();
+        assert_eq!(check_local_port(port).unwrap_err(),"Local port unavailable");
     }
 }

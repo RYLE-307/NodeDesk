@@ -439,3 +439,14 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .rdp-workspace h2 { margin:0 0 14px; }
 .rdp-workspace p { overflow-wrap:anywhere; }
 .rdp-workspace button { margin:10px 0; }
+
+/* v0.6 system VPN manager. No credentials or editors in this view. */
+.vpn-workspace { padding:16px; max-width:1000px; min-width:0; }
+.vpn-workspace h2 { margin:0 0 12px; }
+.vpn-workspace > button { margin:8px 0; }
+.vpn-table-wrap { max-width:100%; overflow-x:auto; }
+.vpn-table { border-collapse:collapse; width:100%; min-width:430px; font-size:12px; }
+.vpn-table th,.vpn-table td { border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; }
+.vpn-table th { color:var(--muted); }
+.vpn-table td:first-child { overflow-wrap:anywhere; }
+.vpn-table button { min-width:88px; }

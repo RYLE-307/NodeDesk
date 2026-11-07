@@ -869,6 +869,20 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     fs::write(&bad_part,vec![0xff_u8;30000]).unwrap();
     assert!(copy_download_resume(&mut c,&remote,&local.join("bad-down.bin"),&bad_part,&op,&events).is_err());
     assert_eq!(fs::read(&bad_part).unwrap(),vec![0xff_u8;30000]);
+    if case==0 {
+        // Independent Windows Paramiko peer: multi-chunk binary round trip
+        // beyond the small auth fixture, with no existing destination replaced.
+        let big:Vec<u8>=(0..(4*1024*1024+19)).map(|n|((n*29+7)%251) as u8).collect();
+        let big_source=local.join("large-source.bin");fs::write(&big_source,&big).unwrap();
+        let big_remote=wire::join(&home,"native-large.bin").unwrap();
+        let big_part=wire::join(&home,".native-large.part").unwrap();
+        copy_upload(&mut c,&big_source,&big_remote,&big_part,&op,&events).unwrap();
+        let big_dest=local.join("large-download.bin");
+        copy_download(&mut c,&big_remote,&big_dest,&local.join(".native-large-down.part"),
+            &op,&events,false).unwrap();
+        assert_eq!(fs::read(&big_dest).unwrap(),big);
+        assert!(copy_upload(&mut c,&big_source,&big_remote,&big_part,&op,&events).is_err());
+    }
     let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
     let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
     assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events,false).is_err());
@@ -979,7 +993,7 @@ mod tests {
         // real_host_key_checks separately verifies first trust via the existing console.
         let op = Arc::new(Operation::default());
         let weak = Arc::downgrade(&op);
-        let timer = std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(20)); if let Some(op)=weak.upgrade() { op.cancel(); } });
+        let timer = std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(60)); if let Some(op)=weak.upgrade() { op.cancel(); } });
         let mut c = open("trusted-gui",&op).unwrap();
         let local = PathBuf::from(&dir).join("gui-local"); let remote = PathBuf::from(&dir).join("gui-remote");
         fs::create_dir(&local).unwrap(); fs::create_dir(&remote).unwrap();
@@ -1093,10 +1107,10 @@ mod tests {
         assert_eq!(fs::read(&kept_target).unwrap(),bytes);
         assert!(!kept.exists());
         resume_op.stop();
-        // Bounded multi-chunk stress: cancel a 2 MiB+ transfer after several
+        // Bounded multi-chunk stress: cancel an 8 MiB+ transfer after several
         // progress events, reopen a fresh trusted SFTP session, and verify
         // the complete binary file after resuming. No corporate hosts.
-        let large_bytes:Vec<u8>=(0..(2*1024*1024+17))
+        let large_bytes:Vec<u8>=(0..(8*1024*1024+17))
             .map(|n| ((n*37+11)%251) as u8).collect();
         let large_source=local.join("large-stress-source.bin");
         fs::write(&large_source,&large_bytes).unwrap();

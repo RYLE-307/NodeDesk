@@ -1,0 +1,25 @@
+name: nodedesk-vnc-qa
+
+services:
+  desktop:
+    build: .
+    volumes:
+      - ./generated/vnc-password:/run/secrets/vnc-password:ro
+    networks: [lab]
+  proxy:
+    image: caddy:2.10-alpine
+    ports:
+      - "127.0.0.1:8444:8444"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [desktop]
+    networks: [lab, ingress]
+
+networks:
+  lab:
+    internal: true
+  ingress: {}
+
+volumes:
+  caddy_data:

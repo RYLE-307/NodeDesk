@@ -31,3 +31,4 @@ coverage/
 # Disposable local Guacamole QA lab: generated SQL contains RDP passwords.
 /tests/guacamole-lab/generated/
 /tests/guacamole-lab/.env
+/tests/vnc-lab/generated/

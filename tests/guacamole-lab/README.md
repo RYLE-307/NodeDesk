@@ -122,13 +122,13 @@ trusts the temporary QA CA installed into its ephemeral Linux runner.
 No screenshot, token or password artifact is uploaded. It destroys the
 containers, credentials and volumes after testing.
 
-This confirms a functioning live **browser-based NodeDesk rendering
-pipeline**, but not the *visual correctness of pixels*, keyboard layouts,
-mouse input precision, native Tauri/WebView2/WebKitGTK CA stores, CORS for
-packaged desktop app origins, or a real Windows RDP server.
-
-These remain separate manual acceptance items before PR #11 can be
-merged. Keep the existing v0.5 main branch untouched until then.
+This confirms a live **browser-based NodeDesk rendering pipeline** including
+visible framebuffer pixels and basic input messages. After `ec5e646`, the
+user separately confirmed a visible Xfce desktop, working mouse, and
+`whoami` = `nodedeskqa` inside native Arch WSL2 Tauri/WebKitGTK over
+HTTPS/WSS. This does not verify keyboard layouts, full input accuracy,
+native Windows Tauri/WebView2, or a real Windows RDP server. Keep the v0.5
+main branch untouched until remaining acceptance is complete.
 
 References:
 - [Official Guacamole Docker installation](https://guacamole.apache.org/doc/1.6.0/gug/guacamole-docker.html)

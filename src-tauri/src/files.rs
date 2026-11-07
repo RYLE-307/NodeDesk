@@ -847,17 +847,6 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let resume_tmp=local.join(".resumed.part");
     copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events,false).unwrap();
     assert_eq!(fs::read(&resume_local).unwrap(),bytes);
-    // Windows native ssh2: verified byte-offset download and corrupt prefix.
-    let download_part=local.join(".native-down-resume.part");
-    fs::write(&download_part,&bytes[..40000]).unwrap();
-    let down_resumed=local.join("down-resumed.bin");
-    copy_download_resume(&mut c,&remote,&down_resumed,&download_part,&op,&events).unwrap();
-    assert_eq!(fs::read(&down_resumed).unwrap(),bytes);
-    assert!(!download_part.exists());
-    let bad_part=local.join(".native-bad.part");
-    fs::write(&bad_part,vec![0xff_u8;30000]).unwrap();
-    assert!(copy_download_resume(&mut c,&remote,&local.join("bad-down.bin"),&bad_part,&op,&events).is_err());
-    assert_eq!(fs::read(&bad_part).unwrap(),vec![0xff_u8;30000]);
     let target=local.join("download.bin");let partial=local.join(".download.part");
     copy_download(&mut c,&remote,&target,&partial,&op,&events,false).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
@@ -869,6 +858,17 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let name=format!("native-{case}.bin");let renamed=format!("renamed-{case}.bin");
     remote_mutate(&mut c,&home,&name,MutationAction::Rename,Some(&renamed),Some("file"),&op).unwrap();
     remote_mutate(&mut c,&home,&renamed,MutationAction::Rename,Some(&name),Some("file"),&op).unwrap();
+    // Windows native ssh2: verified byte-offset download and corrupt prefix.
+    let download_part=local.join(".native-down-resume.part");
+    fs::write(&download_part,&bytes[..40000]).unwrap();
+    let down_resumed=local.join("down-resumed.bin");
+    copy_download_resume(&mut c,&remote,&down_resumed,&download_part,&op,&events).unwrap();
+    assert_eq!(fs::read(&down_resumed).unwrap(),bytes);
+    assert!(!download_part.exists());
+    let bad_part=local.join(".native-bad.part");
+    fs::write(&bad_part,vec![0xff_u8;30000]).unwrap();
+    assert!(copy_download_resume(&mut c,&remote,&local.join("bad-down.bin"),&bad_part,&op,&events).is_err());
+    assert_eq!(fs::read(&bad_part).unwrap(),vec![0xff_u8;30000]);
     let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
     let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
     assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events,false).is_err());

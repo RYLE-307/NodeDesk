@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Connection } from "./catalog";
+import { EmbeddedRdp } from "./EmbeddedRdp";
 
 type LaunchInfo = {client:string;externalWindow:boolean};
 
@@ -38,6 +39,8 @@ export function RdpWorkspace({ connection, language }: {connection:Connection;la
   }
   return <section className="rdp-workspace" aria-label={ru ? "Удалённый рабочий стол RDP" : "RDP remote desktop"}>
     <h2>{connection.name}</h2>
+    <EmbeddedRdp language={language}/>
+    <h3>{ru ? "Внешний RDP-клиент" : "External RDP client"}</h3>
     <p>{ru ? "Адрес" : "Host"}: <strong>{connection.host}:{connection.port}</strong></p>
     {connection.username && <p>{ru ? "Пользователь" : "Username"}: {connection.username}</p>}
     <button type="button" disabled={launching} onClick={() => void launch()}>
@@ -46,12 +49,12 @@ export function RdpWorkspace({ connection, language }: {connection:Connection;la
     {error && <p role="alert" className="error">{error}</p>}
     {status && <p role="status">{status}</p>}
     <p className="ssh-help">{ru
-      ? "v0.6: подключение открывается в отдельном окне системного RDP-клиента. Пароль вводится только там и не сохраняется в NodeDesk. Проверьте сертификат сервера перед входом. Закройте окно клиента для отключения; закрытие вкладки NodeDesk его не завершает."
-      : "v0.6: opens a separate native RDP client window. Enter your password there; NodeDesk never saves it. Verify the server certificate before signing in. Close the client window to disconnect; closing this NodeDesk tab does not terminate it."}
+      ? "v0.6: внешний режим открывает системный RDP-клиент в отдельном окне. Пароль вводится только там и не сохраняется в NodeDesk. Проверьте сертификат сервера перед входом. Закройте окно клиента для отключения; закрытие вкладки NodeDesk его не завершает."
+      : "v0.6: external mode opens a separate native RDP client window. Enter your password there; NodeDesk never saves it. Verify the server certificate before signing in. Close the client window to disconnect; closing this NodeDesk tab does not terminate it."}
     </p>
     <p className="ssh-help">{ru
-      ? "Linux: нужен пакет freerdp (sdl-freerdp3). Windows: используется mstsc.exe. Экран пока не встроен в вкладку."
-      : "Linux: install freerdp (sdl-freerdp3). Windows: uses mstsc.exe. The remote desktop is not embedded in this tab yet."}
+      ? "Linux: нужен пакет freerdp (sdl-freerdp3). Windows: используется mstsc.exe. Встроенный просмотр выше доступен через отдельно настроенный Guacamole/WSS-шлюз."
+      : "Linux: install freerdp (sdl-freerdp3). Windows: uses mstsc.exe. The embedded viewer above requires a separately configured Guacamole/WSS gateway."}
     </p>
   </section>;
 }

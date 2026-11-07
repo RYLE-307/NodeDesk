@@ -351,6 +351,15 @@ export default function App() {
     if (active === id) setActive(tabs.find((x) => x !== id) ?? "");
     if (secondary === id) setSecondary("");
   }
+  function moveTab(source:string,target:string) {
+    if(source===target)return;
+    setTabs(prev=>{
+      const from=prev.indexOf(source),to=prev.indexOf(target);
+      if(from<0||to<0)return prev;
+      const next=[...prev];next.splice(from,1);next.splice(to,0,source);
+      return next;
+    });
+  }
   function path(id: string | null): string {
     const parts: string[] = [];
     let g = data.groups.find((g) => g.id === id);
@@ -683,9 +692,13 @@ export default function App() {
         )}
         <div className="tabs" aria-label={t.tabs}>
           {tabs.map((id) => (
-            <div className="tab" key={id}>
+            <div className="tab" key={id} draggable
+              onDragStart={e=>{e.dataTransfer.setData("application/x-nodedesk-tab",id);e.dataTransfer.effectAllowed="move";}}
+              onDragOver={e=>{if(e.dataTransfer.types.includes("application/x-nodedesk-tab")){e.preventDefault();e.dataTransfer.dropEffect="move";}}}
+              onDrop={e=>{e.preventDefault();moveTab(e.dataTransfer.getData("application/x-nodedesk-tab"),id);}}>
               <button
                 aria-pressed={active === id}
+                onKeyDown={e=>{if(e.altKey&&["ArrowLeft","ArrowRight"].includes(e.key)){e.preventDefault();const index=tabs.indexOf(id);const adjacent=tabs[index+(e.key==="ArrowLeft"?-1:1)];if(adjacent)moveTab(id,adjacent);}}}
                 onClick={() => setActive(id)}
               >
                 {tabTitle(id)}

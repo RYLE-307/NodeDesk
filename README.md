@@ -135,3 +135,15 @@ Embedded **RDP through Guacamole** now includes standard HTTPS account login, a 
 [Embedded desktop architecture and license notices](docs/V0.6-EMBEDDED-DESKTOP.md).
 
 [Gateway-based in-tab RDP, native TLS blocker and QA](docs/V0.6-RDP-EMBEDDED.md).
+
+### Real Guacamole/xrdp integration QA (v0.6 draft)
+
+A disposable Docker Compose test lab now exercises Guacamole 1.6 account
+login, PostgreSQL authorization, guacd, a real Linux xrdp server and
+TLS-validated WSS remote framebuffer transport. A separate Chromium
+integration test opens the embedded RDP workspace in NodeDesk and verifies
+the live connected state, on-page framebuffer canvas, disconnect and
+logout. This is **not** proof of native Tauri behavior on Arch/Windows
+or a real Windows RDP host; pixel accuracy and keyboard/mouse acceptance
+are still outstanding. No production connections are involved.
+[Reproducible isolated lab and safety notes](tests/guacamole-lab/README.md).

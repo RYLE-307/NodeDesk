@@ -927,7 +927,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
         let path = root.join("target"); let _ = fs::remove_file(&path);
         let f = private_new(&path).unwrap(); drop(f); assert!(private_new(&path).is_err());
-        drop(PartialLocal(path.clone())); assert!(!path.exists()); fs::remove_dir(root).unwrap();
+        drop(PartialLocal {path:path.clone(),keep_on_error:false}); assert!(!path.exists()); fs::remove_dir(root).unwrap();
         assert!(local_dir("../").is_err());
     }
     #[cfg(unix)]

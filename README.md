@@ -122,7 +122,9 @@ Embedded **VNC** now uses noVNC 1.7.0 (MPL-2.0) to render a live RFB
 framebuffer and send keyboard/mouse events inside the NodeDesk tab. It needs
 an explicit operator-controlled `wss://` WebSocket/RFB gateway with a
 certificate trusted by the operating system, and an authentication policy
-enforced by the gateway/origin server. Connection and credential entry are
+enforced by the gateway/origin server. NodeDesk rejects a session if the RFB
+server never challenged for credentials, but that does not replace gateway
+access controls. Connection and credential entry are
 manual and transient; the URL and password are not persisted. This is not
 the same as X509Vnc-only external TigerVNC authentication. No direct raw
 TCP VNC, no anonymous-gateway security guarantee, and no native Arch/Windows

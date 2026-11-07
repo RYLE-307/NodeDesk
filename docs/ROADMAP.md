@@ -51,7 +51,9 @@ the listener is fixed to 127.0.0.1, only unprivileged ports are accepted, and
 OpenSSH runs without a shell or password prompt using an already trusted host key
 and key/agent authentication. The tunnel stops with the tab or application.
 Remote/dynamic forwards, password/PAM tunnel auth and real target acceptance
-remain open. A successful process spawn alone does not prove a usable tunnel.
+remain open. Linux CI uses its disposable trusted sshd fixture to pass bytes
+through the local forward to a loopback target; native Windows and user-owned
+target acceptance remain open.
 
 ## v0.6 priorities
 

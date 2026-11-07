@@ -99,4 +99,42 @@ mod tests{
         let port=listener.local_addr().unwrap().port();
         assert_eq!(check_local_port(port).unwrap_err(),"Local port unavailable");
     }
+    #[cfg(unix)]
+    #[test]fn real_loopback_forward_uses_trusted_disposable_ssh_server(){
+        use std::io::{Read,Write};
+        struct KillOnDrop(Child);
+        impl Drop for KillOnDrop{fn drop(&mut self){let _=self.0.kill();let _=self.0.wait();}}
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else{return;};
+        let target=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let spare=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local_port=spare.local_addr().unwrap().port();drop(spare);
+        let spec=LocalForward{ssh_host:"127.0.0.1".into(),ssh_port:22229,
+            username:std::env::var("USER").unwrap(),local_port,target_host:"127.0.0.1".into(),
+            target_port:target.local_addr().unwrap().port()};
+        let mut command=Command::new("ssh");
+        command.args([format!("-oUserKnownHostsFile={dir}/trusted-gui"),"-oGlobalKnownHostsFile=/dev/null".into(),
+            "-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+        command.args(arguments(&spec).unwrap()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child=KillOnDrop(command.spawn().unwrap());
+        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        let mut client=loop{
+            if let Ok(stream)=std::net::TcpStream::connect(("127.0.0.1",local_port)){break stream;}
+            if child.0.try_wait().unwrap().is_some()||std::time::Instant::now()>deadline{
+                panic!("Disposable SSH local forward did not listen");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.write_all(b"PING").unwrap();
+        let (mut accepted,_)=loop{
+            match target.accept(){Ok(pair)=>break pair,Err(error) if error.kind()==std::io::ErrorKind::WouldBlock=>{
+                assert!(std::time::Instant::now()<deadline,"SSH forward did not reach target");
+                std::thread::sleep(Duration::from_millis(20));
+            },Err(error)=>panic!("Target listener failed: {error}")}
+        };
+        let mut request=[0u8;4];accepted.read_exact(&mut request).unwrap();assert_eq!(&request,b"PING");
+        accepted.write_all(b"PONG").unwrap();
+        let mut response=[0u8;4];client.read_exact(&mut response).unwrap();assert_eq!(&response,b"PONG");
+    }
 }

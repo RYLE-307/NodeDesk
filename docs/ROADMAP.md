@@ -1,9 +1,18 @@
 # План разработки
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive; direct key/agent on both.
-> mkdir/rename/delete, context menus and a bounded 50-file transfer queue are implemented; manual acceptance pending.
-> Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> **Current review: v0.6.0-alpha.0 — embedded WSS VNC, Guacamole-gateway RDP, external clients and system VPN (draft PR #11).**
+> v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
+> First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
+
+## v0.6 priorities
+
+1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
+2. **Embedded RDP through Guacamole (draft PR #11):** HTTPS Guacamole 1.6 account login, authorized RDP discovery, and in-tab framebuffer/input over WSS to an independently provisioned gateway. Standard Guacamole tokens appear in WSS URL queries (must be redacted in proxy logs); exact-origin CORS is required. Does not speak native RDP TCP. [Scope and TLS requirements](V0.6-RDP-EMBEDDED.md). **Direct native Rust RDP is NOT yet implemented**: IronRDP TLS certificate verification must be addressed before acceptance.
+3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. **Embedded WSS noVNC** was added as a separate opt-in mode; it needs a trusted TLS gateway and an authentication policy. Direct TCP and SSH/VPN tunnels follow later. See [embedded desktops](V0.6-EMBEDDED-DESKTOP.md).
+4. **VPN system-profile manager (in PR #11):** read-only listing and manual connect/disconnect (with confirmation) of OS-owned profiles. Linux NetworkManager VPN/WireGuard; Windows current-user IKEv2/L2TP/SSTP with required encryption, existing OS credentials only. No profile editing, plaintext secrets or automatic routing changes. [V0.6 VPN](V0.6-VPN.md). Actual desktop VPN acceptance pending.
+5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
+
+
 
 ## v0.2 alpha
 

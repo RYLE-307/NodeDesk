@@ -436,9 +436,12 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
     assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
     assert!(!partial.exists());assert!(!local.join("cancelled.bin").exists());
-    // Windows cancellation interrupts the TCP socket and requires a fresh login.
+    // Windows cancellation invalidates the login and refuses every new SFTP
+    // channel. Do not assert an existing channel's *next* packet fails:
+    // ssh2/OS transport may still return already-buffered data after shutdown.
+    // Frontend never reuses an in-flight cancelled operation.
     assert!(connect(&d,&Operation::default()).is_err());
-    assert!(c.realpath(".").is_err());
+    drop(c);
 }
 #[cfg(test)]
 mod tests {

@@ -165,3 +165,56 @@ SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates
 password-change and mixed-method MFA chains remain unsupported. GUI acceptance
 on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
 accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).
+
+## v0.6 review slice: remote desktops
+
+- RDP catalog entries start external `mstsc.exe` (Windows) or `sdl-freerdp3`
+  (Arch) on explicit click. Not embedded; credentials belong to the viewer.
+- VNC catalog entries start external TigerVNC Viewer (Arch/Windows), restricting
+  direct negotiation to X509Vnc/X509Plain. No unencrypted or anonymous-VNC
+  fallback, clipboard, automatic reconnect, saved passwords or installed viewer
+  bundling. May not connect to legacy VNC-only servers without an audited tunnel.
+- Native GUI/manual connection and trust acceptance on Windows/Arch remain
+  outstanding. No claims of built-in RDP/VNC screens or session parity.
+- See [RDP](V0.6-RDP.md) and [VNC](V0.6-VNC.md).
+
+## v0.6 review slice: system VPN integration
+
+NodeDesk now has a dedicated System VPN tool for existing operating-system
+profiles, not new VPN configuration management. Linux: NetworkManager
+VPN/WireGuard. Windows: current-user built-in IKEv2, L2TP and SSTP profiles
+with required encryption only. It lists OS-reported status and requests
+confirmation before activating or deactivating by OS-assigned identifier.
+Secrets, keys and routes remain with the OS; third-party VPN clients, Windows
+all-user phonebook entries, PPTP and automatic tunnel type are unsupported.
+No background monitoring, VPN-before-RDP orchestration, in-app credentials
+or independent proof of route/DNS isolation. No native desktop test yet.
+[Acceptance and security notes](V0.6-VPN.md).
+
+## Embedded VNC WSS-only slice (v0.6 draft)
+
+A separate noVNC 1.7.0 (MPL-2.0) viewer renders RFB frames **inside**
+NodeDesk tabs over an explicitly configured `wss://` WebSocket-to-RFB
+gateway with valid OS-trusted TLS. Manual password input, framebuffer and
+remote keyboard/mouse are supported in code. This is **not** the raw TCP
+VNC external X.509 launcher and does **not** enforce that same RFB
+authentication type or guarantee the origin's access policy. Credentials
+are transiently handled in the WebView and not persisted. Real Arch/Windows
+WSS desktop tests remain pending. **RDP is embedded via a separate Guacamole
+gateway, not a native Rust RDP engine**. The gateway authentication session
+must be configured separately; no live RDP tests yet.
+[Architecture / acceptance](V0.6-EMBEDDED-DESKTOP.md).
+
+## In-tab Guacamole RDP (draft PR #11)
+
+The RDP workspace contains a Guacamole 1.6 browser client rendering remote
+canvas layers and forwarding keyboard/mouse inside the NodeDesk tab. It now
+supports standard HTTPS account login, enumerates authorized RDP profiles and
+opens an explicit Guacamole WSS tunnel. Apache Guacamole + guacd must
+be deployed and trusted separately; exact-origin CORS is required and
+WSS URL query strings containing session tokens must be redacted by proxies. This is **not a native RDP TCP client**;
+NodeDesk uses short-lived Guacamole tokens in memory; the upstream gateway
+still governs RDP target identity, NLA and server trust.
+The existing external FreeRDP/mstsc launcher remains unchanged.
+No real RDP screen or server-certificate identity has been manually accepted.
+[Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).

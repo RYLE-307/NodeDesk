@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { SshWorkspace } from "./SshTerminal";
+import { RdpWorkspace } from "./RdpWorkspace";
+import { VncWorkspace } from "./VncWorkspace";
+import { VpnWorkspace } from "./VpnWorkspace";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -54,7 +57,7 @@ const labels = {
     monitoring: "Мониторинг",
     unavailable: "Источники мониторинга ещё не подключены.",
     offline: "Не подключено",
-    info: "Карточка подключения. Сетевые сессии SSH/RDP появятся позже.",
+    info: "Карточка подключения. Другие протоколы удалённого доступа появятся позже.",
     close: "Закрыть",
     split: "Разделить",
     unsplit: "Одна панель",
@@ -109,7 +112,7 @@ const labels = {
     monitoring: "Monitoring",
     unavailable: "Monitoring sources are not connected yet.",
     offline: "Disconnected",
-    info: "Connection details. SSH/RDP network sessions will be added later.",
+    info: "Connection details. Additional remote protocols are planned for future versions.",
     close: "Close",
     split: "Split",
     unsplit: "Single pane",
@@ -135,6 +138,7 @@ function readSidebarWidth(): number {
     return Number.isFinite(value) && value >= 220 && value <= 640 ? value : 310;
   } catch { return 310; }
 }
+const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
 type Editor =
   | { kind: "group"; value: Group }
   | { kind: "connection"; value: Connection };
@@ -409,9 +413,16 @@ export default function App() {
       {connections.filter(c => c.groupId === parent).map(c => connectionRow(c, depth))}
     </>;
   }
+  function tabTitle(id: string) {
+    return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      (data.connections.find((c) => c.id === id)?.name ?? id);
+  }
   function pane(id: string) {
+    if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id);
-    return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> : c ? (
+    return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
+      c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
+      c?.protocol === "VNC" ? <VncWorkspace connection={c} language={data.language}/> : c ? (
       <section className="pane" aria-label={c.name}>
         <span className="badge">
           {c.protocol} · {t.offline}
@@ -444,7 +455,7 @@ export default function App() {
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.5</small>
+              NodeDesk <small>0.6</small>
             </strong>
           )}
           <button
@@ -518,6 +529,11 @@ export default function App() {
                 onClick={() => setFilter("favorites")}
               >
                 <Icon name="star"/> {t.favorites}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Системные VPN" : "System VPN"}
+                className={active === SYSTEM_VPN_TAB ? "selected" : ""}
+                onClick={() => open(SYSTEM_VPN_TAB)}>
+                <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
               </button>
 
             </div>
@@ -618,10 +634,10 @@ export default function App() {
                 aria-pressed={active === id}
                 onClick={() => setActive(id)}
               >
-                {data.connections.find((c) => c.id === id)?.name}
+                {tabTitle(id)}
               </button>
               <button
-                aria-label={`${t.close}: ${data.connections.find((c) => c.id === id)?.name}`}
+                aria-label={`${t.close}: ${tabTitle(id)}`}
                 onClick={() => close(id)}
               >
                 ×
@@ -648,7 +664,7 @@ export default function App() {
               >
                 {tabs.map((id) => (
                   <option key={id} value={id}>
-                    {data.connections.find((c) => c.id === id)?.name}
+                    {tabTitle(id)}
                   </option>
                 ))}
               </select>
@@ -691,16 +707,17 @@ export default function App() {
                           ...value,
                           host: (value as Connection).host.trim(),
                           username: (value as Connection).username.trim(),
+                          rdpSha256Fingerprint: (value as Connection).protocol === "RDP"
+                            ? (value as Connection).rdpSha256Fingerprint : undefined,
                         } as Connection,
                       ],
                     };
               try {
-                decode(JSON.stringify(next));
+                const validated = decode(JSON.stringify(next));
+                if (commit(validated)) setEditor(null);
               } catch {
                 setInvalid(true);
-                return;
               }
-              if (commit(next)) setEditor(null);
             }}
           >
             <h2>{editor.kind === "group" ? t.group : t.add}</h2>
@@ -760,13 +777,14 @@ export default function App() {
                         value: {
                           ...editor.value,
                           protocol,
-                          port: protocol === "SSH" ? 22 : 3389,
+                          port: protocol === "SSH" ? 22 : protocol === "VNC" ? 5900 : 3389,
                         },
                       });
                     }}
                   >
                     <option>SSH</option>
                     <option>RDP</option>
+                    <option>VNC</option>
                   </select>
                 </label>
                 <label>
@@ -815,6 +833,13 @@ export default function App() {
                     }
                   />
                 </label>
+                {editor.value.protocol === "RDP" && <label>
+                  {data.language === "ru" ? "SHA256 отпечаток сертификата (Linux FreeRDP, необязательно)" : "Certificate SHA256 fingerprint (Linux FreeRDP, optional)"}
+                  <input aria-label="RDP SHA256 fingerprint" autoComplete="off" spellCheck={false}
+                    placeholder="64 hex or colon-separated pairs"
+                    value={editor.value.rdpSha256Fingerprint ?? ""}
+                    onChange={(e) => setEditor({ ...editor, value: { ...editor.value, rdpSha256Fingerprint: e.target.value || undefined } })}/>
+                </label>}
                 <label>
                   {t.group}
                   <select

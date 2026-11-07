@@ -1,0 +1,10 @@
+# Only the explicit WebSocket path reaches the disposable RFB bridge.
+https://localhost:8444 {
+    tls internal
+    handle /rfb {
+        reverse_proxy desktop:6080
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

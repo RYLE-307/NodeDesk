@@ -94,3 +94,35 @@ test("explicit TCP port list runs only on click and rejects ranges and duplicate
     {cmd:"network_scan_ports",args:{target:{host:"localhost",ports:[22,443]}}}
   ]);
 });
+
+
+test("changing diagnostic target invalidates in-flight results and does not start a new probe",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+      version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
+    }));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      invoke(cmd,args){
+        window.calls.push({cmd,args});
+        if(cmd!=="network_probe")throw Error("Unexpected diagnostics command");
+        return new Promise(resolve=>{window.completeOldProbe=resolve;});
+      }
+    };
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByLabel("Host").fill("test-old.local");
+  await pane.getByRole("button",{name:"Check TCP"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.length)).toBe(1);
+  await pane.getByLabel("Host").fill("test-new.local");
+  await page.evaluate(()=>window.completeOldProbe({
+    addresses:["198.51.100.1"],tcpReachable:true,elapsedMs:2
+  }));
+  await expect(pane.getByRole("button",{name:"Check TCP"})).toBeEnabled();
+  await expect(pane.getByRole("status")).toHaveCount(0);
+  expect(await page.evaluate(()=>window.calls.map(x=>x.args.target.host)))
+    .toEqual(["test-old.local"]);
+});

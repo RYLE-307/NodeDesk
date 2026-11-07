@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {RECOVERY_KEY, validateRecovery, loadRecovery, listRecoveries, saveRecovery,
+import {RECOVERY_KEY, validateRecovery, loadRecovery, listRecoveries, recoverySlotsAvailable, saveRecovery,
   forgetRecovery} from "../src/queueRecovery.ts";
 
 const now=Date.UTC(2026,10,7,19,0,0);
@@ -69,9 +69,11 @@ test("store refuses a ninth checkpoint without silently evicting unfinished work
   }
   const saved=JSON.parse(store.getItem(RECOVERY_KEY));
   assert.equal(saved.records.length,8);
+  assert.equal(recoverySlotsAvailable(store,now+100),false);
   assert.ok(loadRecovery(store,{...endpoint,host:"server0.internal"},now+100));
   assert.equal(loadRecovery(store,{...endpoint,host:"server9.internal"},now+100),null);
   forgetRecovery(store,{...endpoint,host:"server0.internal"});
+  assert.equal(recoverySlotsAvailable(store,now+100),true);
   assert.equal(loadRecovery(store,{...endpoint,host:"server0.internal"},now+100),null);
   assert.ok(loadRecovery(store,{...endpoint,host:"server1.internal"},now+100));
 });

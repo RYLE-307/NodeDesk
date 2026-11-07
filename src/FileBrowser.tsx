@@ -6,7 +6,7 @@ import { childPath, parentPath, portableName, progressPercent, transferAllowed, 
 import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
 import {adjacentMatch, countLiteral, replaceAllLiteral, replaceLiteralSelection,
   MAX_REPLACEMENTS, MAX_SEARCH_TERM} from "./textEditorSearch";
-import {forgetRecovery, listRecoveries, saveRecovery} from "./queueRecovery";
+import {forgetRecovery, listRecoveries, recoverySlotsAvailable, saveRecovery} from "./queueRecovery";
 import type {RecoveryEndpoint, RecoveryPartial, RecoveryRecord} from "./queueRecovery";
 
 type PendingTransferPlan = {
@@ -372,7 +372,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     try{names=transferBatchPlan(draggedNames ?? (upload?batchLocal:batchRemote),source,target);}
     catch(cause){setError(String(cause));return;}
     if(!source || !target)return;
-    if(keepRecovery && listRecoveries(window.localStorage,recoveryEndpoint).length>=8){
+    if(keepRecovery && !recoverySlotsAvailable(window.localStorage)){
       setError(ru?"Хранилище восстановления заполнено (8 очередей). Удали ненужную запись.":
         "Recovery storage is full (8 queues). Forget an old record first.");return;
     }

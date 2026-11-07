@@ -100,6 +100,9 @@ export function loadRecovery(store:RecoveryStore,endpoint:RecoveryEndpoint,now=D
 export function listRecoveries(store:RecoveryStore,endpoint:RecoveryEndpoint,now=Date.now()):RecoveryRecord[] {
   return readAll(store,now).filter(r=>sameEndpoint(r.endpoint,endpoint));
 }
+export function recoverySlotsAvailable(store:RecoveryStore,now=Date.now()):boolean {
+  return readAll(store,now).length<MAX_RECORDS;
+}
 export function saveRecovery(store:RecoveryStore,record:RecoveryRecord,now=Date.now()):boolean {
   try{
     const checked=validateRecovery(record,now);

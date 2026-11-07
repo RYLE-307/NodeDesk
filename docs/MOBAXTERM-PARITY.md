@@ -190,3 +190,15 @@ all-user phonebook entries, PPTP and automatic tunnel type are unsupported.
 No background monitoring, VPN-before-RDP orchestration, in-app credentials
 or independent proof of route/DNS isolation. No native desktop test yet.
 [Acceptance and security notes](V0.6-VPN.md).
+
+## Embedded VNC WSS-only slice (v0.6 draft)
+
+A separate noVNC 1.7.0 (MPL-2.0) viewer renders RFB frames **inside**
+NodeDesk tabs over an explicitly configured `wss://` WebSocket-to-RFB
+gateway with valid OS-trusted TLS. Manual password input, framebuffer and
+remote keyboard/mouse are supported in code. This is **not** the raw TCP
+VNC external X.509 launcher and does **not** enforce that same RFB
+authentication type or guarantee the origin's access policy. Credentials
+are transiently handled in the WebView and not persisted. Real Arch/Windows
+WSS desktop tests remain pending. **RDP is not embedded**.
+[Architecture / acceptance](V0.6-EMBEDDED-DESKTOP.md).

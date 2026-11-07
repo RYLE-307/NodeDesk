@@ -1,0 +1,20 @@
+# Local-only Guacamole QA TLS proxy.
+# Caddy's internal CA must be explicitly trusted on the disposable QA host.
+# No access-log directive: standard Guacamole embeds tokens in URL queries.
+https://localhost:8443 {
+    tls internal
+
+    @api path /guacamole/api/*
+    header @api Access-Control-Allow-Origin "{$NODEDESK_ORIGIN}"
+    header @api Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS"
+    header @api Access-Control-Allow-Headers "Content-Type"
+    header @api Vary "Origin"
+
+    @preflight {
+        method OPTIONS
+        path /guacamole/api/*
+    }
+    respond @preflight "" 204
+
+    reverse_proxy guacamole:8080
+}

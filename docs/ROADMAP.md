@@ -181,8 +181,13 @@ Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-f
 Added per-pane regular-file checkboxes, capped at 50 files and a sequential
 upload/download operation. All files must pass preflight collision/type
 checks; any error or user cancellation stops the rest, and prior successful
-files remain. Manual runtime verification pending. This is not a persistent
-background queue. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+files remain. A new **Retry unfinished** action (draft PR #11) requires manual
+refresh of BOTH filesystem listings and fresh explicit confirmation, rechecks
+original source size/mtime/type and destination collisions, and never replays
+already successful files. Every incomplete file restarts **from byte zero**;
+there is no unsafe reuse of orphaned .part files. No queue is persisted, and
+byte-level resume/checkpointing is still planned. Native Windows/Arch manual
+acceptance remains open. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
 
 ### v0.5 review addition: transfer visibility
 

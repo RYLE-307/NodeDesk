@@ -114,9 +114,11 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
     }catch(cause){
       setPhaseBoth("idle");
       const kind=cause instanceof Error?cause.name:"UnknownError";
-      // Report error class only; never leak hostnames or secret buffers.
+      // Temporary diagnostic for the isolated CI peer: never include the
+      // supplied endpoint or credentials in any displayed exception.
+      const message=cause instanceof Error?cause.message.replaceAll(url,"[endpoint]").slice(0,140):"unknown";
       setError((ru?"Не удалось открыть защищённый VNC WebSocket.":
-        "Could not open a secure VNC WebSocket.")+" ["+kind+"]");
+        "Could not open a secure VNC WebSocket.")+" ["+kind+": "+message+"]");
     }
   }
   function authenticate(){

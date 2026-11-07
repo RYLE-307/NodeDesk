@@ -48,3 +48,33 @@ test("RU VNC errors do not imply login success or retry automatically",async({pa
   await expect(workspace).toContainText("Пароль вводите только в TigerVNC");
   expect(await page.evaluate(()=>window.fixture.calls.length)).toBe(1);
 });
+
+test("embedded VNC is a real in-tab viewer but never autoconnects",async({page})=>{
+  const workspace=await open(page);
+  const viewer=workspace.locator(".vnc-embedded");
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toContainText("Embedded VNC (secure WSS)");
+  await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeVisible();
+  await expect(viewer.locator(".vnc-embedded-surface")).toBeVisible();
+  // WSS is never opened just because the tab exists.
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vnc_launch"))).toHaveLength(0);
+  await viewer.getByRole("textbox",{name:"WSS endpoint"}).fill("ws://unsecured.example/rfb");
+  await viewer.getByRole("button",{name:"Connect embedded"}).click();
+  await expect(viewer.getByRole("alert")).toContainText("Only wss://");
+  await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeEnabled();
+  expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+});
+
+test("embedded VNC refuses URL password and query-token leakage",async({page})=>{
+  const workspace=await open(page,"ru");
+  const viewer=workspace.locator(".vnc-embedded");
+  for(const bad of [
+    "wss://user:password@vnc.example/rfb",
+    "wss://vnc.example/rfb?token=secret",
+    "wss://vnc.example/rfb#secret"
+  ]){
+    await viewer.getByRole("textbox",{name:"WSS-адрес"}).fill(bad);
+    await viewer.getByRole("button",{name:"Подключить внутри"}).click();
+    await expect(viewer.getByRole("alert")).toContainText("Only wss://");
+  }
+});

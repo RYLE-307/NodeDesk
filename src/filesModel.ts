@@ -84,3 +84,40 @@ export function finishBatch(items: readonly BatchItem[]): BatchItem[] {
   return items.map(item => item.state === "queued" ? {...item,state:"skipped"}
     : item.state === "active" ? {...item,state:"cancelled"} : item);
 }
+
+/** Explicit, ephemeral queue retry. Never retry files already marked done.
+ * The caller must supply freshly reloaded panes from the same connection and
+ * keep every destination conflict check in the real SFTP backend.
+ */
+export function remainingBatchIndexes(items: readonly BatchItem[]): number[] {
+  return items.flatMap((item,index)=>
+    item.state==="failed" || item.state==="cancelled" || item.state==="skipped"
+      ? [index] : []);
+}
+export function retryBatchPlan(
+  originalNames: readonly string[],
+  items: readonly BatchItem[],
+  source: Listing | null,
+  destination: Listing | null,
+  sourceSnapshot: readonly FileEntry[]
+): {indexes:number[];names:string[]} {
+  if(items.length!==originalNames.length || sourceSnapshot.length!==originalNames.length
+    || !items.every((item,index)=>item.name===originalNames[index]
+      && sourceSnapshot[index].name===originalNames[index])) {
+    throw new Error("Transfer report does not match the original queue");
+  }
+  const indexes=remainingBatchIndexes(items);
+  if(!indexes.length)throw new Error("No incomplete files to retry");
+  if(!source || !destination)throw new Error("Refresh both filesystem panes before retry");
+  const names=indexes.map(index=>originalNames[index]);
+  const checked=transferBatchPlan(names,source,destination);
+  for(const index of indexes){
+    const original=sourceSnapshot[index];
+    const updated=source.entries.find(entry=>entry.name===original.name);
+    if(!updated || updated.kind!==original.kind || updated.size!==original.size
+      || updated.modified!==original.modified || updated.permissions!==original.permissions){
+      throw new Error(`Source metadata changed: ${original.name}; create a new transfer plan`);
+    }
+  }
+  return {indexes,names:checked};
+}

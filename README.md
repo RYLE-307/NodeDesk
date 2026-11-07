@@ -1,6 +1,6 @@
 # NodeDesk
 
-> **Current development: v0.6.0-alpha.0** — embedded WSS VNC, external RDP/TigerVNC and system VPN control in draft PR #11.
+> **Current development: v0.6.0-alpha.0** — embedded Guacamole/WSS RDP, embedded VNC, external desktop launchers and OS VPN control in draft PR #11.
 > v0.5 SSH/SFTP GUI was merged into main in PR #10; production Windows GUI acceptance and release packaging remain separate.
 > First v0.6 RDP scope: [V0.6 RDP](docs/V0.6-RDP.md). The remaining historical notes describe earlier releases.
 
@@ -130,8 +130,8 @@ the same as X509Vnc-only external TigerVNC authentication. No direct raw
 TCP VNC, no anonymous-gateway security guarantee, and no native Arch/Windows
 live WSS acceptance yet.
 
-Embedded **RDP is not implemented**: current RDP still launches OS FreeRDP
-or mstsc externally. A native FreeRDP binding or independently installed
-authenticated Guacamole gateway is under evaluation.
+Embedded **RDP through Guacamole** is now present in the RDP tab, using a separately installed, authenticated WSS Guacamole gateway. This mode renders pixels and sends input in NodeDesk, but is **not a native Rust RDP engine** and cannot connect to raw TCP:3389. Existing external FreeRDP/mstsc works separately. Native IronRDP needs certificate identity verification; gateway integration still needs live manual acceptance.
 
 [Embedded desktop architecture and license notices](docs/V0.6-EMBEDDED-DESKTOP.md).
+
+[Gateway-based in-tab RDP, native TLS blocker and QA](docs/V0.6-RDP-EMBEDDED.md).

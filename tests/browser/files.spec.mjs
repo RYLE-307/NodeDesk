@@ -453,3 +453,62 @@ test('SFTP editor preserves unsaved edits and reports source conflicts',async({p
   await editor.getByRole('button',{name:'Close editor'}).click();
   await expect(editor).toHaveCount(0);
 });
+
+
+test('SFTP find is literal, selects UTF-8 text and replace selected stays local',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
+  await remote.getByRole('button',{name:'Preview text',exact:true}).click();
+  const editor=files.getByRole('region',{name:'Remote text editor'});
+  await editor.getByRole('button',{name:'Edit text'}).click();
+  const search=editor.getByRole('group',{name:'Find and replace'});
+  const area=editor.getByRole('textbox',{name:'File text'});
+  await search.getByRole('searchbox',{name:'Find in text'}).fill('привет');
+  await expect(search.getByRole('status',{name:'Matches'})).toContainText('1');
+  await search.getByRole('button',{name:'Next match'}).click();
+  expect(await area.evaluate(el=>el.value.slice(el.selectionStart,el.selectionEnd))).toBe('привет');
+  await search.getByRole('textbox',{name:'Replacement text'}).fill('мир');
+  await search.getByRole('button',{name:'Replace selected'}).click();
+  await expect(area).toContainText('Remote UTF-8: мир');
+  await expect(search.getByRole('status',{name:'Matches'})).toContainText('0');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'))).toHaveLength(0);
+  await editor.getByRole('button',{name:'Read-only view'}).click();
+  page.once('dialog',dialog=>dialog.dismiss());
+  await editor.getByRole('button',{name:'Close editor'}).click();
+  await expect(editor).toBeVisible();
+  await editor.getByRole('button',{name:'Edit text'}).click();
+  await expect(editor.getByRole('textbox',{name:'File text'})).toContainText('мир');
+  expect(await editor.locator('svg').count()).toBe(0);
+});
+
+test('SFTP replace-all is opt-in, bounded, literal and never auto-saves',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
+  await remote.getByRole('button',{name:'Preview text',exact:true}).click();
+  const editor=files.getByRole('region',{name:'Remote text editor'});
+  await editor.getByRole('button',{name:'Edit text'}).click();
+  const area=editor.getByRole('textbox',{name:'File text'});
+  await area.fill('foo foo foo');
+  const search=editor.getByRole('group',{name:'Find and replace'});
+  await search.getByRole('searchbox',{name:'Find in text'}).fill('foo');
+  await expect(search.getByRole('status',{name:'Matches'})).toContainText('3');
+  await search.getByRole('textbox',{name:'Replacement text'}).fill('bar');
+  page.once('dialog',dialog=>dialog.dismiss());
+  await search.getByRole('button',{name:'Replace all…'}).click();
+  await expect(area).toHaveValue('foo foo foo');
+  page.once('dialog',dialog=>dialog.accept());
+  await search.getByRole('button',{name:'Replace all…'}).click();
+  await expect(area).toHaveValue('bar bar bar');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'))).toHaveLength(0);
+  await search.getByRole('searchbox',{name:'Find in text'}).fill('.');
+  await expect(search.getByRole('status',{name:'Matches'})).toContainText('0');
+  await search.getByRole('searchbox',{name:'Find in text'}).fill('bar');
+  await search.getByRole('textbox',{name:'Replacement text'}).fill('\u0000');
+  // Invalid replacement text must not mutate the editor (backend also validates).
+  await search.getByRole('button',{name:'Replace selected'}).click();
+  await expect(area).toHaveValue('bar bar bar');
+});

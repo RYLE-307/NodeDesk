@@ -79,29 +79,24 @@ fn windows_tool(suffix:&[&str])->Result<Command,String> {
     Ok(Command::new(path))
 }
 #[cfg(windows)]
-fn list_impl()->Result<Vec<VpnProfile>,String> {
-    // The script is static and reads user-scope Windows built-in phonebook
-    // profiles only. Never reads/returns EAP XML, PSK, credentials, server URLs
-    // or routes. VPN types known to be insecure/ambiguous are excluded.
-    const QUERY:&str=r#"
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-$rows = @()
-foreach($p in @(Get-VpnConnection)) {
-  if(([string]$p.TunnelType -notin @('Ikev2','Sstp','L2tp')) -or
-     ([string]$p.EncryptionLevel -notin @('Required','Maximum'))) { continue }
-  $rows += [pscustomobject]@{
-    id=(([string]$p.Guid) -replace '[{}]','').ToLowerInvariant()
-    name=[string]$p.Name
-    kind=[string]$p.TunnelType
-    active=([string]$p.ConnectionStatus -eq 'Connected')
-  }
-}
-ConvertTo-Json -InputObject $rows -Compress -Depth 2
+const WINDOWS_QUERY:&str=r#"
+ $ErrorActionPreference='Stop'
+ [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+ $rows = @()
+ foreach($p in @(Get-VpnConnection)) {
+   if(([string]$p.TunnelType -notin @('Ikev2','Sstp','L2tp')) -or
+      ([string]$p.EncryptionLevel -notin @('Required','Maximum'))) { continue }
+   $rows += [pscustomobject]@{
+     id=(([string]$p.Guid) -replace '[{}]','').ToLowerInvariant()
+     name=[string]$p.Name
+     kind=[string]$p.TunnelType
+     active=([string]$p.ConnectionStatus -eq 'Connected')
+   }
+ }
+ ConvertTo-Json -InputObject $rows -Compress -Depth 2
 "#;
-    let mut cmd=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"])?;
-    cmd.args(["-NoProfile","-NonInteractive","-Command",QUERY]);
-    let raw=output(cmd)?;
+#[cfg(windows)]
+fn parse_windows_profiles(raw:&str)->Result<Vec<VpnProfile>,String> {
     let profiles:Vec<VpnProfile>=serde_json::from_str(raw.trim())
         .map_err(|_|"Windows VPN profile status could not be parsed".to_string())?;
     if profiles.len()>100 {return Err("Too many VPN profiles".into());}
@@ -109,6 +104,16 @@ ConvertTo-Json -InputObject $rows -Compress -Depth 2
     Ok(profiles.into_iter().filter(|p| uuid_ok(&p.id) && safe_name(&p.name)
         && ids.insert(p.id.clone()) && matches!(p.kind.as_str(),"Ikev2"|"L2tp"|"Sstp"))
         .collect())
+}
+#[cfg(windows)]
+fn list_impl()->Result<Vec<VpnProfile>,String> {
+    // The script is static and reads user-scope Windows built-in phonebook
+    // profiles only. Never reads/returns EAP XML, PSK, credentials, server URLs
+    // or routes. VPN types known to be insecure/ambiguous are excluded.
+    let mut cmd=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"])?;
+    cmd.args(["-NoProfile","-NonInteractive","-Command",WINDOWS_QUERY]);
+    let raw=output(cmd)?;
+    parse_windows_profiles(&raw)
 }
 #[cfg(windows)]
 fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
@@ -173,5 +178,46 @@ mod tests {
         let serialized=serde_json::to_string(&profile).unwrap();
         assert!(!serialized.contains("sensitive"));
         assert!(!serialized.contains("password"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_read_only_query_filters_mocked_profiles_and_secrets() {
+        // A same-named function shadows the OS cmdlet. No real VPN is read or dialed.
+        let mock=r#"
+function Get-VpnConnection {
+  @(
+    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174000}';Name='Work L2TP';TunnelType='L2tp';EncryptionLevel='Required';ConnectionStatus='Disconnected';ServerAddress='private.example';L2tpIPsecAuth='Psk'},
+    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174001}';Name='Connected IKE';TunnelType='Ikev2';EncryptionLevel='Maximum';ConnectionStatus='Connected';ServerAddress='private.example'},
+    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174002}';Name='Weak L2TP';TunnelType='L2tp';EncryptionLevel='Optional';ConnectionStatus='Disconnected'},
+    [pscustomobject]@{Guid='{123e4567-e89b-12d3-a456-426614174003}';Name='PPTP';TunnelType='Pptp';EncryptionLevel='Required';ConnectionStatus='Connected'}
+  )
+}
+"#;
+        let mut cmd=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"]).unwrap();
+        cmd.args(["-NoProfile","-NonInteractive","-Command",&format!("{mock}\n{WINDOWS_QUERY}")]);
+        let raw=output(cmd).unwrap();
+        assert!(!raw.contains("private.example"));
+        assert!(!raw.contains("Psk"));
+        let profiles=parse_windows_profiles(&raw).unwrap();
+        assert_eq!(profiles.len(),2);
+        assert_eq!(profiles[0].name,"Work L2TP");
+        assert_eq!(profiles[0].kind,"L2tp");
+        assert!(!profiles[0].active);
+        assert!(profiles[1].active);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_parser_rejects_malformed_and_unsupported_mock_data() {
+        assert!(parse_windows_profiles("not json").is_err());
+        assert!(parse_windows_profiles(r#"[{"id":"bad","name":"Work","kind":"L2tp","active":false}]"#).unwrap().is_empty());
+        assert!(parse_windows_profiles(r#"[{"id":"123e4567-e89b-12d3-a456-426614174000","name":"Work","kind":"Pptp","active":false}]"#).unwrap().is_empty());
+        assert!(parse_windows_profiles(r#"[{"id":"123e4567-e89b-12d3-a456-426614174000","name":"Bad\nName","kind":"L2tp","active":false}]"#).unwrap().is_empty());
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn missing_nmcli_returns_a_clear_error_without_network_action() {
+        if !std::path::Path::new("/usr/bin/nmcli").exists() {
+            assert_eq!(list_impl().unwrap_err(),"System VPN manager not installed or unavailable");
+        }
     }
 }

@@ -41,3 +41,25 @@ test("ICMP ping is explicit, bounded and does not use a port",async({page})=>{
     {cmd:"network_ping",args:{target:{host:"localhost"}}}
   ]);
 });
+
+
+test("traceroute is manual and displays bounded route output",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args});if(cmd!=="network_trace")throw Error("Unexpected command");
+        return {elapsedMs:42,output:"1  127.0.0.1  0.2 ms"};}}
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  expect(await page.evaluate(()=>window.calls)).toEqual([]);
+  await pane.getByLabel("Host").fill("localhost");
+  await pane.getByRole("button",{name:"Traceroute",exact:true}).click();
+  await expect(pane.getByRole("status",{name:"Traceroute result"})).toContainText("Traceroute finished");
+  await expect(pane.locator(".network-ping-output")).toContainText("127.0.0.1");
+  expect(await page.evaluate(()=>window.calls)).toEqual([
+    {cmd:"network_trace",args:{target:{host:"localhost"}}}
+  ]);
+});

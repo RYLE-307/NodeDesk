@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
@@ -14,14 +15,20 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const sessionCallback = useRef(onSession); sessionCallback.current = onSession;
   const container = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
+  const searchAddon = useRef<SearchAddon | null>(null);
+  const currentLanguage=useRef(language); currentLanguage.current=language;
   const session = useRef<string | null>(null);
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState(""), [busy, setBusy] = useState(false);
   const [auth, setAuth] = useState<AuthMode>(passwordOnly ? "password" : "auto");
+  const [query,setQuery]=useState("");
+  const [fontSize,setFontSize]=useState(13);
   const ru = language === "ru";
   useEffect(() => {
     const term = new Terminal({ cursorBlink: true, scrollback: 2000, fontSize: 13, theme: { background: "#11151b", foreground: "#e2e8f0" } });
-    const fit = new FitAddon(); term.loadAddon(fit); term.open(container.current!); terminal.current = term;
+    const fit = new FitAddon(); term.loadAddon(fit);
+    const search = new SearchAddon(); term.loadAddon(search); searchAddon.current=search;
+    term.open(container.current!); terminal.current = term;
     const input = term.onData(data => {
       const id = session.current;
       if (id) pending.current = pending.current.then(() => invoke("ssh_write", { id, data })).catch(() => { setStatus("Terminal input failed"); });
@@ -32,11 +39,21 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       if (session.current) void invoke("ssh_resize", { id: session.current, cols: term.cols, rows: term.rows }).catch(() => {});
     });
     observer.observe(container.current!);
+    const screen=container.current!;
+    const guardPaste=(event:ClipboardEvent)=>{
+      const value=event.clipboardData?.getData("text/plain")??"";
+      if (!value.includes("\n") && !value.includes("\r")) return;
+      if (!window.confirm(currentLanguage.current==="ru"
+        ? "Вставить несколько строк в терминал? Команды могут выполниться сразу."
+        : "Paste multiple lines into the terminal? Commands may run immediately.")) event.preventDefault();
+    };
+    screen.addEventListener("paste",guardPaste,true);
     return () => {
       const id = session.current; session.current = null; sessionCallback.current?.(null);
       // Also close after an in-flight connect finishes: cancellation cannot orphan a process.
       if (id) void invoke("ssh_disconnect", { id });
-      observer.disconnect(); input.dispose(); term.dispose(); terminal.current = null;
+      screen.removeEventListener("paste",guardPaste,true);
+      observer.disconnect(); input.dispose(); term.dispose(); terminal.current = null; searchAddon.current=null;
     };
   }, []);
   async function stop() {
@@ -68,6 +85,13 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
   }
+  function changeFont(delta:number) {
+    setFontSize(current=>{
+      const next=Math.min(24,Math.max(10,current+delta));
+      if(terminal.current)terminal.current.options.fontSize=next;
+      return next;
+    });
+  }
   return <section className="ssh-pane" aria-label={c.name}>
     <div className="ssh-toolbar"><strong>{local ? (kind === "localcmd" ? "CMD" : navigator.userAgent.includes("Windows") ? "PowerShell" : (ru ? "Локальная оболочка" : "Local shell")) : kind === "filesauth" ? (ru ? "Вход для файлов" : "Files login") : kind === "sftp" ? "SFTP" : "SSH"} · {c.name}</strong>{!local && <span>{c.username}@{c.host}:{c.port}</span>}
       {!local && <label className="ssh-auth">
@@ -80,6 +104,16 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       </label>}
       <button disabled={busy} onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
+    </div>
+    <div className="ssh-toolbar terminal-tools">
+      <label>{ru?"Поиск в выводе":"Find in output"} <input aria-label={ru?"Поиск в выводе":"Find in output"} value={query}
+        onChange={event=>{setQuery(event.target.value);if(event.target.value)searchAddon.current?.findNext(event.target.value);else searchAddon.current?.clearDecorations();}}
+        onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();searchAddon.current?.findNext(query);}}}/></label>
+      <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findPrevious(query)} aria-label={ru?"Предыдущее совпадение":"Previous match"}>↑</button>
+      <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findNext(query)} aria-label={ru?"Следующее совпадение":"Next match"}>↓</button>
+      <button type="button" onClick={()=>changeFont(-1)} aria-label={ru?"Уменьшить шрифт":"Decrease font size"}>−</button>
+      <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
+      <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>
     </div>
     <p className="ssh-help">{local ? (ru ? "Оболочка запускается только по нажатию. Команды выполняются на этом компьютере с вашими правами; закрытие вкладки завершает процесс. PowerShell запускается без профиля." : "The shell starts only when you click Start. Commands run on this computer with your permissions; closing the tab ends the process. PowerShell starts without a profile.") : kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
       ? (ru

@@ -43,6 +43,9 @@ Network diagnostics (NET-01) now resolves a manually entered host and probes
 one manually entered TCP port, with bounded connection attempts and no
 background requests or port ranges. Ping, traceroute, cancelable DNS and
 multi-port scans are still planned.
+Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
+requires confirmation because pasted commands may execute immediately. Clipboard
+copy/link handling, persisted font preferences and native acceptance remain open.
 
 ## v0.6 priorities
 

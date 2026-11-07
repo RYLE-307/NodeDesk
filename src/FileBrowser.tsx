@@ -43,6 +43,15 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const filteredRemote = useMemo(() => visibleEntries(remote?.entries ?? [],remoteFilter),[remote,remoteFilter]);
   const [context, setContext] = useState<{isRemote:boolean;name:string|null;x:number;y:number}|null>(null);
   const [preview, setPreview] = useState<{name:string;content:string;bytes:number}|null>(null);
+  const [editing,setEditing] = useState(false);
+  const [editDraft,setEditDraft] = useState("");
+  const [saveName,setSaveName] = useState("");
+  const [savedCopy,setSavedCopy] = useState<{name:string;sourceUnchanged:boolean}|null>(null);
+  const editBytes = new TextEncoder().encode(editDraft).length;
+  function canDiscardEdits():boolean {
+    return !(preview && editing && editDraft!==preview.content) ||
+      window.confirm(ru?"Несохранённые изменения исчезнут. Продолжить?":"Unsaved edits will be lost. Continue?");
+  }
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
   const destination = {host:connection.host,port:connection.port,username:connection.username,authSession:interactive ? authSession : null};
   useEffect(() => {
@@ -108,6 +117,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     return completed;
   }
   function list(isRemote: boolean, path: string) {
+    if(isRemote && !canDiscardEdits())return;
     if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
     void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
       if (isRemote) { setRemote(listing); setPreview(null); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
@@ -220,6 +230,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   function previewRemote(nameOverride?:string|null) {
     setContext(null);
+    if(!canDiscardEdits())return;
     if (!remote || busy || (interactive && !authReady)) return;
     const name=nameOverride ?? remoteSelection;
     const entry=remote.entries.find(item=>item.name===name);
@@ -228,12 +239,35 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     void run(id=>invoke<{name:string;content:string;bytes:number}>("files_preview",{
       id,request:{destination,directory:remote.path,name}
     }),view=>{
-      setPreview(view);
+      setPreview(view); setEditing(false); setEditDraft(view.content);
+      setSaveName(view.name+".edited"); setSavedCopy(null);
       setStatus(ru?"Текст прочитан только для просмотра":"Read-only text preview loaded");
+    });
+  }
+  function saveEditedCopy(){
+    if(!preview || !editing || !remote || busy || (interactive && !authReady))return;
+    if(!portableName(saveName) || saveName===preview.name || editBytes>131072){
+      setError(ru?"Недопустимое имя копии или текст больше 128 КиБ":"Invalid new filename or text exceeds 128 KiB");return;
+    }
+    if(!window.confirm(ru
+      ? `Создать НОВЫЙ файл ${saveName} в ${remote.path}? Исходный ${preview.name} НЕ будет изменён. При ошибке передачи неполная копия может остаться.`
+      : `Create NEW file ${saveName} in ${remote.path}? Original ${preview.name} will NOT be changed. A failed transfer may leave an incomplete copy.`))return;
+    setSavedCopy(null);
+    void run(id=>invoke<{name:string;bytes:number;sourceUnchanged:boolean}>("files_save_text_copy",{
+      id,request:{
+        destination,directory:remote.path,originalName:preview.name,
+        originalContent:preview.content,newName:saveName,content:editDraft
+      }
+    }),saved=>{
+      setSavedCopy({name:saved.name,sourceUnchanged:saved.sourceUnchanged});
+      setStatus(saved.sourceUnchanged
+        ? (ru?"Новая копия создана; исходный файл не изменён":"New copy created; original remains unchanged")
+        : (ru?"Копия создана, но исходный файл изменился — проверь обе версии":"Copy created, but original changed — inspect both versions"));
     });
   }
   function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete", nameOverride?: string|null) {
     setContext(null);
+    if(isRemote && !canDiscardEdits())return;
     const listing = isRemote ? remote : local;
     if (!listing || busy || (isRemote && interactive && !authReady)) return;
     const nameSelected = nameOverride === undefined ? (isRemote ? remoteSelection : localSelection) : (nameOverride ?? "");
@@ -430,13 +464,39 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {error && <p className="error" role="alert">{ru ? "Ошибка операции" : "Operation failed"}: {error}</p>}
     <p role="status">{busy ? (ru ? "Операция выполняется…" : "Operation in progress…") : status}</p>
     <div className="files-panels">{panel(false)}{panel(true)}</div>
-    {preview && <section className="files-preview" aria-label={ru?"Предпросмотр удалённого файла":"Remote file preview"}>
+    {preview && <section className="files-preview" aria-label={ru?"Редактор удалённого текста":"Remote text editor"}>
       <div className="files-preview-heading">
-        <strong>{ru?"Только чтение":"Read-only"}: {preview.name} ({preview.bytes} {ru?"байт":"bytes"})</strong>
-        <button type="button" onClick={()=>setPreview(null)}>{ru?"Закрыть просмотр":"Close preview"}</button>
+        <strong>{ru?"Файл":"File"}: {preview.name} ({preview.bytes} {ru?"байт":"bytes"})</strong>
+        <div className="files-ops">
+          <button type="button" disabled={busy} onClick={()=>setEditing(!editing)}>
+            {editing?(ru?"Только просмотр":"Read-only view"):(ru?"Редактировать":"Edit text")}
+          </button>
+          <button type="button" disabled={busy} onClick={()=>{if(canDiscardEdits()){setPreview(null);setEditing(false);setEditDraft("");setSavedCopy(null);}}}>
+            {ru?"Закрыть":"Close editor"}
+          </button>
+        </div>
       </div>
-      <pre>{preview.content}</pre>
-      <p className="ssh-help">{ru?"Предпросмотр не изменяет файл и не сохраняет его локально. Не открывайте через него файлы с секретами.":"Preview does not modify or save the file locally. Avoid previewing files that contain secrets."}</p>
+      {editing ? <>
+        <label className="files-editor-label">{ru?"Текст файла":"File text"}
+          <textarea className="files-editor-textarea" aria-label={ru?"Текст файла":"File text"}
+            spellCheck={false} value={editDraft} onChange={event=>{setEditDraft(event.target.value);setSavedCopy(null);}}/>
+        </label>
+        <div className="files-editor-footer">
+          <label>{ru?"Имя новой копии":"New copy filename"}<input aria-label={ru?"Имя новой копии":"New copy filename"}
+            value={saveName} maxLength={255} onChange={event=>{setSaveName(event.target.value);setSavedCopy(null);}}/></label>
+          <button type="button" disabled={busy || (interactive && !authReady) ||
+              !portableName(saveName) || saveName===preview.name || editBytes>131072}
+            onClick={saveEditedCopy}>{ru?"Сохранить новой копией":"Save as new copy"}</button>
+          <span>{editBytes} / 131072 {ru?"байт":"bytes"}</span>
+        </div>
+        <p className="ssh-help">{ru
+          ?"Исходный файл никогда не перезаписывается. Перед сохранением проверяем, не изменился ли он на сервере. Новая копия создаётся только с новым именем."
+          :"Original is never overwritten. Before saving, we check for source changes on the server. The new copy requires a distinct filename."}</p>
+      </> : <pre>{preview.content}</pre>}
+      {savedCopy && <p role="status">{savedCopy.sourceUnchanged
+        ? (ru?`Создана копия: ${savedCopy.name}`:`Saved new copy: ${savedCopy.name}`)
+        : (ru?`Копия ${savedCopy.name} создана, но источник изменился!`:`Copy ${savedCopy.name} created, but source changed!`)}</p>}
+      <p className="ssh-help">{ru?"Содержимое не сохраняется локально. Не открывайте файлы с секретами.":"Contents are not stored locally. Avoid opening files containing secrets."}</p>
     </section>}
     {context && (() => {
       const listing=context.isRemote ? remote : local;

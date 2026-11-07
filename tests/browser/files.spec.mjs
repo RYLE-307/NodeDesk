@@ -7,14 +7,21 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
     localStorage.setItem('nodedesk.catalog.v1',JSON.stringify({version:1,groups:[],connections:[{id:'test',name:'Fixture',host:'localhost',port:22229,username:'fixture',protocol:'SSH',groupId:null,favorite:false}],language,theme:'dark',monitoring:false}));
     window.__TAURI__ = {};
     window.isTauri = true;
-    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps};
+    window.fixture = {ready:false,calls:[],session:null,emptyRemote:false,allowTransfer:false,extraLocal:false,pauseTransfers:false,rejectPending:null,caps,changedSource:false,existingCopy:false};
     let next=0; const callbacks=new Map();
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {callbacks.set(++next,callback); return next;},
       unregisterCallback(id) {callbacks.delete(id);},
       async invoke(cmd,args) {
         // Never record terminal input, even in this test harness.
-        window.fixture.calls.push({cmd,id:args?.id,destination:args?.destination,request:['files_mutate','files_transfer','files_preview'].includes(cmd)?args?.request:undefined});
+        window.fixture.calls.push({
+          cmd,id:args?.id,destination:args?.destination,
+          request:cmd==='files_save_text_copy' ? {
+            originalName:args.request.originalName,newName:args.request.newName,
+            directory:args.request.directory,destination:args.request.destination,
+            changed:args.request.content!==args.request.originalContent
+          } : ['files_mutate','files_transfer','files_preview'].includes(cmd)?args?.request:undefined
+        });
         if (cmd==='files_capabilities') return window.fixture.caps;
         if (cmd==='ssh_connect') {window.fixture.session=args.id; window.fixture.loginAuth=args.auth; return;}
         if (cmd==='files_auth_ready') return window.fixture.ready;
@@ -27,6 +34,11 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
               ...(!args.destination && window.fixture.extraLocal ? [{name:'extra.bin',kind:'file',size:256,modified:null,permissions:384}] : [])
             ]};
         if (cmd==='files_preview') return {name:args.request.name,content:'Remote UTF-8: привет\\n<svg onload=alert(1)>',bytes:47};
+        if(cmd==='files_save_text_copy'){
+          if(window.fixture.changedSource)throw new Error('Original file changed since opening; copy was not created');
+          if(window.fixture.existingCopy)throw new Error('SFTP status 4: destination already exists');
+          return {name:args.request.newName,bytes:new TextEncoder().encode(args.request.content).length,sourceUnchanged:true};
+        }
         if (cmd==='files_transfer') {
           if (window.fixture.allowTransfer) {
             if (window.fixture.pauseTransfers) return new Promise((_,reject)=>{window.fixture.rejectPending=reject;});
@@ -373,7 +385,7 @@ test('read-only SFTP preview is opt-in, session-scoped and text-only',async({pag
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_preview'))).toHaveLength(0);
   await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
   await remote.getByRole('button',{name:'Preview text',exact:true}).click();
-  const preview=files.getByRole('region',{name:'Remote file preview'});
+  const preview=files.getByRole('region',{name:'Remote text editor'});
   await expect(preview).toContainText('Remote UTF-8: привет');
   await expect(preview).toContainText('<svg onload=alert(1)>');
   await expect(preview.locator('svg')).toHaveCount(0);
@@ -383,6 +395,61 @@ test('read-only SFTP preview is opt-in, session-scoped and text-only',async({pag
     name:'sample.bin',directory:'/remote',destination:{host:'localhost',port:22229,username:'fixture'}
   });
   expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'||c.cmd==='files_transfer'))).toHaveLength(0);
-  await preview.getByRole('button',{name:'Close preview'}).click();
+  await preview.getByRole('button',{name:'Close editor'}).click();
   await expect(preview).toHaveCount(0);
+});
+
+
+test('SFTP text editor saves only a distinct copy after explicit confirmation',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
+  await remote.getByRole('button',{name:'Preview text',exact:true}).click();
+  const editor=files.getByRole('region',{name:'Remote text editor'});
+  await editor.getByRole('button',{name:'Edit text'}).click();
+  const draft=editor.getByRole('textbox',{name:'File text'});
+  await draft.fill('Edited UTF-8: привет');
+  const filename=editor.getByRole('textbox',{name:'New copy filename'});
+  await filename.fill('sample.bin');
+  await expect(editor.getByRole('button',{name:'Save as new copy'})).toBeDisabled();
+  await filename.fill('sample-edited.txt');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'))).toHaveLength(0);
+  page.once('dialog',dialog=>dialog.accept());
+  await editor.getByRole('button',{name:'Save as new copy'}).click();
+  await expect(editor.getByText('Saved new copy: sample-edited.txt')).toBeVisible();
+  const saves=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'));
+  expect(saves).toHaveLength(1);
+  expect(saves[0].request).toMatchObject({
+    directory:'/remote',originalName:'sample.bin',newName:'sample-edited.txt',
+    changed:true,destination:{host:'localhost',port:22229,username:'fixture'}
+  });
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_mutate'||c.cmd==='files_transfer'))).toHaveLength(0);
+  // Never insert remote text as executable HTML.
+  expect(await editor.locator('svg').count()).toBe(0);
+});
+
+test('SFTP editor preserves unsaved edits and reports source conflicts',async({page})=>{
+  const files=await open(page,'en',{interactiveLogin:false,keyAgent:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click();
+  await remote.getByRole('button',{name:'Preview text',exact:true}).click();
+  const editor=files.getByRole('region',{name:'Remote text editor'});
+  await editor.getByRole('button',{name:'Edit text'}).click();
+  await editor.getByRole('textbox',{name:'File text'}).fill('A new unsaved version');
+  page.once('dialog',dialog=>dialog.dismiss());
+  await editor.getByRole('button',{name:'Close editor'}).click();
+  await expect(editor).toBeVisible();
+  await expect(editor.getByRole('textbox',{name:'File text'})).toHaveValue('A new unsaved version');
+  await page.evaluate(()=>{window.fixture.changedSource=true;});
+  await editor.getByRole('textbox',{name:'New copy filename'}).fill('new-version.txt');
+  page.once('dialog',dialog=>dialog.accept());
+  await editor.getByRole('button',{name:'Save as new copy'}).click();
+  await expect(files.getByRole('alert')).toContainText('Original file changed since opening');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_save_text_copy'))).toHaveLength(1);
+  await expect(editor.getByRole('textbox',{name:'File text'})).toHaveValue('A new unsaved version');
+  page.once('dialog',dialog=>dialog.accept());
+  await editor.getByRole('button',{name:'Close editor'}).click();
+  await expect(editor).toHaveCount(0);
 });

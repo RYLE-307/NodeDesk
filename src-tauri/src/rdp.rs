@@ -8,7 +8,8 @@ use std::{
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RdpTarget { pub host: String, pub port: u16, pub username: String }
+pub struct RdpTarget { pub host: String, pub port: u16, pub username: String,
+    pub rdp_sha256_fingerprint: Option<String> }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,8 +39,17 @@ fn endpoint(host: &str, port: u16) -> Result<String, String> {
     }
     Ok(format!("{host}:{port}"))
 }
+fn normalize_fingerprint(value: &str) -> Result<String, String> {
+    let bytes=value.as_bytes();
+    let plain=bytes.len()==64 && bytes.iter().all(u8::is_ascii_hexdigit);
+    let colon=bytes.len()==95 && bytes.iter().enumerate().all(|(i,b)|
+        if i%3==2 { *b==b':' } else { b.is_ascii_hexdigit() });
+    if !plain && !colon { return Err("Invalid RDP SHA256 certificate fingerprint".into()); }
+    Ok(value.bytes().filter(|b|*b!=b':').map(|b|(b as char).to_ascii_lowercase()).collect())
+}
 fn build_args(target: &RdpTarget, platform: Platform) -> Result<Vec<String>, String> {
     let server = endpoint(&target.host,target.port)?;
+    let fingerprint=target.rdp_sha256_fingerprint.as_deref().map(normalize_fingerprint).transpose()?;
     if target.username.len()>200 || target.username.chars().any(|c|c.is_control()) {
         return Err("Invalid RDP username".into());
     }
@@ -54,6 +64,7 @@ fn build_args(target: &RdpTarget, platform: Platform) -> Result<Vec<String>, Str
             // /cert:tofu or unrequested clipboard/drive/USB forwarding.
             let mut args=vec![format!("/v:{server}"), "+dynamic-resolution".into()];
             if !target.username.is_empty() { args.push(format!("/u:{}",target.username)); }
+            if let Some(pin)=fingerprint { args.push(format!("/cert:fingerprint:sha256:{pin}")); }
             Ok(args)
         }
     }
@@ -85,7 +96,7 @@ pub fn rdp_launch(target: RdpTarget) -> Result<LaunchInfo,String> {
 mod tests {
     use super::*;
     fn target(host:&str,port:u16,username:&str)->RdpTarget {
-        RdpTarget {host:host.into(),port,username:username.into()}
+        RdpTarget {host:host.into(),port,username:username.into(),rdp_sha256_fingerprint:None}
     }
     #[test] fn endpoints_validate_dns_ipv4_ipv6_and_reject_injection() {
         assert_eq!(endpoint("rdp.example.org",3389).unwrap(),"rdp.example.org:3389");
@@ -108,5 +119,27 @@ mod tests {
             assert!(!args.iter().any(|a|a.starts_with("/p:")||a.contains("cert:ignore")||a.contains("cert:tofu")||a.contains("password")));
         }
         assert!(build_args(&target("a",1,"user\nsecret"),Platform::Linux).is_err());
+    }
+    #[test] fn sha256_pin_is_normalized_and_only_passed_to_linux_freerdp() {
+        let mut t=target("192.168.2.223",3389,"");
+        t.rdp_sha256_fingerprint=Some("b3:fd:df:e2:a1:35:b7:00:cd:0f:8d:a6:b7:15:fa:59:3e:5a:6f:56:7b:f5:c9:4f:c6:d0:10:32:03:d8:68:67".into());
+        let pin="b3fddfe2a135b700cd0f8da6b715fa593e5a6f567bf5c94fc6d0103203d86867";
+        assert_eq!(build_args(&t,Platform::Linux).unwrap(),vec![
+            "/v:192.168.2.223:3389".to_string(),"+dynamic-resolution".to_string(),
+            format!("/cert:fingerprint:sha256:{pin}")]);
+        assert_eq!(build_args(&t,Platform::Windows).unwrap(),vec![
+            "/v:192.168.2.223:3389","/prompt","/public"]);
+        t.rdp_sha256_fingerprint=Some(pin.to_ascii_uppercase());
+        assert!(build_args(&t,Platform::Linux).unwrap().last().unwrap().ends_with(pin));
+    }
+    #[test] fn malformed_pins_are_rejected_even_on_windows() {
+        let mut t=target("win.lab",3389,"");
+        for bad in ["".into(), "a".into(), "a".repeat(63), "g".repeat(64),
+                    "a".repeat(65), "a".repeat(32),
+                    "/cert:ignore".into(), "aa:bb".into(), "a:".repeat(32)] {
+            t.rdp_sha256_fingerprint=Some(bad.into());
+            assert!(build_args(&t,Platform::Linux).is_err());
+            assert!(build_args(&t,Platform::Windows).is_err());
+        }
     }
 }

@@ -707,16 +707,17 @@ export default function App() {
                           ...value,
                           host: (value as Connection).host.trim(),
                           username: (value as Connection).username.trim(),
+                          rdpSha256Fingerprint: (value as Connection).protocol === "RDP"
+                            ? (value as Connection).rdpSha256Fingerprint : undefined,
                         } as Connection,
                       ],
                     };
               try {
-                decode(JSON.stringify(next));
+                const validated = decode(JSON.stringify(next));
+                if (commit(validated)) setEditor(null);
               } catch {
                 setInvalid(true);
-                return;
               }
-              if (commit(next)) setEditor(null);
             }}
           >
             <h2>{editor.kind === "group" ? t.group : t.add}</h2>
@@ -832,6 +833,13 @@ export default function App() {
                     }
                   />
                 </label>
+                {editor.value.protocol === "RDP" && <label>
+                  {data.language === "ru" ? "SHA256 отпечаток сертификата (Linux FreeRDP, необязательно)" : "Certificate SHA256 fingerprint (Linux FreeRDP, optional)"}
+                  <input aria-label="RDP SHA256 fingerprint" autoComplete="off" spellCheck={false}
+                    placeholder="64 hex or colon-separated pairs"
+                    value={editor.value.rdpSha256Fingerprint ?? ""}
+                    onChange={(e) => setEditor({ ...editor, value: { ...editor.value, rdpSha256Fingerprint: e.target.value || undefined } })}/>
+                </label>}
                 <label>
                   {t.group}
                   <select

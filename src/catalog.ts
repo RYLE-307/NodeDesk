@@ -8,6 +8,7 @@ export type Connection = {
   protocol: "SSH" | "RDP" | "VNC";
   groupId: string | null;
   favorite: boolean;
+  rdpSha256Fingerprint?: string;
 };
 export type Catalog = {
   version: 1;
@@ -28,6 +29,12 @@ export const emptyCatalog = (): Catalog => ({
 });
 const text = (v: unknown, max = 200): v is string =>
   typeof v === "string" && v.length <= max && !/[\u0000-\u001f]/.test(v);
+export function normalizeRdpFingerprint(value: string): string {
+  const compact = /^[0-9a-fA-F]{64}$/;
+  const pairs = /^(?:[0-9a-fA-F]{2}:){31}[0-9a-fA-F]{2}$/;
+  if (!compact.test(value) && !pairs.test(value)) throw new Error("invalid RDP SHA256 fingerprint");
+  return value.replaceAll(":", "").toLowerCase();
+}
 export function descendants(groups: Group[], id: string): Set<string> {
   const result = new Set([id]);
   let size = 0;
@@ -90,6 +97,11 @@ export function decode(raw: string): Catalog {
       (c.groupId !== null && !groupIds.has(c.groupId))
     )
       throw new Error("invalid");
+  for (const c of v.connections) {
+    if (c.rdpSha256Fingerprint !== undefined &&
+        (c.protocol !== "RDP" || typeof c.rdpSha256Fingerprint !== "string")) throw new Error("invalid");
+    if (c.rdpSha256Fingerprint !== undefined) normalizeRdpFingerprint(c.rdpSha256Fingerprint);
+  }
   if (
     !["ru", "en"].includes(v.language) ||
     !["dark", "light", "system"].includes(v.theme) ||
@@ -113,6 +125,8 @@ export function decode(raw: string): Catalog {
       protocol: c.protocol,
       groupId: c.groupId,
       favorite: c.favorite,
+      ...(c.protocol === "RDP" && c.rdpSha256Fingerprint !== undefined
+        ? { rdpSha256Fingerprint: normalizeRdpFingerprint(c.rdpSha256Fingerprint) } : {}),
     })),
     language: v.language,
     theme: v.theme,

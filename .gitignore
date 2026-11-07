@@ -25,6 +25,7 @@ coverage/
 
 /test-results/
 /playwright-report/
+/.pw-browsers/
 
 # Disposable local Guacamole QA lab: generated SQL contains RDP passwords.
 /tests/guacamole-lab/generated/

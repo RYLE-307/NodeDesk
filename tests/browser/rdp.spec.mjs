@@ -43,6 +43,20 @@ test("RDP never autoconnects; explicit launch sends only catalog target",async({
   await expect(workspace).toContainText("embedded viewer above requires a separately configured Guacamole/WSS gateway");
   await expect(workspace).toContainText("Verify the server certificate");
 });
+test("saved SHA256 pin reaches the launcher and invalid edits are refused",async({page})=>{
+  const workspace=await open(page);
+  const pin="B3:FD:DF:E2:A1:35:B7:00:CD:0F:8D:A6:B7:15:FA:59:3E:5A:6F:56:7B:F5:C9:4F:C6:D0:10:32:03:D8:68:67";
+  await page.locator(".connection-open").filter({hasText:"Fixture RDP"}).click({button:"right"});
+  await page.getByRole("menu").getByRole("button",{name:/Edit/}).click();
+  await page.getByRole("textbox",{name:"RDP SHA256 fingerprint"}).fill("/cert:ignore");
+  await page.getByRole("button",{name:"Save"}).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("textbox",{name:"RDP SHA256 fingerprint"}).fill(pin);
+  await page.getByRole("button",{name:"Save"}).click();
+  await workspace.getByRole("button",{name:"Open RDP"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls);
+  expect(calls.at(-1).args.target.rdpSha256Fingerprint).toBe(pin.replaceAll(":","").toLowerCase());
+});
 test("RU language and launch failures never imply authenticated RDP",async({page})=>{
   const workspace=await open(page,"ru",true);
   await expect(workspace).toBeVisible();

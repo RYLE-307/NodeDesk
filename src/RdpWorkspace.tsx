@@ -17,7 +17,7 @@ export function RdpWorkspace({ connection, language }: {connection:Connection;la
   const [status,setStatus]=useState("");
   useEffect(() => {
     setError("");setStatus("");
-  },[connection.host,connection.port,connection.username]);
+  },[connection.host,connection.port,connection.username,connection.rdpSha256Fingerprint]);
   async function launch() {
     if (launching) return;
     setError("");setStatus("");
@@ -28,7 +28,8 @@ export function RdpWorkspace({ connection, language }: {connection:Connection;la
     setLaunching(true);
     try {
       const result=await invoke<LaunchInfo>("rdp_launch",{target:{
-        host:connection.host,port:connection.port,username:connection.username
+        host:connection.host,port:connection.port,username:connection.username,
+        ...(connection.rdpSha256Fingerprint ? { rdpSha256Fingerprint: connection.rdpSha256Fingerprint } : {})
       }});
       setStatus(ru
         ? `Запущен внешний RDP-клиент: ${result.client}. Вход и проверка сертификата выполняются в его окне.`

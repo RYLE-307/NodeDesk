@@ -479,7 +479,7 @@ test('SFTP find is literal, selects UTF-8 text and replace selected stays local'
   await editor.getByRole('button',{name:'Close editor'}).click();
   await expect(editor).toBeVisible();
   await editor.getByRole('button',{name:'Edit text'}).click();
-  await expect(editor.getByRole('textbox',{name:'File text'})).toContainText('мир');
+  await expect(editor.getByRole('textbox',{name:'File text'})).toHaveValue(/мир/);
   expect(await editor.locator('svg').count()).toBe(0);
 });
 

@@ -4,6 +4,8 @@ import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
 import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, startBatch, updateBatchItem, finishBatch, visibleEntries, OperationGate } from "./filesModel";
 import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
+import {adjacentMatch, countLiteral, replaceAllLiteral, replaceLiteralSelection,
+  MAX_REPLACEMENTS, MAX_SEARCH_TERM} from "./textEditorSearch";
 
 export function FileBrowser({ connection, language }: { connection: Connection; language: "ru" | "en" }) {
   const ru = language === "ru";
@@ -47,9 +49,18 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [editDraft,setEditDraft] = useState("");
   const [saveName,setSaveName] = useState("");
   const [savedCopy,setSavedCopy] = useState<{name:string;sourceUnchanged:boolean}|null>(null);
+  const [findText,setFindText] = useState("");
+  const [replaceText,setReplaceText] = useState("");
+  const [searchNotice,setSearchNotice] = useState("");
+  const editorArea=useRef<HTMLTextAreaElement>(null);
+  const matchCount=useMemo(()=>countLiteral(editDraft,findText),[editDraft,findText]);
+  function clearEditor(){
+    setPreview(null);setEditing(false);setEditDraft("");
+    setSavedCopy(null);setFindText("");setReplaceText("");setSearchNotice("");
+  }
   const editBytes = new TextEncoder().encode(editDraft).length;
   function canDiscardEdits():boolean {
-    return !(preview && editing && editDraft!==preview.content) ||
+    return !(preview && editDraft!==preview.content) ||
       window.confirm(ru?"Несохранённые изменения исчезнут. Продолжить?":"Unsaved edits will be lost. Continue?");
   }
   const profile = JSON.stringify([connection.host,connection.port,connection.username]);
@@ -66,7 +77,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   useEffect(() => {
     if (interactive && !authReady) {
       stopQueue.current = true;
-      setRemote(null); setPreview(null); selectRemote(""); setBatchRemote([]);
+      setRemote(null); clearEditor(); selectRemote(""); setBatchRemote([]);
       const id=gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
     }
   }, [interactive,authReady]);
@@ -93,7 +104,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const next = JSON.stringify(destination);
     if (next === previous.current) return;
     previous.current = next; stopQueue.current = true; setBatchReport([]); setBatchFinished(false);
-    setRemote(null); setPreview(null); selectRemote(""); setBatchRemote([]); setRemotePath(".");
+    setRemote(null); clearEditor(); selectRemote(""); setBatchRemote([]); setRemotePath(".");
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
@@ -120,7 +131,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if(isRemote && !canDiscardEdits())return;
     if (isRemote && interactive && !authReady) { setError(ru ? "Сначала завершите вход для файлов." : "Complete Files login first."); return; }
     void run(id => invoke<Listing>("files_list",{id,destination:isRemote ? destination : null,path}), listing => {
-      if (isRemote) { setRemote(listing); setPreview(null); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
+      if (isRemote) { setRemote(listing); clearEditor(); setRemotePath(listing.path); selectRemote(""); setBatchRemote([]); }
       else { setLocal(listing); setLocalPath(listing.path); selectLocal(""); setBatchLocal([]); }
       setStatus(ru ? "Каталог прочитан" : "Directory loaded");
     });
@@ -235,14 +246,53 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     const name=nameOverride ?? remoteSelection;
     const entry=remote.entries.find(item=>item.name===name);
     if(!entry || entry.kind!=="file" || !portableName(name))return;
-    setPreview(null);
+    clearEditor();
     void run(id=>invoke<{name:string;content:string;bytes:number}>("files_preview",{
       id,request:{destination,directory:remote.path,name}
     }),view=>{
       setPreview(view); setEditing(false); setEditDraft(view.content);
       setSaveName(view.name+".edited"); setSavedCopy(null);
+      setFindText("");setReplaceText("");setSearchNotice("");
       setStatus(ru?"Текст прочитан только для просмотра":"Read-only text preview loaded");
     });
+  }
+  function jumpToMatch(direction:"next"|"previous"){
+    const area=editorArea.current;
+    if(!area || matchCount===0)return;
+    const cursor=direction==="next"?area.selectionEnd:area.selectionStart;
+    const match=adjacentMatch(editDraft,findText,cursor,direction);
+    if(!match)return;
+    area.focus();
+    area.setSelectionRange(match.start,match.end);
+    setSearchNotice(ru?"Совпадение выделено":"Match selected");
+  }
+  function replaceSelected(){
+    const area=editorArea.current;
+    if(!area || busy || matchCount===0)return;
+    const updated=replaceLiteralSelection(editDraft,findText,replaceText,area.selectionStart,area.selectionEnd);
+    if(updated===null){
+      setSearchNotice(ru?"Сначала выдели точное совпадение кнопкой поиска; размер не должен превышать 128 КиБ.":"Select an exact match with Find first; result must fit in 128 KiB.");
+      return;
+    }
+    const caret=area.selectionStart+replaceText.length;
+    setEditDraft(updated);setSavedCopy(null);
+    setSearchNotice(ru?"Заменено 1 совпадение (только в памяти)":"Replaced 1 match (in memory only)");
+    // Restores the edit cursor on the next commit without affecting remote data.
+    queueMicrotask(()=>{if(editorArea.current===area){area.focus();area.setSelectionRange(caret,caret);}});
+  }
+  function replaceAllMatches(){
+    if(busy || matchCount===0 || matchCount>MAX_REPLACEMENTS)return;
+    const updated=replaceAllLiteral(editDraft,findText,replaceText);
+    if(!updated){
+      setSearchNotice(ru?"Замена превышает лимит 128 КиБ или содержит недопустимые символы.":"Replacement exceeds 128 KiB or contains disallowed characters.");
+      return;
+    }
+    if(!window.confirm(ru
+      ? `Заменить ${updated.count} совпадений только в редакторе? На сервере ничего не сохранится.`
+      : `Replace ${updated.count} matches in the editor only? Nothing is saved to the server.`))return;
+    setEditDraft(updated.text);setSavedCopy(null);
+    setSearchNotice(ru?`Заменено: ${updated.count}. Для записи нужна отдельная команда сохранения копии.`:
+      `Replaced: ${updated.count}. Save as new copy is still required.`);
   }
   function saveEditedCopy(){
     if(!preview || !editing || !remote || busy || (interactive && !authReady))return;
@@ -471,16 +521,39 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           <button type="button" disabled={busy} onClick={()=>setEditing(!editing)}>
             {editing?(ru?"Только просмотр":"Read-only view"):(ru?"Редактировать":"Edit text")}
           </button>
-          <button type="button" disabled={busy} onClick={()=>{if(canDiscardEdits()){setPreview(null);setEditing(false);setEditDraft("");setSavedCopy(null);}}}>
+          <button type="button" disabled={busy} onClick={()=>{if(canDiscardEdits())clearEditor();}}>
             {ru?"Закрыть":"Close editor"}
           </button>
         </div>
       </div>
       {editing ? <>
         <label className="files-editor-label">{ru?"Текст файла":"File text"}
-          <textarea className="files-editor-textarea" aria-label={ru?"Текст файла":"File text"}
+          <textarea ref={editorArea} className="files-editor-textarea" aria-label={ru?"Текст файла":"File text"}
             spellCheck={false} value={editDraft} onChange={event=>{setEditDraft(event.target.value);setSavedCopy(null);}}/>
         </label>
+        <div className="files-editor-search" role="group" aria-label={ru?"Поиск и замена":"Find and replace"}>
+          <label>{ru?"Найти (точное совпадение)":"Find (literal, case-sensitive)"}
+            <input type="search" aria-label={ru?"Найти в тексте":"Find in text"} maxLength={MAX_SEARCH_TERM}
+              value={findText} onChange={e=>{setFindText(e.target.value);setSearchNotice("");}} />
+          </label>
+          <button type="button" disabled={!matchCount || busy}
+            onClick={()=>jumpToMatch("previous")}>{ru?"Назад":"Previous match"}</button>
+          <button type="button" disabled={!matchCount || busy}
+            onClick={()=>jumpToMatch("next")}>{ru?"Вперёд":"Next match"}</button>
+          <label>{ru?"Заменить на":"Replace with"}
+            <input type="text" aria-label={ru?"Текст замены":"Replacement text"}
+              maxLength={4096} value={replaceText} onChange={e=>setReplaceText(e.target.value)} />
+          </label>
+          <button type="button" disabled={!matchCount || busy} onClick={replaceSelected}>
+            {ru?"Заменить выделенное":"Replace selected"}
+          </button>
+          <button type="button" disabled={!matchCount || matchCount>MAX_REPLACEMENTS || busy}
+            onClick={replaceAllMatches}>{ru?"Заменить все…":"Replace all…"}</button>
+          <span role="status" aria-label={ru?"Совпадения":"Matches"}>
+            {ru?"Совпадений":"Matches"}: {matchCount>MAX_REPLACEMENTS?`>${MAX_REPLACEMENTS}`:matchCount}
+          </span>
+          {searchNotice && <p className="ssh-help" role="status">{searchNotice}</p>}
+        </div>
         <div className="files-editor-footer">
           <label>{ru?"Имя новой копии":"New copy filename"}<input aria-label={ru?"Имя новой копии":"New copy filename"}
             value={saveName} maxLength={255} onChange={event=>{setSaveName(event.target.value);setSavedCopy(null);}}/></label>

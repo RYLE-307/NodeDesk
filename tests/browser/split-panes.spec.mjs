@@ -13,6 +13,12 @@ test("two and four pane layouts keep distinct tabs and never auto-connect",async
   await expect(page.locator('.tab-pane[data-slot="1"]')).toContainText("One");
   await page.getByRole("button",{name:"Four panes"}).click();
   await expect(page.locator(".tab-pane:not([hidden])")).toHaveCount(4);
+  const column=page.getByRole("separator",{name:"Workspace pane width"});
+  await column.focus();await page.keyboard.press("ArrowRight");
+  await expect(column).toHaveAttribute("aria-valuenow","55");
+  const row=page.getByRole("separator",{name:"Workspace pane height"});
+  await row.focus();await page.keyboard.press("ArrowUp");
+  await expect(row).toHaveAttribute("aria-valuenow","45");
   const selections=await page.locator(".pane-choice").evaluateAll(items=>items.map(item=>item.value));
   expect(selections).toEqual(["One","Two","Three"]);
   await page.evaluate(()=>{window.movingPane=document.querySelector('.tab-pane[data-slot="2"]');});

@@ -344,6 +344,10 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .tab-pane { min-height:0; overflow:auto; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
 .pane-choice { max-width:160px; margin:4px; flex:none; }
 .pane-empty { margin:0; padding:16px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+.pane-divider { position:absolute; z-index:4; background:transparent; touch-action:none; }
+.pane-divider:hover,.pane-divider:focus-visible { background:var(--accent); opacity:.5; }
+.column-divider { top:0; bottom:0; width:8px; transform:translateX(-50%); cursor:col-resize; }
+.row-divider { left:0; right:0; height:8px; transform:translateY(-50%); cursor:row-resize; }
 .network-fields { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:12px 0; }
 .network-fields label { display:flex; flex-direction:column; gap:4px; }
 .network-fields input { max-width:260px; }

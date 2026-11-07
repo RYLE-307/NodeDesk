@@ -33,6 +33,8 @@ const labels = {
     openConnection: "Открыть вкладку",
     duplicate: "Дублировать",
     sidebarResize: "Ширина панели подключений",
+    paneWidth: "Ширина рабочих панелей",
+    paneHeight: "Высота рабочих панелей",
     actions: "Действия",
     moved: "Подключение перемещено",
     navigation: "Навигация",
@@ -97,6 +99,8 @@ const labels = {
     openConnection: "Open tab",
     duplicate: "Duplicate",
     sidebarResize: "Connection sidebar width",
+    paneWidth: "Workspace pane width",
+    paneHeight: "Workspace pane height",
     actions: "Actions",
     moved: "Connection moved",
     navigation: "Navigation",
@@ -151,6 +155,10 @@ const labels = {
 };
 const SIDEBAR_WIDTH_KEY = "nodedesk.sidebar.width.v1";
 const RECENT_KEY = "nodedesk.recent.v1";
+function readPaneRatio(key:string):number {
+  try {const value=Number(window.localStorage.getItem(key));return value>=20&&value<=80?value:50;}
+  catch{return 50;}
+}
 function readRecent():string[] {
   try {
     const value=JSON.parse(window.localStorage.getItem(RECENT_KEY)??"[]");
@@ -196,6 +204,8 @@ export default function App() {
     [secondary, setSecondary] = useState("");
   const [layout,setLayout]=useState<1|2|4>(1);
   const [extraPanes,setExtraPanes]=useState<[string,string]>(["",""]);
+  const [columnRatio,setColumnRatio]=useState(()=>readPaneRatio("nodedesk.panes.column.v1"));
+  const [rowRatio,setRowRatio]=useState(()=>readPaneRatio("nodedesk.panes.row.v1"));
   const [quickConnections,setQuickConnections] = useState<Record<string,Connection>>({});
   const [recentIds,setRecentIds] = useState(readRecent);
   const [menu, setMenu] = useState<string | null>(null);
@@ -402,6 +412,25 @@ export default function App() {
   function panePosition(index:number):React.CSSProperties {
     return layout===4?{gridColumn:index%2+1,gridRow:Math.floor(index/2)+1}:
       {gridColumn:layout===2?index+1:1,gridRow:1};
+  }
+  function resizePane(event:React.PointerEvent<HTMLDivElement>,axis:"column"|"row") {
+    if(!event.currentTarget.hasPointerCapture(event.pointerId))return;
+    const box=event.currentTarget.parentElement!.getBoundingClientRect();
+    const fraction=axis==="column"?(event.clientX-box.left)/box.width:(event.clientY-box.top)/box.height;
+    const value=Math.max(20,Math.min(80,Math.round(fraction*100)));
+    if(axis==="column")setColumnRatio(value);else setRowRatio(value);
+  }
+  function paneResizeKey(event:React.KeyboardEvent<HTMLDivElement>,axis:"column"|"row") {
+    const backward=axis==="column"?"ArrowLeft":"ArrowUp",forward=axis==="column"?"ArrowRight":"ArrowDown";
+    if(![backward,forward,"Home"].includes(event.key))return;
+    event.preventDefault();
+    const current=axis==="column"?columnRatio:rowRatio;
+    const next=event.key==="Home"?50:Math.max(20,Math.min(80,current+(event.key===forward?5:-5)));
+    if(axis==="column")setColumnRatio(next);else setRowRatio(next);
+    try{window.localStorage.setItem(`nodedesk.panes.${axis}.v1`,String(next));}catch{/* preference only */}
+  }
+  function savePaneRatio(axis:"column"|"row") {
+    try{window.localStorage.setItem(`nodedesk.panes.${axis}.v1`,String(axis==="column"?columnRatio:rowRatio));}catch{/* preference only */}
   }
   function moveTab(source:string,target:string) {
     if(source===target)return;
@@ -787,7 +816,9 @@ export default function App() {
             {tabs.filter(tab=>tab===id||![active,secondary,...extraPanes].includes(tab)).map(tab=><option key={tab} value={tab}>{tabTitle(tab)}</option>)}
           </select>)}
         </div>
-        <div className={`workspace ${layout===2?"split-workspace":layout===4?"quad-workspace":""}`}>
+        <div className={`workspace ${layout===2?"split-workspace":layout===4?"quad-workspace":""}`}
+          style={layout===1?undefined:{gridTemplateColumns:`minmax(0, ${columnRatio}fr) minmax(0, ${100-columnRatio}fr)`,
+            ...(layout===4?{gridTemplateRows:`minmax(0, ${rowRatio}fr) minmax(0, ${100-rowRatio}fr)`}:{})}}>
           {tabs.map(id=>{
             const slots=layout===1?[active]:layout===2?[active,secondary]:[active,secondary,...extraPanes];
             const index=slots.indexOf(id);
@@ -795,6 +826,20 @@ export default function App() {
           })}
           {(layout===1?[active]:layout===2?[active,secondary]:[active,secondary,...extraPanes]).map((id,index)=>!id&&
             <p className="pane-empty muted" key={index} style={panePosition(index)}>{t.emptyPane}</p>)}
+          {layout>1&&<div className="pane-divider column-divider" role="separator" tabIndex={0}
+            aria-label={t.paneWidth} aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={columnRatio}
+            style={{left:`${columnRatio}%`}}
+            onPointerDown={e=>{if(e.button===0)e.currentTarget.setPointerCapture(e.pointerId);}}
+            onPointerMove={e=>resizePane(e,"column")}
+            onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);savePaneRatio("column");}}
+            onKeyDown={e=>paneResizeKey(e,"column")}/>}
+          {layout===4&&<div className="pane-divider row-divider" role="separator" tabIndex={0}
+            aria-label={t.paneHeight} aria-orientation="horizontal" aria-valuemin={20} aria-valuemax={80} aria-valuenow={rowRatio}
+            style={{top:`${rowRatio}%`}}
+            onPointerDown={e=>{if(e.button===0)e.currentTarget.setPointerCapture(e.pointerId);}}
+            onPointerMove={e=>resizePane(e,"row")}
+            onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);savePaneRatio("row");}}
+            onKeyDown={e=>paneResizeKey(e,"row")}/>}
         </div>
         {data.monitoring && (
           <section className="monitor">

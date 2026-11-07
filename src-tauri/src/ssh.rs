@@ -290,11 +290,11 @@ mod tests {
         }
         assert!(local_command(TerminalKind::Ssh).is_err());
     }
+    #[cfg(unix)]
     #[test]
     fn local_shell_launches_inside_a_pty() {
         let (program,mut args)=local_command(TerminalKind::Local).unwrap();
-        #[cfg(windows)] args.extend(["-Command".into(),"Write-Output ND_LOCAL_PTY_OK".into()]);
-        #[cfg(not(windows))] args.extend(["-c".into(),"printf ND_LOCAL_PTY_OK".into()]);
+        args.extend(["-c".into(),"printf ND_LOCAL_PTY_OK".into()]);
         let pair=native_pty_system().openpty(size(80,24).unwrap()).unwrap();
         let mut command=CommandBuilder::new(program);
         command.args(args);
@@ -306,6 +306,15 @@ mod tests {
         loop {match reader.read(&mut chunk){Ok(0)|Err(_)=>break,Ok(n)=>bytes.extend_from_slice(&chunk[..n])}}
         assert_eq!(child.wait().unwrap().exit_code(),0);
         assert!(String::from_utf8_lossy(&bytes).contains("ND_LOCAL_PTY_OK"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_shell_runs_fixed_command() {
+        let (program,mut args)=local_command(TerminalKind::Local).unwrap();
+        args.extend(["-Command".into(),"Write-Output ND_LOCAL_SHELL_OK".into()]);
+        let output=std::process::Command::new(program).args(args).output().unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("ND_LOCAL_SHELL_OK"));
     }
     #[cfg(unix)]
     #[test]

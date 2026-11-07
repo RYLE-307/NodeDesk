@@ -63,7 +63,14 @@ the listener is fixed to 127.0.0.1, only unprivileged ports are accepted, and
 OpenSSH runs without a shell or password prompt using an already trusted host key
 and key/agent authentication. The tunnel stops with the tab or application.
 Remote/dynamic forwards, password/PAM tunnel auth and real target acceptance
-remain open. Linux CI uses its disposable trusted sshd fixture to pass bytes
+remain open.
+The next FS-02 foundation is an explicitly user-triggered **read-only** remote UTF-8
+preview in the SFTP Files pane (up to 128 KiB). It reuses authenticated and
+host-key-verified SFTP, checks regular-file type and before/after size/mtime,
+rejects binary/control text, and never writes or caches data persistently.
+The preview is cleared on close, profile change, and interactive login loss.
+A full remote editor with conflict-safe save, encoding selection and recovery
+remains open; native Windows/Arch preview acceptance is still pending. Linux CI uses its disposable trusted sshd fixture to pass bytes
 through the local forward to a loopback target; native Windows and user-owned
 target acceptance remain open.
 

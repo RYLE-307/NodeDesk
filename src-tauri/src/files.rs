@@ -317,7 +317,7 @@ fn decode_preview(bytes: Vec<u8>) -> Result<String> {
     if bytes.len() > PREVIEW_LIMIT {return Err("Preview exceeds 128 KiB limit".into());}
     if bytes.iter().any(|b| *b == 0) {return Err("Binary files cannot be previewed".into());}
     let content=String::from_utf8(bytes).map_err(|_|"Only UTF-8 text can be previewed".to_string())?;
-    if content.chars().any(|c| c.is_control() && !matches!(c,'\\n'|'\\r'|'\\t')) {
+    if content.chars().any(|c| c.is_control() && !matches!(c,'\n'|'\r'|'\t')) {
         return Err("Unsupported control characters in text preview".into());
     }
     Ok(content)
@@ -518,7 +518,7 @@ mod tests {
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
-        assert_eq!(decode_preview("Привет\\nworld".as_bytes().to_vec()).unwrap(),"Привет\\nworld");
+        assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
         assert!(decode_preview(b"binary\\0data".to_vec()).is_err());
         assert!(decode_preview(vec![0xff,0xfe]).is_err());
         assert!(decode_preview(vec![0x1b,0x5b,0x6d]).is_err());
@@ -618,9 +618,9 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
         // Read-only UTF-8 preview uses the same authenticated SFTP transport.
         let note="nodedesk-preview.txt";let note_path=wire::join(remote_path,note).unwrap();
-        fs::write(&note_path,"Тестовая заметка\\nsecond line").unwrap();
+        fs::write(&note_path,"Тестовая заметка\nsecond line").unwrap();
         let view=preview_remote(&mut c,remote_path,note,&op).unwrap();
-        assert_eq!(view.content,"Тестовая заметка\\nsecond line");
+        assert_eq!(view.content,"Тестовая заметка\nsecond line");
         assert_eq!(view.bytes,view.content.as_bytes().len());
         assert!(preview_remote(&mut c,remote_path,filename,&op).is_err());
         fs::write(remote.join("oversize.txt"),vec![b'x';PREVIEW_LIMIT+1]).unwrap();

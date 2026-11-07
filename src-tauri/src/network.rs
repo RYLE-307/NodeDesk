@@ -167,6 +167,58 @@ pub async fn network_trace(target:TraceTarget)->Result<TraceResult,String>{
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PortScanTarget {host:String,ports:Vec<u16>}
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct PortStatus {port:u16,reachable:bool}
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct PortScanResult {addresses:Vec<String>,results:Vec<PortStatus>,elapsed_ms:u128}
+
+fn validate_port_list(target:&PortScanTarget)->Result<(),String>{
+    if !valid_host(&target.host){return Err("Invalid diagnostic host".into());}
+    if target.ports.is_empty()||target.ports.len()>12{
+        return Err("Select 1 to 12 explicit TCP ports".into());
+    }
+    let mut seen=std::collections::HashSet::new();
+    for port in &target.ports{
+        if *port==0||!seen.insert(*port){
+            return Err("Invalid or repeated TCP port".into());
+        }
+    }
+    Ok(())
+}
+fn scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
+    validate_port_list(&target)?;
+    let started=Instant::now();
+    // Resolve once, then check only the specified ports; never scan ranges.
+    let addresses=resolve(&ProbeTarget{host:target.host,port:1})?
+        .into_iter().take(2).collect::<Vec<_>>();
+    let results=target.ports.into_iter().map(|port|{
+        let reachable=addresses.iter().any(|address|{
+            let mut endpoint=*address;
+            endpoint.set_port(port);
+            TcpStream::connect_timeout(&endpoint,Duration::from_millis(400)).is_ok()
+        });
+        PortStatus{port,reachable}
+    }).collect();
+    Ok(PortScanResult{
+        addresses:addresses.iter().map(|address|address.ip().to_string()).collect(),
+        results,
+        elapsed_ms:started.elapsed().as_millis()
+    })
+}
+#[tauri::command]
+pub async fn network_scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
+    tauri::async_runtime::spawn_blocking(move||scan_ports(target)).await
+        .map_err(|_|"Diagnostic worker failed".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +235,31 @@ mod tests {
         let result=probe(ProbeTarget{host:"127.0.0.1".into(),port}).unwrap();
         assert!(result.tcp_reachable);
         assert_eq!(result.addresses,vec!["127.0.0.1".to_string()]);
+    }
+    #[test]
+    fn multiport_rejects_invalid_hosts_duplicates_empty_large_lists_and_zero(){
+        for ports in [vec![],vec![0],vec![22,22],(1..=13).collect()]{
+            let target=PortScanTarget{host:"localhost".into(),ports};
+            assert!(validate_port_list(&target).is_err());
+        }
+        assert!(validate_port_list(&PortScanTarget{
+            host:"example.org;invalid".into(),ports:vec![22]
+        }).is_err());
+        assert!(validate_port_list(&PortScanTarget{
+            host:"localhost".into(),ports:vec![22,80,443]
+        }).is_ok());
+    }
+    #[test]
+    fn multiport_checks_only_explicit_ports_against_loopback_listener(){
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let result=scan_ports(PortScanTarget{
+            host:"127.0.0.1".into(),ports:vec![port]
+        }).unwrap();
+        assert_eq!(result.results.len(),1);
+        assert_eq!(result.results[0].port,port);
+        assert!(result.results[0].reachable);
+        assert_eq!(result.addresses,vec!["127.0.0.1"]);
     }
     #[test]
     fn traceroute_is_bounded_and_disallows_user_options(){

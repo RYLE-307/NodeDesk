@@ -29,16 +29,20 @@ test("trusted WSS VNC authenticates and paints pixels in the NodeDesk tab",async
   const canvas=viewer.locator(".vnc-embedded-surface canvas").first();
   await expect(canvas).toBeVisible();
   await expect.poll(()=>canvas.evaluate(c=>{
-    if(!c.width||!c.height)return false;
+    if(!c.width||!c.height)return `empty canvas ${c.width}x${c.height}`;
     const d=c.getContext("2d",{willReadFrequently:true})?.getImageData(0,0,c.width,c.height).data;
-    if(!d)return false;
+    if(!d)return "no 2D pixels";
+    let nonblack=0;
     for(let i=0;i<d.length;i+=4){
-      if(d[i+3]>0&&d[i+2]>60&&d[i+2]>d[i])return true;
+      if(d[i+3]>0&&d[i+2]>60&&d[i+2]>d[i])return "blue framebuffer pixels";
+      if(d[i+3]>0&&(d[i]||d[i+1]||d[i+2]))nonblack++;
     }
-    return false;
-  }),{timeout:30000}).toBe(true);
+    const middle=Math.floor(c.height/2)*c.width+Math.floor(c.width/2);
+    return `canvas ${c.width}x${c.height}, nonblack=${nonblack}, center=${[...d.slice(middle*4,middle*4+4)]}`;
+  }),{timeout:30000}).toBe("blue framebuffer pixels");
   await viewer.getByRole("checkbox",{name:"View only"}).check();
   await viewer.getByRole("checkbox",{name:"View only"}).uncheck();
   await viewer.getByRole("button",{name:"Disconnect",exact:true}).click();
   await expect(viewer.getByRole("button",{name:"Connect embedded"})).toBeVisible();
 });
+

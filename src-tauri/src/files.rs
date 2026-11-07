@@ -664,6 +664,16 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
     let events=Channel::<Progress>::new(|_|Ok(()));
     copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    // Native Windows ssh2 adapter also verifies the real partial-resume path.
+    let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();
+    let resume_part=wire::join(&home,&format!(".native-resume-{case}.part")).unwrap();
+    let h=c.open(&resume_part,2|8|32).unwrap();
+    c.write(&h,0,&bytes[..40000]).unwrap();c.close(&h).unwrap();
+    copy_upload_resume(&mut c,&source,&resume_remote,&resume_part,&op,&events).unwrap();
+    let resume_local=local.join("resumed.bin");
+    let resume_tmp=local.join(".resumed.part");
+    copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events).unwrap();
+    assert_eq!(fs::read(&resume_local).unwrap(),bytes);
     let target=local.join("download.bin");let partial=local.join(".download.part");
     copy_download(&mut c,&remote,&target,&partial,&op,&events).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
@@ -793,6 +803,35 @@ mod tests {
         let events = Channel::<Progress>::new(|_| Ok(()));
         copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
         assert_eq!(fs::read(&dest).unwrap(),bytes);
+        // Verified byte-offset upload: prefix is written through real SFTP v3,
+        // remainder is appended only after an exact prefix comparison.
+        let resume_dest=wire::join(remote_path,"resumed.bin").unwrap();
+        let resume_part=wire::join(remote_path,".resume-test.part").unwrap();
+        let partial_handle=c.open(&resume_part,2|8|32).unwrap();
+        c.write(&partial_handle,0,&bytes[..45000]).unwrap();
+        c.close(&partial_handle).unwrap();
+        copy_upload_resume(&mut c,&source,&resume_dest,&resume_part,&op,&events).unwrap();
+        assert_eq!(fs::read(&resume_dest).unwrap(),bytes);
+        assert!(!Path::new(&resume_part).exists());
+        assert!(copy_upload_resume(&mut c,&source,&resume_dest,&resume_part,&op,&events).is_err());
+        // Refuse a remote partial whose bytes differ, leaving it untouched.
+        let corrupt_dest=wire::join(remote_path,"corrupt-resume.bin").unwrap();
+        let corrupt_part=wire::join(remote_path,".corrupt-resume.part").unwrap();
+        let corrupt=vec![255_u8;40000];
+        let h=c.open(&corrupt_part,2|8|32).unwrap();
+        c.write(&h,0,&corrupt).unwrap();c.close(&h).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&corrupt_dest,&corrupt_part,&op,&events).is_err());
+        assert!(!Path::new(&corrupt_dest).exists());
+        assert_eq!(fs::read(&corrupt_part).unwrap(),corrupt);
+        // A destination collision must abort even if the partial matches.
+        let collision_dest=wire::join(remote_path,"existing-target.bin").unwrap();
+        fs::write(&collision_dest,b"untouched").unwrap();
+        let matching_part=wire::join(remote_path,".matching-part.bin").unwrap();
+        let h=c.open(&matching_part,2|8|32).unwrap();
+        c.write(&h,0,&bytes[..32768]).unwrap();c.close(&h).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&collision_dest,&matching_part,&op,&events).is_err());
+        assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
+        assert_eq!(fs::read(&matching_part).unwrap(),&bytes[..32768]);
         let listing = remote_list(&mut c,remote_path,&op).unwrap();
         assert!(listing.entries.iter().any(|e|e.name==filename && e.kind=="file"));
         let downloaded = local.join("download.bin"); let partial = local.join(".download.part");

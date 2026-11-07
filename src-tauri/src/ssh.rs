@@ -290,6 +290,23 @@ mod tests {
         }
         assert!(local_command(TerminalKind::Ssh).is_err());
     }
+    #[test]
+    fn local_shell_launches_inside_a_pty() {
+        let (program,mut args)=local_command(TerminalKind::Local).unwrap();
+        #[cfg(windows)] args.extend(["-Command".into(),"Write-Output ND_LOCAL_PTY_OK".into()]);
+        #[cfg(not(windows))] args.extend(["-c".into(),"printf ND_LOCAL_PTY_OK".into()]);
+        let pair=native_pty_system().openpty(size(80,24).unwrap()).unwrap();
+        let mut command=CommandBuilder::new(program);
+        command.args(args);
+        let mut reader=pair.master.try_clone_reader().unwrap();
+        let mut child=pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut bytes=Vec::new();
+        let mut chunk=[0u8;1024];
+        loop {match reader.read(&mut chunk){Ok(0)|Err(_)=>break,Ok(n)=>bytes.extend_from_slice(&chunk[..n])}}
+        assert_eq!(child.wait().unwrap().exit_code(),0);
+        assert!(String::from_utf8_lossy(&bytes).contains("ND_LOCAL_PTY_OK"));
+    }
     #[cfg(unix)]
     #[test]
     fn real_files_password_pam_bridge() {

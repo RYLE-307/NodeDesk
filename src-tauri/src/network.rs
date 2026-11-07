@@ -56,6 +56,6 @@ mod tests {
         let port=listener.local_addr().unwrap().port();
         let result=probe(ProbeTarget{host:"127.0.0.1".into(),port}).unwrap();
         assert!(result.tcp_reachable);
-        assert_eq!(result.addresses,["127.0.0.1"]);
+        assert_eq!(result.addresses,vec!["127.0.0.1".to_string()]);
     }
 }

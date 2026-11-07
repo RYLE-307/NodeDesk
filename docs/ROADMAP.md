@@ -9,7 +9,7 @@
 1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
 2. **Embedded or managed RDP:** investigate FreeRDP library/embedding and licensing, session lifecycle, reconnect, clipboard/fullscreen/multi-monitor. The launcher is not the final integration.
 3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. Embedded VNC and SSH/VPN tunnels follow later.
-4. **VPN:** explicit profile-driven user actions and integration with system VPN clients, no silent routing changes or stored plaintext secrets.
+4. **VPN system-profile manager (in PR #11):** read-only listing and manual connect/disconnect (with confirmation) of OS-owned profiles. Linux NetworkManager VPN/WireGuard; Windows current-user IKEv2/L2TP/SSTP with required encryption, existing OS credentials only. No profile editing, plaintext secrets or automatic routing changes. [V0.6 VPN](V0.6-VPN.md). Actual desktop VPN acceptance pending.
 5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
 
 

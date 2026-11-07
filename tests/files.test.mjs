@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, startBatch, updateBatchItem, finishBatch, OperationGate } from "../src/filesModel.ts";
+import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, startBatch, updateBatchItem, finishBatch, remainingBatchIndexes, retryBatchPlan, OperationGate } from "../src/filesModel.ts";
 
 test("reject traversal, Windows devices, alternate streams and control characters", () => {
   for (const name of ["", ".", "..", "a/b", "a\\b", "x:y", "NUL.txt", "COM1", "CONOUT$", "file.", "x\n", "\x1b[31m", "x*"]) {
@@ -90,4 +90,34 @@ test("ephemeral transfer report classifies completed, failed and not-started ite
   assert.equal(updateBatchItem(done,-1,"done").length,3);
   assert.equal(updateBatchItem(done,999,"done").length,3);
   assert.deepEqual(finishBatch(updateBatchItem(done,1,"active")).map(item=>item.state),["done","cancelled","skipped"]);
+});
+
+
+test("retry queue includes only incomplete items and validates refreshed source metadata",()=>{
+  const snapshots=[
+    {name:"a.bin",kind:"file",size:10,modified:123,permissions:384},
+    {name:"b.bin",kind:"file",size:20,modified:124,permissions:384},
+    {name:"c.bin",kind:"file",size:30,modified:125,permissions:384},
+  ];
+  const names=snapshots.map(file=>file.name);
+  const report=finishBatch([
+    {name:"a.bin",state:"done"},{name:"b.bin",state:"failed"},{name:"c.bin",state:"queued"}
+  ]);
+  const source={path:"/local",entries:snapshots};
+  const destination={path:"/remote",entries:[snapshots[0]]};
+  assert.deepEqual(remainingBatchIndexes(report),[1,2]);
+  assert.deepEqual(retryBatchPlan(names,report,source,destination,snapshots),
+    {indexes:[1,2],names:["b.bin","c.bin"]});
+  assert.throws(()=>retryBatchPlan(names,report,null,destination,snapshots),/Refresh/);
+  assert.throws(()=>retryBatchPlan(names,report,source,
+    {...destination,entries:[snapshots[0],snapshots[1]]},snapshots),/overwrite/);
+  assert.throws(()=>retryBatchPlan(names,report,
+    {...source,entries:[snapshots[0],{...snapshots[1],size:25},snapshots[2]]},
+    destination,snapshots),/metadata changed/);
+  assert.throws(()=>retryBatchPlan(names,[{name:"other",state:"failed"},...report.slice(1)],
+    source,destination,snapshots),/does not match/);
+  assert.throws(()=>retryBatchPlan(names,names.map(name=>({name,state:"done"})),
+    source,destination,snapshots),/No incomplete/);
+  assert.deepEqual(remainingBatchIndexes([{name:"a",state:"done"},
+    {name:"b",state:"cancelled"},{name:"c",state:"skipped"}]),[1,2]);
 });

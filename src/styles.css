@@ -491,3 +491,10 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .rdp-embedded-surface { background:#1c1c1c; border:1px solid var(--line); border-radius:6px; min-height:320px; height:min(62dvh,680px); overflow:auto; outline-offset:3px; }
 .rdp-embedded-surface:focus-visible { outline:2px solid currentColor; }
 .rdp-embedded-surface canvas { display:block; }
+
+
+/* Explicit, bounded read-only SFTP text preview. Never renders remote HTML. */
+.files-preview { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:6px; min-width:0; }
+.files-preview-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.files-preview-heading strong { overflow-wrap:anywhere; }
+.files-preview pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:340px; overflow:auto; border:1px solid var(--line); background:var(--panel); padding:12px; font-size:12px; user-select:text; }

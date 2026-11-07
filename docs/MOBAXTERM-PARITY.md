@@ -165,3 +165,15 @@ SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates
 password-change and mixed-method MFA chains remain unsupported. GUI acceptance
 on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
 accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).
+
+## v0.6 review slice: remote desktops
+
+- RDP catalog entries start external `mstsc.exe` (Windows) or `sdl-freerdp3`
+  (Arch) on explicit click. Not embedded; credentials belong to the viewer.
+- VNC catalog entries start external TigerVNC Viewer (Arch/Windows), restricting
+  direct negotiation to X509Vnc/X509Plain. No unencrypted or anonymous-VNC
+  fallback, clipboard, automatic reconnect, saved passwords or installed viewer
+  bundling. May not connect to legacy VNC-only servers without an audited tunnel.
+- Native GUI/manual connection and trust acceptance on Windows/Arch remain
+  outstanding. No claims of built-in RDP/VNC screens or session parity.
+- See [RDP](V0.6-RDP.md) and [VNC](V0.6-VNC.md).

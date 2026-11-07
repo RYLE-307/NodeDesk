@@ -1,5 +1,7 @@
 import {strict as assert} from "node:assert";
 import {setTimeout as sleep} from "node:timers/promises";
+import {setDefaultResultOrder} from "node:dns";
+setDefaultResultOrder("ipv4first"); // Docker exposes localhost only on 127.0.0.1
 import {
   guacLogin,guacConnections,guacLogout,guacTunnelQuery,guacWssTunnel
 } from "../../src/guacamoleAuth.ts";
@@ -13,14 +15,19 @@ if(!user||!password||!process.env.NODE_EXTRA_CA_CERTS){
 const timeoutMs=45000;
 
 async function waitForServer(){
+  let lastStatus="none",lastCode="none";
   for(let attempt=0;attempt<90;attempt++){
     try{
       const res=await fetch(new URL("api/tokens",base),{method:"GET",redirect:"error"});
+      lastStatus=String(res.status);
       if(res.status<500)return;
-    }catch{/* container not ready yet */}
+    }catch(e){
+      // Diagnostic code only; never log credentials, HTTP bodies or tokens.
+      lastCode=String(e?.cause?.code||e?.name||"unknown");
+    }
     await sleep(1000);
   }
-  throw new Error("Guacamole HTTPS gateway did not become ready");
+  throw new Error("Guacamole HTTPS readiness failed: HTTP "+lastStatus+"; TLS/network "+lastCode);
 }
 
 function assertGuacamoleSession(url){

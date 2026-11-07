@@ -36,6 +36,7 @@ function assertGuacamoleSession(url){
     // the disposable test CA; no insecure TLS verification overrides.
     const socket=new WebSocket(url,"guacamole");
     let ready=false,frame=false,done=false;
+    const seen=[];
     const timer=setTimeout(()=>finish(new Error("Guacamole RDP session did not produce a framebuffer handshake")),timeoutMs);
     function finish(err){
       if(done)return;
@@ -44,9 +45,16 @@ function assertGuacamoleSession(url){
       if(err)reject(err);else resolve({ready,frame});
     }
     socket.addEventListener("error",()=>finish(new Error("Guacamole WSS connection failed")));
-    socket.addEventListener("close",()=>finish(new Error("Guacamole WSS closed before framebuffer handshake")));
+    socket.addEventListener("close",event=>finish(new Error(
+      "Guacamole WSS closed before framebuffer handshake; close="+
+      event.code+"; instructions="+seen.join(","))));
     socket.addEventListener("message",event=>{
       const chunk=String(event.data);
+      // Record only Guacamole instruction opcodes, never argument bodies,
+      // usernames, the tunnel auth token or remote error descriptions.
+      for(const match of chunk.matchAll(/(?:^|;)\\d+\\.([a-z]+)(?:,|;)/g)){
+        if(seen.length<20)seen.push(match[1]);
+      }
       if(chunk.includes("5.ready,"))ready=true;
       if(chunk.includes("4.size,")||chunk.includes("4.sync,")||chunk.includes("3.img,"))frame=true;
       // The first server sync may require a client acknowledgement before

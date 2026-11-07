@@ -18,7 +18,7 @@ test("replacement is literal and only works with an exact selection",()=>{
   const text="a.b a.b";
   assert.equal(replaceLiteralSelection(text,"a.b","ok",0,3),"ok a.b");
   assert.equal(replaceLiteralSelection(text,"a.b","ok",0,2),null);
-  assert.equal(replaceLiteralSelection(text,"a.b","ok",4,7),null);
+  assert.equal(replaceLiteralSelection(text,"a.b","ok",4,7),"a.b ok");
   assert.deepEqual(replaceAllLiteral(text,"a.b","$&"),{text:"$& $&",count:2});
   assert.deepEqual(replaceAllLiteral("один один","один","два"),{text:"два два",count:2});
   assert.equal(replaceAllLiteral("abc","", "anything"),null);

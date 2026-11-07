@@ -199,9 +199,22 @@ compare all retained bytes to the remote source BEFORE appending, then fetch
 only the remaining suffix. Before a no-overwrite local hard-link publish,
 NodeDesk checks the full downloaded contents byte-for-byte via a new SFTP read.
 Source changes, missing/unsafe or corrupt partials fail closed; no silent
-cleanup of retained failed-batch partials. Persistent checkpointing, resuming
-after app restart, cryptographic provenance for long-lived partials, and
-native Windows/Arch GUI manual acceptance are still planned. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+cleanup of retained failed-batch partials. Draft PR #11 now adds a first
+**opt-in, local recovery checkpoint** for the latest incomplete batch per
+SSH endpoint (up to 8 endpoints, 7-day expiry). Checkpoints are updated before
+each network write and at per-file transitions; an active file is treated
+as cancelled on restore. The checkpoint stores **unencrypted metadata only**:
+host/port/user, local and remote paths, filenames, source size/mtime/mode,
+completion states and previous random operation ID. Never store file contents,
+passwords, session cookies, private keys or auth session IDs. Restoring the
+record **does not connect or transfer**: the user must authenticate normally,
+load the checkpoint, refresh both panes, pass source/destination checks and
+confirm retry or byte-verified resume. A collision or changed file stops recovery.
+The metadata is explicitly removable. This is not a persistent background
+transfer service: no jobs run after app restart, and recovery only resumes the
+latest unfinished upload/download, not a catalog of unattended jobs.
+Native Windows/Arch GUI manual acceptance, crash/large-file stress and stronger
+provenance against malicious concurrent writers remain open. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
 
 ### v0.5 review addition: transfer visibility
 

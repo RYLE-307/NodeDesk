@@ -50,8 +50,11 @@ Windows/Linux acceptance is pending. An explicitly triggered, bounded system
 traceroute is also provided: Windows tracert.exe (8 hops, 500 ms per probe) or
 Linux /usr/bin/traceroute (12 hops, one probe per hop), with a 25-second hard
 timeout. An absent platform tool reports an error without fallback to a shell.
-DNS cancellation, multi-port scans, persistent reports and reverse-DNS enrichment
-are still planned.
+An explicit list of 1–12 unique TCP ports can also be checked on one manually entered host.
+This never expands ranges, resolves the host once, checks at most two returned IP addresses,
+and limits each TCP attempt to 400 ms. No connection is attempted on page load.
+DNS cancellation, range scans, persistent reports and reverse-DNS enrichment
+are still planned. ICMP and TCP results do not establish complete host availability.
 Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
 requires confirmation because pasted commands may execute immediately. Clipboard
 copy/link handling, persisted font preferences and native acceptance remain open.

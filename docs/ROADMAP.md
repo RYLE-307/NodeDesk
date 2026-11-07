@@ -36,6 +36,10 @@ Workspace split (UI-03/UI-07) now has one, two and four independently selected
 panes. A tab keeps the same mounted component when moved between panes, so an
 active terminal is not closed by the layout change. Pane size adjustment and
 native desktop acceptance remain outstanding.
+Network diagnostics (NET-01) now resolves a manually entered host and probes
+one manually entered TCP port, with bounded connection attempts and no
+background requests or port ranges. Ping, traceroute, cancelable DNS and
+multi-port scans are still planned.
 
 ## v0.6 priorities
 

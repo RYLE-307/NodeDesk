@@ -344,6 +344,10 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .tab-pane { min-height:0; overflow:auto; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
 .pane-choice { max-width:160px; margin:4px; flex:none; }
 .pane-empty { margin:0; padding:16px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+.network-fields { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:12px 0; }
+.network-fields label { display:flex; flex-direction:column; gap:4px; }
+.network-fields input { max-width:260px; }
+.network-fields input[type="number"] { width:110px; }
 
 /* SSH authentication selection is local to an open terminal tab; never persisted. */
 .ssh-auth { display:flex; align-items:center; gap:6px; font-size:12px; }

@@ -3,6 +3,7 @@ import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
+import { NetworkWorkspace } from "./NetworkWorkspace";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -165,6 +166,7 @@ function readSidebarWidth(): number {
 }
 const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
 const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
+const NETWORK_TAB = "__nodedesk_network__";
 type Editor =
   | { kind: "group"; value: Group }
   | { kind: "connection"; value: Connection }
@@ -515,11 +517,13 @@ export default function App() {
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
       id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
+      id === NETWORK_TAB ? (data.language === "ru" ? "Диагностика сети" : "Network diagnostics") :
       (data.connections.find((c) => c.id === id)?.name ?? quickConnections[id]?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
+    if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
@@ -649,6 +653,11 @@ export default function App() {
                 className={active === LOCAL_SHELL_TAB ? "selected" : ""}
                 onClick={() => open(LOCAL_SHELL_TAB)}>
                 <Icon name="SSH"/> {data.language === "ru" ? "Локальный терминал" : "Local terminal"}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Диагностика сети" : "Network diagnostics"}
+                className={active === NETWORK_TAB ? "selected" : ""}
+                onClick={() => open(NETWORK_TAB)}>
+                <Icon name="VPN"/> {data.language === "ru" ? "Диагностика сети" : "Network diagnostics"}
               </button>
 
             </div>

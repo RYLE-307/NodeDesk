@@ -32,6 +32,10 @@ Open workspace tabs (UI-02) can now be reordered by drag/drop or Alt+Left/Right
 without changing saved catalog entries or starting connections.
 Recent (UI-06) stores only the last 20 catalog IDs in local preferences,
 filters deleted entries and never records Quick Connect destinations.
+Workspace split (UI-03/UI-07) now has one, two and four independently selected
+panes. A tab keeps the same mounted component when moved between panes, so an
+active terminal is not closed by the layout change. Pane size adjustment and
+native desktop acceptance remain outstanding.
 
 ## v0.6 priorities
 

@@ -338,8 +338,12 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .secondary-selector { position:absolute; right:16px; top:48px; z-index:1; }
 .workspace { position:relative; }
 
-.workspace { display:flex; }
-.split-workspace { display:flex; }
+.workspace { display:grid; grid-template-columns:minmax(0,1fr); }
+.workspace.split-workspace { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.workspace.quad-workspace { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(2,minmax(0,1fr)); }
+.tab-pane { min-height:0; overflow:auto; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+.pane-choice { max-width:160px; margin:4px; flex:none; }
+.pane-empty { margin:0; padding:16px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
 
 /* SSH authentication selection is local to an open terminal tab; never persisted. */
 .ssh-auth { display:flex; align-items:center; gap:6px; font-size:12px; }

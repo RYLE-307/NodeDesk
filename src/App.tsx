@@ -68,6 +68,8 @@ const labels = {
     close: "Закрыть",
     split: "Разделить",
     unsplit: "Одна панель",
+    quad: "Четыре панели",
+    emptyPane: "Выберите вкладку",
     loadError:
       "Не удалось прочитать каталог. Исходные данные сохранены; изменения заблокированы. Исправьте хранилище и повторите загрузку.",
     saveError:
@@ -130,6 +132,8 @@ const labels = {
     close: "Close",
     split: "Split",
     unsplit: "Single pane",
+    quad: "Four panes",
+    emptyPane: "Choose a tab",
     loadError:
       "Could not read catalog. Original data is preserved; changes are blocked. Repair storage and reload.",
     saveError:
@@ -188,6 +192,8 @@ export default function App() {
   const [tabs, setTabs] = useState<string[]>([]),
     [active, setActive] = useState(""),
     [secondary, setSecondary] = useState("");
+  const [layout,setLayout]=useState<1|2|4>(1);
+  const [extraPanes,setExtraPanes]=useState<[string,string]>(["",""]);
   const [quickConnections,setQuickConnections] = useState<Record<string,Connection>>({});
   const [recentIds,setRecentIds] = useState(readRecent);
   const [menu, setMenu] = useState<string | null>(null);
@@ -262,6 +268,7 @@ export default function App() {
       if(!window.confirm(t.importConfirm))return;
       if(commit(imported)) {
         setTabs([]);setActive("");setSecondary("");setQuickConnections({});
+        setLayout(1);setExtraPanes(["",""]);
         setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
         setNotice(t.importDone);
       }
@@ -343,6 +350,7 @@ export default function App() {
       setTabs([]);
       setActive("");
       setSecondary("");
+      setLayout(1);setExtraPanes(["",""]);
       setFilter("all");
     } catch {
       setError("loadError");
@@ -354,7 +362,7 @@ export default function App() {
   }
   function open(id: string) {
     setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    setActive(id);
+    activateTab(id);
     if(data.connections.some(c=>c.id===id)){
       const next=[id,...recentIds.filter(x=>x!==id)].slice(0,20);
       try{window.localStorage.setItem(RECENT_KEY,JSON.stringify(next));}catch{/* preference only */}
@@ -364,8 +372,34 @@ export default function App() {
   function close(id: string) {
     setTabs((prev) => prev.filter((x) => x !== id));
     setQuickConnections(prev => { const next={...prev}; delete next[id]; return next; });
-    if (active === id) setActive(tabs.find((x) => x !== id) ?? "");
+    if (active === id) setActive(tabs.find((x) => x !== id && x !== secondary && !extraPanes.includes(x)) ?? "");
     if (secondary === id) setSecondary("");
+    if(extraPanes.includes(id))setExtraPanes(prev=>prev.map(x=>x===id?"":x) as [string,string]);
+  }
+  function activateTab(id:string) {
+    if(secondary===id)setSecondary(active);
+    else if(extraPanes.includes(id))setExtraPanes(prev=>prev.map(x=>x===id?active:x) as [string,string]);
+    setActive(id);
+  }
+  function setPane(index:number,id:string) {
+    const current=[active,secondary,...extraPanes];
+    if(id && current.some((value,i)=>i!==index&&value===id))return;
+    if(index===0)setActive(id);
+    else if(index===1)setSecondary(id);
+    else setExtraPanes(prev=>index===2?[id,prev[1]]:[prev[0],id]);
+  }
+  function split() {
+    if(layout!==1){setLayout(1);setSecondary("");setExtraPanes(["",""]);return;}
+    setSecondary(tabs.find(id=>id!==active)??"");setLayout(2);
+  }
+  function fourPanes() {
+    const used=new Set([active,secondary]);
+    const available=tabs.filter(id=>!used.has(id));
+    setExtraPanes([available[0]??"",available[1]??""]);setLayout(4);
+  }
+  function panePosition(index:number):React.CSSProperties {
+    return layout===4?{gridColumn:index%2+1,gridRow:Math.floor(index/2)+1}:
+      {gridColumn:layout===2?index+1:1,gridRow:1};
   }
   function moveTab(source:string,target:string) {
     if(source===target)return;
@@ -717,7 +751,7 @@ export default function App() {
               <button
                 aria-pressed={active === id}
                 onKeyDown={e=>{if(e.altKey&&["ArrowLeft","ArrowRight"].includes(e.key)){e.preventDefault();const index=tabs.indexOf(id);const adjacent=tabs[index+(e.key==="ArrowLeft"?-1:1)];if(adjacent)moveTab(id,adjacent);}}}
-                onClick={() => setActive(id)}
+                onClick={() => activateTab(id)}
               >
                 {tabTitle(id)}
               </button>
@@ -732,30 +766,26 @@ export default function App() {
           {active && (
             <button
               className="split"
-              onClick={() => setSecondary(secondary ? "" : active)}
+              onClick={split}
             >
-              {secondary ? t.unsplit : t.split}
+              {layout===1 ? t.split : t.unsplit}
             </button>
           )}
+          {layout===2 && <button type="button" onClick={fourPanes}>{t.quad}</button>}
+          {layout>1 && (layout===2?[secondary]:[secondary,...extraPanes]).map((id,offset)=><select key={offset} className="pane-choice"
+            aria-label={`${t.tabs} ${offset+2}`} value={id} onChange={e=>setPane(offset+1,e.target.value)}>
+            <option value="">{t.emptyPane}</option>
+            {tabs.filter(tab=>tab===id||![active,secondary,...extraPanes].includes(tab)).map(tab=><option key={tab} value={tab}>{tabTitle(tab)}</option>)}
+          </select>)}
         </div>
-        <div className={`workspace ${secondary ? "split-workspace" : ""}`}>
-          {tabs.map(id => <div className="tab-pane" key={id} hidden={id !== active && id !== secondary}>{pane(id)}</div>)}
-          {secondary && (
-            <div className="secondary-selector">
-              <select
-                aria-label={t.tabs}
-                value={secondary}
-                onChange={(e) => setSecondary(e.target.value)}
-              >
-                {tabs.map((id) => (
-                  <option key={id} value={id}>
-                    {tabTitle(id)}
-                  </option>
-                ))}
-              </select>
-
-            </div>
-          )}
+        <div className={`workspace ${layout===2?"split-workspace":layout===4?"quad-workspace":""}`}>
+          {tabs.map(id=>{
+            const slots=layout===1?[active]:layout===2?[active,secondary]:[active,secondary,...extraPanes];
+            const index=slots.indexOf(id);
+            return <div className="tab-pane" key={id} hidden={index<0} data-slot={index} style={index<0?undefined:panePosition(index)}>{pane(id)}</div>;
+          })}
+          {(layout===1?[active]:layout===2?[active,secondary]:[active,secondary,...extraPanes]).map((id,index)=>!id&&
+            <p className="pane-empty muted" key={index} style={panePosition(index)}>{t.emptyPane}</p>)}
         </div>
         {data.monitoring && (
           <section className="monitor">

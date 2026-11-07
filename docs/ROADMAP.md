@@ -1,6 +1,6 @@
 # План разработки
 
-> **Current review: v0.6.0-alpha.0 — RDP external-launch MVP (draft PR #11).**
+> **Current review: v0.6.0-alpha.0 — external RDP and TigerVNC launchers (draft PR #11).**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 
@@ -8,7 +8,7 @@
 
 1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
 2. **Embedded or managed RDP:** investigate FreeRDP library/embedding and licensing, session lifecycle, reconnect, clipboard/fullscreen/multi-monitor. The launcher is not the final integration.
-3. **VNC:** select an auditable cross-platform viewer and implement real authentication and disconnect testing.
+3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. Embedded VNC and SSH/VPN tunnels follow later.
 4. **VPN:** explicit profile-driven user actions and integration with system VPN clients, no silent routing changes or stored plaintext secrets.
 5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
 

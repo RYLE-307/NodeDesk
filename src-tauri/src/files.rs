@@ -293,6 +293,66 @@ pub async fn files_mutate(id: String, mut request: Mutation, app: tauri::AppHand
         }
     }).await.map_err(|_| "File mutation task failed".to_string())?
 }
+/// Explicit, guarded POSIX permissions only. Never target symlinks,
+/// devices or special bits. The listing snapshot must still match before
+/// modifying any remote object. SFTP v3 cannot prevent hostile path races.
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ChangePermissions {
+    destination: Destination,
+    directory: String,
+    name: String,
+    expected_kind: String,
+    expected_permissions: u32,
+    expected_size: Option<u64>,
+    expected_modified: Option<u64>,
+    mode: u32,
+}
+fn remote_chmod(c: &mut Sftp, request: &ChangePermissions, op: &Operation) -> Result<()> {
+    if request.mode > 0o777 {
+        return Err("Only ordinary POSIX mode bits 000–777 are supported".into());
+    }
+    expected_kind(&request.expected_kind)?;
+    wire::path(&request.directory)?;
+    wire::name(&request.name)?;
+    let parent=c.realpath(&request.directory)?;op.check()?;
+    let target=wire::join(&parent,&request.name)?;
+    let before=c.lstat(&target)?;
+    if before.kind()!=request.expected_kind ||
+        before.permissions!=Some(request.expected_permissions) ||
+        before.size!=request.expected_size ||
+        before.modified.map(u64::from)!=request.expected_modified {
+        return Err("Remote entry metadata changed; refresh before modifying permissions".into());
+    }
+    if before.permissions.unwrap_or(0) & 0o7000 != 0 {
+        return Err("Cannot modify an entry with special permission bits".into());
+    }
+    if before.permissions.unwrap_or(0) & 0o777 == request.mode {
+        return Err("Choose a different permission mode".into());
+    }
+    op.check()?;
+    c.set_permissions(&target,request.mode)?;
+    op.check()?;
+    let after=c.lstat(&target)?;
+    if after.kind()!=request.expected_kind ||
+        after.permissions.map(|mode|mode & 0o777)!=Some(request.mode) {
+        return Err("Remote server did not confirm requested mode; refresh listing".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn files_chmod(id:String, mut request:ChangePermissions, app:tauri::AppHandle)->Result<()> {
+    wire::name(&request.name)?;wire::path(&request.directory)?;
+    if request.mode>0o777{return Err("Unsupported permission bits".into());}
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        remote_chmod(&mut client,&request,&guard.op)
+    }).await.map_err(|_|"Permission-change task failed".to_string())?
+}
+
 #[tauri::command]
 pub async fn files_list(id: String, mut destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
     if let Some(d)=&mut destination { resolve_auth(d,&app)?; }
@@ -1192,6 +1252,32 @@ mod tests {
         assert!(remote.join("renamed folder").is_dir());
         assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Rename,Some(filename),Some("directory"),&op).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes);
+        let chmod_before=c.lstat(&dest).unwrap();
+        assert!(chmod_before.permissions.is_some(),"SFTP must report POSIX permissions");
+        let original_mode=chmod_before.permissions.unwrap();
+        let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
+        let chmod=ChangePermissions {
+            destination:Destination{host:String::new(),port:0,username:String::new(),
+                auth_session:None,control:None,native:None},
+            directory:remote_path.to_string(),name:filename.to_string(),
+            expected_kind:"file".into(),expected_permissions:original_mode,
+            expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),
+            mode:different
+        };
+        remote_chmod(&mut c,&chmod,&op).unwrap();
+        let updated=c.lstat(&dest).unwrap();
+        assert_eq!(updated.permissions.unwrap() & 0o777,different);
+        assert!(remote_chmod(&mut c,&chmod,&op).is_err(),"stale listing rejected");
+        let mut malicious=ChangePermissions{mode:0o4755,..chmod};
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"special bits rejected");
+        malicious.mode=0o600;malicious.name="../outside".into();
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"traversal rejected");
+        malicious.name="link".into();malicious.expected_kind="file".into();
+        // The symlink fixture appears later; create one for this test, then remove it.
+        std::os::unix::fs::symlink(&dest,remote.join("chmod-link")).unwrap();
+        malicious.name="chmod-link".into();
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"symlink must be refused");
+        fs::remove_file(remote.join("chmod-link")).unwrap();
         fs::write(remote.join("renamed folder").join("child"),b"x").unwrap();
         assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).is_err());
         remote_mutate(&mut c,&format!("{remote_path}/renamed folder"),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();

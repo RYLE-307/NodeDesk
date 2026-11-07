@@ -522,6 +522,40 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         : (ru?"Копия создана, но исходный файл изменился — проверь обе версии":"Copy created, but original changed — inspect both versions"));
     });
   }
+  function changeRemotePermissions(entry:FileEntry){
+    setContext(null);
+    if(busy || (interactive && !authReady) || !remote || !portableName(entry.name) ||
+      !["file","directory"].includes(entry.kind) || entry.permissions==null)return;
+    if(!canDiscardEdits())return;
+    const initial=(entry.permissions & 0o777).toString(8).padStart(3,"0");
+    const supplied=window.prompt(ru
+      ? `Права POSIX для ${entry.name} (только 000–777, без специальных битов):`
+      : `POSIX permissions for ${entry.name} (000–777 only, no special bits):`,initial);
+    if(supplied===null)return;
+    if(!/^(?:0)?[0-7]{3}$/.test(supplied)){
+      setError(ru?"Требуется трёхзначный восьмеричный режим, например 640.":
+        "Enter three octal digits, e.g. 640; no setuid, setgid or sticky flags.");
+      return;
+    }
+    const mode=Number.parseInt(supplied,8);
+    if(mode===(entry.permissions & 0o777))return;
+    const worldWritable=!!(mode & 0o002);
+    const warning=worldWritable
+      ? (ru?"\nВНИМАНИЕ: запись разрешена всем пользователям.":"\nWARNING: world-writable permissions.")
+      : "";
+    if(!window.confirm(ru
+      ? `Изменить права удалённого ${entry.kind==="directory"?"каталога":"файла"} ${entry.name} в ${remote.path} с ${initial} на ${supplied}?${warning}\nБез автоматической отмены.`
+      : `Change permissions of remote ${entry.kind} ${entry.name} in ${remote.path} from ${initial} to ${supplied}?${warning}\nThis cannot be automatically undone.`))return;
+    const directory=remote.path;
+    void run(id=>invoke("files_chmod",{id,request:{
+      destination,directory,name:entry.name,expectedKind:entry.kind,
+      expectedPermissions:entry.permissions,expectedSize:entry.size,
+      expectedModified:entry.modified,mode
+    }}),()=>{
+      setRemote(null);selectRemote("");setBatchRemote([]);
+      setStatus(ru?"Права изменены; список обновлён":"Permissions changed; listing refreshed");
+    }).then(ok=>{if(ok && mounted.current)list(true,directory);});
+  }
   function mutate(isRemote: boolean, action: "mkdir" | "rename" | "delete", nameOverride?: string|null) {
     setContext(null);
     if(isRemote && !canDiscardEdits())return;
@@ -854,6 +888,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
           onClick={() => mutate(context.isRemote,"rename",context.name)}>{ru ? "Переименовать" : "Rename"}</button>
         <button role="menuitem" type="button" disabled={!allowed || !valid}
           onClick={() => mutate(context.isRemote,"delete",context.name)}>{ru ? "Удалить…" : "Delete…"}</button>
+        {context.isRemote && <button role="menuitem" type="button"
+          disabled={!allowed || !valid || entry?.permissions==null}
+          onClick={()=>{if(entry)changeRemotePermissions(entry);}}>
+          {ru?"Изменить права…":"Change permissions…"}
+        </button>}
         {context.isRemote && <button role="menuitem" type="button"
           disabled={!allowed || !valid || entry?.kind!=="file"}
           onClick={()=>previewRemote(context.name)}>

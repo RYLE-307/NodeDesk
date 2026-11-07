@@ -20,7 +20,7 @@ async function open(page, language='en', caps={interactiveLogin:true,keyAgent:tr
             originalName:args.request.originalName,newName:args.request.newName,
             directory:args.request.directory,destination:args.request.destination,
             changed:args.request.content!==args.request.originalContent
-          } : ['files_mutate','files_transfer','files_preview'].includes(cmd)?args?.request:undefined
+          } : ['files_mutate','files_transfer','files_preview','files_chmod'].includes(cmd)?args?.request:undefined
         });
         if (cmd==='files_capabilities') return window.fixture.caps;
         if (cmd==='ssh_connect') {window.fixture.session=args.id; window.fixture.loginAuth=args.auth; return;}
@@ -988,4 +988,37 @@ test('SFTP recovery requires opt-in and forgetting a checkpoint never deletes pa
   // Opting in after a failed operation never invents a previous checkpoint.
   expect(await page.evaluate(()=>localStorage.getItem('nodedesk.sftp.recovery.v1'))).toBeNull();
   await files.getByRole('checkbox',{name:'Keep queue recovery'}).uncheck();
+});
+
+
+test('remote POSIX chmod requires valid octal input and a separate confirmation',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click({button:'right'});
+  const action=files.getByRole('menuitem',{name:'Change permissions…'});
+  await expect(action).toBeEnabled();
+  page.once('dialog',d=>d.accept('4755'));
+  await action.click();
+  await expect(files.getByRole('alert')).toContainText('three octal digits');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'))).toHaveLength(0);
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click({button:'right'});
+  page.once('dialog',d=>d.accept('777'));
+  page.once('dialog',d=>d.dismiss());
+  await files.getByRole('menuitem',{name:'Change permissions…'}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'))).toHaveLength(0);
+  await remote.getByRole('button',{name:'sample.bin',exact:true}).click({button:'right'});
+  page.once('dialog',d=>d.accept('640'));
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('menuitem',{name:'Change permissions…'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod').length)).toBe(1);
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_chmod'));
+  expect(calls[0].request).toMatchObject({
+    directory:'/remote',name:'sample.bin',expectedKind:'file',
+    expectedPermissions:384,expectedSize:128,expectedModified:null,mode:416
+  });
+  expect(calls[0].request.destination.authSession).toBeTruthy();
 });

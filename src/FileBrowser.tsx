@@ -32,6 +32,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [identity, setIdentity] = useState("");
+  const [jumpEnabled,setJumpEnabled]=useState(false);
+  const [jumpHost,setJumpHost]=useState("");
+  const [jumpUsername,setJumpUsername]=useState("");
+  const [jumpPort,setJumpPort]=useState("22");
   const [capabilities, setCapabilities] = useState<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}|null>(null);
   useEffect(() => {
     let alive=true;
@@ -90,7 +94,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     return !(preview && editDraft!==preview.content) ||
       window.confirm(ru?"Несохранённые изменения исчезнут. Продолжить?":"Unsaved edits will be lost. Continue?");
   }
-  const profile = JSON.stringify([connection.host,connection.port,connection.username]);
+  const profile = JSON.stringify([connection.host,connection.port,connection.username,
+    jumpEnabled?jumpHost:"",jumpEnabled?jumpUsername:"",jumpEnabled?jumpPort:""]);
   const currentProfile=useRef(profile);
   currentProfile.current=profile;
   useEffect(()=>{
@@ -188,7 +193,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       "Queue loaded without transfer. Refresh BOTH panes and confirm retry manually.");
   }
   const destination = {host:connection.host,port:connection.port,username:connection.username,
-    authSession:interactive ? authSession : null,identity:!interactive && identity.trim() ? identity.trim() : null};
+    authSession:interactive ? authSession : null,
+    identity:!interactive && !jumpEnabled && identity.trim() ? identity.trim() : null,
+    jump:!interactive && jumpEnabled ? {host:jumpHost.trim(),username:jumpUsername.trim(),port:Number(jumpPort)} : null};
   useEffect(() => {
     setAuthReady(false);
     if (!authSession || !interactive) return;
@@ -229,12 +236,13 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if (next === previous.current) return;
     previous.current = next; stopQueue.current = true;
     setRemote(null); clearEditor(); selectRemote(""); setBatchRemote([]); setRemotePath(".");
-    if(JSON.stringify([connection.host,connection.port,connection.username])!==retryPlan?.connectionKey){
+    if(profile!==retryPlan?.connectionKey){
       setBatchReport([]);setBatchFinished(false);setRetryPlan(null);setQueueArchive([]);
       setPartialUpload(null);setPartialDownload(null);
     }
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
-  }, [connection.host, connection.port, connection.username, authSession, interactive, identity]);
+  }, [connection.host, connection.port, connection.username, authSession, interactive, identity,
+    jumpEnabled,jumpHost,jumpUsername,jumpPort]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
     if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return false; }
     const id = crypto.randomUUID(); if (!gate.current.begin(id)) return false;
@@ -733,11 +741,28 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   return <section className="file-browser" aria-label={ru ? "Файловый менеджер SFTP" : "SFTP file manager"}>
     <label><input type="checkbox" checked={interactive} disabled={busy || !capabilities?.interactiveLogin}
       onChange={e => setInteractive(e.target.checked)}/>{ru ? "Интерактивный вход для файлов (пароль/PAM)" : "Interactive Files login (password/PAM)"}</label>
-    {!interactive && <label>{ru ? "Путь к SSH-ключу для файлов (необязательно)" : "SSH identity file path for Files (optional)"}
+    {!interactive && <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
+      onChange={e=>{setJumpEnabled(e.target.checked);if(e.target.checked)setIdentity("");}}/>
+      {ru?"Через один SSH-шлюз (агент)":"Via one SSH gateway (agent)"}</label>}
+    {!interactive && jumpEnabled && <div className="files-gateway-options">
+      <label>{ru?"Хост SSH-шлюза":"Gateway host"}
+        <input aria-label="Files gateway host" maxLength={253} autoComplete="off" disabled={busy}
+          value={jumpHost} onChange={e=>setJumpHost(e.target.value)}/></label>
+      <label>{ru?"Пользователь SSH-шлюза":"Gateway username"}
+        <input aria-label="Files gateway username" maxLength={200} autoComplete="off" disabled={busy}
+          value={jumpUsername} onChange={e=>setJumpUsername(e.target.value)}/></label>
+      <label>{ru?"Порт SSH-шлюза":"Gateway port"}
+        <input aria-label="Files gateway port" type="number" min="1" max="65535" disabled={busy}
+          value={jumpPort} onChange={e=>setJumpPort(e.target.value)}/></label>
+      <p className="ssh-help">{ru
+        ?"Только один шлюз через OpenSSH ProxyJump. Ключи обоих серверов должны быть заранее проверены; требуется SSH-агент. Пароль/PAM и выбор файла ключа через шлюз не поддерживаются. Локальный ssh_config может влиять на подключение к шлюзу — проверьте его."
+        :"One OpenSSH ProxyJump gateway only. Both server keys must be trusted in advance; use an SSH agent. Password/PAM and per-file identity are unsupported through a gateway. Local ssh_config may affect the gateway connection; review it."}</p>
+    </div>}
+    {!interactive && !jumpEnabled && <label>{ru ? "Путь к SSH-ключу для файлов (необязательно)" : "SSH identity file path for Files (optional)"}
       <input aria-label="Files SSH identity file path" value={identity} disabled={busy} maxLength={4096}
         autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/>
     </label>}
-    {!interactive && <p className="ssh-help">{ru
+    {!interactive && !jumpEnabled && <p className="ssh-help">{ru
       ? "Укажите абсолютный путь к локальному ключу. Путь действует только в этой вкладке и не сохраняется. Для зашифрованного ключа заранее загрузите его в SSH-агент: файловые операции не показывают запрос парольной фразы. Ключ сервера должен быть заранее подтверждён."
       : "Enter an absolute path to a local key. The path applies only to this tab and is not saved. Load encrypted keys into your SSH agent first: Files operations cannot prompt for a passphrase. The host key must already be trusted."}</p>}
     {capabilities && !capabilities.interactiveLogin && <p className="ssh-help" role="status">

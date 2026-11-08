@@ -7,8 +7,9 @@ use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(default)] identity: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(default)] identity: Option<String>, #[serde(default)] jump: Option<ssh::JumpHost>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
 fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if d.jump.is_some() && d.auth_session.is_some() { return Err("Gateway Files requires agent-only, not interactive login".into()); }
     if d.identity.is_some() && d.auth_session.is_some() {
         return Err("Identity file cannot be combined with interactive Files login".into());
     }
@@ -100,11 +101,18 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
     // Insert before destination/options end. First value wins in OpenSSH.
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
+    if d.jump.is_some() && (d.identity.is_some() || d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
+    let args=ssh::with_jump(args,d.jump.as_ref(),&d.host,d.port,&d.username)?;
     strict.extend(ssh::with_identity(args,d.identity.as_deref())?); strict.push("sftp".into()); Ok(strict)
 }
 type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
+    if d.jump.is_some() && (d.identity.is_some() || d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
     if d.identity.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
         return Err("Identity file requires direct key-only Files connection".into());
     }
@@ -863,7 +871,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
 }
 #[cfg(all(test,unix))]
 pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,control:Some(socket.into()),native:None};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:Some(socket.into()),native:None};
     let op=Arc::new(Operation::default());
     let result=(|| -> Result<()> {
         // Exercise the production connect/list/copy functions, not a parallel
@@ -894,7 +902,7 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
 }
 #[cfg(test)]
 pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,control:None,native:Some(login)};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:None,native:Some(login)};
     let op=Arc::new(Operation::default());
     let mut c=connect(&d,&op).unwrap();
     let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
@@ -964,7 +972,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 mod tests {
     use super::*;
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,control:None,native:None };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,jump:None,control:None,native:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
@@ -976,7 +984,7 @@ mod tests {
         fs::write(&path,b"fixture key").unwrap();
         let raw=path.to_str().unwrap().to_string();
         let d=Destination {host:"localhost".into(),port:22,username:"user".into(),auth_session:None,
-            identity:Some(raw.clone()),control:None,native:None};
+            identity:Some(raw.clone()),jump:None,control:None,native:None};
         let args=transport_args(&d).unwrap();
         assert!(args.windows(2).any(|pair| pair == ["-i",raw.as_str()]));
         for required in ["-oIdentitiesOnly=yes","-oBatchMode=yes","-oStrictHostKeyChecking=yes",
@@ -988,6 +996,34 @@ mod tests {
         assert!(connect(&Destination {auth_session:Some("login".into()),..d.clone()},&Operation::default()).is_err());
         fs::remove_file(path).unwrap();
         assert!(transport_args(&d).is_err());
+    }
+    #[test] fn agent_only_single_hop_files_gateway_validates_transport() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"operator"
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let j=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[j+1],"operator@bastion.example.org:2201");
+        assert_eq!(args.last().unwrap(),"sftp");
+        for required in ["-F","-oStrictHostKeyChecking=yes","-oBatchMode=yes",
+            "-oForwardAgent=no","-oPasswordAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(connect(&Destination{auth_session:Some("interactive".into()),..d.clone()},
+            &Operation::default()).is_err());
+        assert!(transport_args(&Destination{identity:Some("/a/key".into()),..d.clone()}).is_err());
+        for invalid in ["bad;sh","-ProxyCommand=evil","a b","bad\nhost"] {
+            let jump=serde_json::from_value(serde_json::json!({
+                "host":invalid,"port":2201,"username":"operator"
+            })).unwrap();
+            assert!(transport_args(&Destination{jump:Some(jump),..d.clone()}).is_err());
+        }
+        let same:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"target.example.org","port":22,"username":"admin"
+        })).unwrap();
+        assert!(transport_args(&Destination{jump:Some(same),..d}).is_err());
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
@@ -1066,7 +1102,7 @@ mod tests {
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
         let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,
-            identity:Some(format!("{dir}/client")),control:None,native:None};
+            identity:Some(format!("{dir}/client")),jump:None,control:None,native:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
             cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into()]);
@@ -1283,7 +1319,7 @@ mod tests {
         let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
         let chmod=ChangePermissions {
             destination:Destination{host:String::new(),port:0,username:String::new(),
-                auth_session:None,identity:None,control:None,native:None},
+                auth_session:None,identity:None,jump:None,control:None,native:None},
             directory:remote_path.to_string(),name:filename.to_string(),
             expected_kind:"file".into(),expected_permissions:original_mode,
             expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),

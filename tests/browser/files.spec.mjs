@@ -1084,3 +1084,29 @@ test('redacted SFTP transfer report exports statuses without filenames or connec
     expect(JSON.stringify(json)).not.toContain(secret);
   }
 });
+
+test('Files single-hop gateway uses a transient agent-only destination',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).uncheck();
+  const gateway=files.getByRole('checkbox',{name:'Via one SSH gateway (agent)'});
+  await gateway.check();
+  await expect(files.getByRole('textbox',{name:'Files SSH identity file path'})).toHaveCount(0);
+  await files.getByRole('textbox',{name:'Files gateway host'}).fill('bastion.example.org');
+  await files.getByRole('textbox',{name:'Files gateway username'}).fill('operator');
+  await files.getByRole('spinbutton',{name:'Files gateway port'}).fill('2201');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_list'&&x.destination))).toHaveLength(0);
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_list'&&x.destination));
+  expect(calls.at(-1).destination).toMatchObject({
+    authSession:null,identity:null,
+    jump:{host:'bastion.example.org',username:'operator',port:2201}
+  });
+  const stored=await page.evaluate(()=>JSON.stringify(localStorage));
+  expect(stored).not.toContain('bastion.example.org');
+  expect(stored).not.toContain('operator');
+  await gateway.uncheck();
+  await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
+  await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).check();
+  await expect(gateway).toHaveCount(0);
+});

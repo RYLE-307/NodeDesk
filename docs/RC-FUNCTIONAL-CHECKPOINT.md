@@ -83,3 +83,18 @@ native acceptance result. Automated passes alone do not close a row.
 - Pure unit tests verify absence of sensitive fields; browser tests cover
   redacted download and opt-in full download. Native Windows/Arch acceptance
   and exact-head CI validation are still pending.
+
+
+## P0 Files single-hop SSH gateway (2026-11-08, review increment)
+- Transient single OpenSSH ProxyJump host, user and port added to graphical
+  Files, using agent-only key authentication. Binary SFTP operations, transfer
+  cancellation, no-overwrite and strict target known-host checking remain.
+- Backend refuses mixing a gateway with interactive login, a manually selected
+  identity file, or a gateway identical to the target. Changes to the gateway
+  discard loaded remote listings and cancel pending operations.
+- Local OpenSSH configuration may affect the gateway's own connection despite
+  target -F none; audit gateway ssh_config separately. Both host keys must be
+  trusted already. Neither gateway settings nor secrets are stored by default.
+- Rust argument/negative tests and Playwright destination/route invalidation
+  added. Real two-hop fixture, Windows/Arch manual acceptance and gateway
+  host-key/agent failure cases remain NOT TESTED; P0 still open.

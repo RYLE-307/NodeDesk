@@ -225,7 +225,7 @@ fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,target_user:
     }else{jump.host.clone()};
     Ok(format!("{}@{}:{}",jump.username,host,jump.port))
 }
-fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
+pub(crate) fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
     host:&str,port:u16,username:&str)->Result<Vec<String>,String>{
     if let Some(jump)=jump{
         let spec=jump_destination(jump,host,port,username)?;

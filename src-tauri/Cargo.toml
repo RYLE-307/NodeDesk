@@ -22,6 +22,7 @@ serde_json = "1"
 ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
 base64 = "0.22"
 zeroize = "1"
+sysinfo = "=0.39.6"
 
 [dev-dependencies]
 serde_json = "1"

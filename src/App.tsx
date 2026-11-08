@@ -5,6 +5,7 @@ import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
 import { NetworkWorkspace } from "./NetworkWorkspace";
+import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -859,12 +860,7 @@ export default function App() {
             onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);savePaneRatio("row");}}
             onKeyDown={e=>paneResizeKey(e,"row")}/>}
         </div>
-        {data.monitoring && (
-          <section className="monitor">
-            <strong>{t.monitoring}</strong>
-            <p>{t.unavailable}</p>
-          </section>
-        )}
+        {data.monitoring && <MonitorPanel language={data.language}/>}
         <div className="status">{t.stage}<span role="status"> {notice}</span></div>
       </main>
       <dialog

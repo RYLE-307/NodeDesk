@@ -516,6 +516,8 @@ footer select { padding: 4px 6px; font-size: 12px; }
 
 
 /* Opt-in checkpoint controls remain compact; no remote data is rendered here. */
+.monitor-metrics { display:flex; flex-wrap:wrap; gap:8px 18px; margin:6px 0; font-variant-numeric:tabular-nums; }
+.monitor-metrics span { min-width:120px; }
 .files-recovery { margin:10px 0; padding:10px; border:1px solid var(--line); border-radius:6px; }
 .files-recovery > label { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .files-recovery .files-ops { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }

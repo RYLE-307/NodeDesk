@@ -23,6 +23,9 @@ binary SBOM**. Redistributors must satisfy the MPL-2.0 source and notice
 obligations for noVNC-covered files; the presence of an MPL dependency does
 not relicense NodeDesk's own MIT sources.
 
+This development branch also directly uses `sysinfo` 0.39.6 for local metrics
+(MIT license). Its transitive licenses still require a release audit.
+
 Upstream resources:
 - [noVNC license / source](https://github.com/novnc/noVNC)
 - [Apache Guacamole client code](https://github.com/apache/guacamole-client)

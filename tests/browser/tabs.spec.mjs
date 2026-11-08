@@ -25,7 +25,7 @@ test("SSH jump-host settings are transient, explicit and never auto-connect",asy
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
     }));
-    window.__TAURI__={};window.calls=[];
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
     window.__TAURI_INTERNALS__={
       transformCallback(){return 1;},unregisterCallback(){},
       async invoke(cmd,args){window.calls.push({cmd,args});return null;}

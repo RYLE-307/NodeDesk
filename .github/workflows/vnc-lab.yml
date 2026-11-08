@@ -1,0 +1,55 @@
+name: Disposable VNC WSS integration
+on:
+  pull_request:
+    paths:
+      - "tests/vnc-lab/**"
+      - "tests/browser/vnc-live.spec.mjs"
+      - ".github/workflows/vnc-lab.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  vnc-wss:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare and boot disposable VNC lab
+        run: |
+          bash tests/vnc-lab/prepare.sh
+          docker compose -f tests/vnc-lab/compose.yaml config --quiet
+          docker compose -f tests/vnc-lab/compose.yaml up -d --build
+      - name: Export and trust temporary local CA
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if docker compose -f tests/vnc-lab/compose.yaml cp \
+              proxy:/data/caddy/pki/authorities/local/root.crt \
+              tests/vnc-lab/generated/caddy-root.crt 2>/dev/null; then break; fi
+            sleep 2
+          done
+          test -s tests/vnc-lab/generated/caddy-root.crt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3-tools
+          sudo install -m 0644 tests/vnc-lab/generated/caddy-root.crt \
+            /usr/local/share/ca-certificates/nodedesk-vnc-lab.crt
+          sudo update-ca-certificates >/dev/null
+          mkdir -p "$HOME/.pki/nssdb"
+          certutil -N --empty-password -d sql:"$HOME/.pki/nssdb"
+          certutil -A -d sql:"$HOME/.pki/nssdb" -n "NodeDesk disposable VNC" -t "C,," \
+            -i tests/vnc-lab/generated/caddy-root.crt
+      - name: Verify live noVNC framebuffer over trusted WSS
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          NODEDESK_VNC_LIVE=1 npx playwright test \
+            tests/browser/vnc-live.spec.mjs --workers=1 --reporter=line
+      - name: Tear down disposable VNC lab
+        if: always()
+        run: |
+          docker compose -f tests/vnc-lab/compose.yaml down -v --remove-orphans || true
+          rm -rf tests/vnc-lab/generated

@@ -17,7 +17,7 @@ pub enum AuthMode { Auto, Key, Password }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum TerminalKind { Ssh, Sftp, FilesAuth }
+pub enum TerminalKind { Ssh, Sftp, FilesAuth, Local, LocalCmd }
 
 #[derive(Default)]
 pub struct Sessions(Mutex<HashMap<String, Session>>);
@@ -73,6 +73,102 @@ pub fn files_auth_ready(id: String, host: String, port: u16, username: String, s
     #[cfg(not(windows))]
     files_socket(&state,&id,&host,port,&username).is_ok()
 }
+
+/// Safe preview of the fixed per-user OpenSSH config. This deliberately does
+/// NOT evaluate Include, Match, ProxyCommand, ProxyJump, IdentityFile, %-
+/// substitutions, shell expansions or environment variables. NodeDesk's SSH
+/// connection still uses -F none; selecting a preview only fills form fields.
+#[derive(Clone,Serialize,Debug,PartialEq,Eq)]
+#[serde(rename_all="camelCase")]
+pub struct ConfigHost { alias:String, host:String, port:u16, username:String }
+fn ssh_name_ok(host:&str)->bool {
+    !host.is_empty() && host.len()<=253 && !host.starts_with('-') &&
+    host.chars().all(|c|c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+}
+fn ssh_user_ok(user:&str)->bool {
+    user.is_empty() || user.len()<=200 &&
+        !user.starts_with('-') &&
+        user.chars().all(|c|c.is_ascii_alphanumeric()||"._-".contains(c))
+}
+fn ssh_config_hosts(input:&str)->Vec<ConfigHost>{
+    let mut items:Vec<ConfigHost>=vec![];
+    let mut current:Option<ConfigHost>=None;
+    let flush=|value:Option<ConfigHost>, items:&mut Vec<ConfigHost>| {
+        if let Some(entry)=value {
+            if ssh_name_ok(&entry.alias)&&ssh_name_ok(&entry.host)&&ssh_user_ok(&entry.username) &&
+                entry.port!=0 && !items.iter().any(|x|x.alias.eq_ignore_ascii_case(&entry.alias)) &&
+                items.len()<40 {items.push(entry);}
+        }
+    };
+    for line in input.lines().take(1000) {
+        if line.len()>1024 {continue;}
+        let raw=line.trim_start();
+        if raw.starts_with('#')||raw.is_empty(){continue;}
+        // Quoted arguments and line-continuations are intentionally unsupported.
+        if raw.contains(['"', '\'', '\\']){continue;}
+        let (key,rest)=raw.split_once(|c:char|c.is_whitespace()||c=='=')
+            .unwrap_or((raw,""));
+        let val=rest.trim_start_matches(|c:char|c.is_whitespace()||c=='=')
+            .split('#').next().unwrap_or("").trim();
+        let one=val.split_whitespace().collect::<Vec<_>>();
+        match key.to_ascii_lowercase().as_str(){
+            "host"=>{
+                flush(current.take(),&mut items);
+                // Wildcards, exclusions and multiple aliases are not imported:
+                // evaluating their precedence requires a real OpenSSH parser.
+                if one.len()==1&&ssh_name_ok(one[0]) &&
+                    !one[0].contains(['*','?','!']) {
+                    current=Some(ConfigHost{alias:one[0].into(),host:one[0].into(),
+                        port:22,username:String::new()});
+                }
+            }
+            "match"=>{flush(current.take(),&mut items);}
+            "hostname" if one.len()==1 => {
+                if let Some(entry)=current.as_mut(){
+                    if entry.host==entry.alias && ssh_name_ok(one[0]){
+                        entry.host=one[0].into();
+                    }
+                }
+            }
+            "user" if one.len()==1=>{
+                if let Some(entry)=current.as_mut(){
+                    if entry.username.is_empty() && ssh_user_ok(one[0]){
+                        entry.username=one[0].into();
+                    }
+                }
+            }
+            "port" if one.len()==1=>{
+                if let Some(entry)=current.as_mut(){
+                    if entry.port==22{
+                        if let Ok(port)=one[0].parse::<u16>(){
+                            if port!=0{entry.port=port;}
+                        }
+                    }
+                }
+            }
+            _=>{} // Never import executable directives, include files or secrets.
+        }
+    }
+    flush(current,&mut items);
+    items
+}
+#[tauri::command]
+pub fn ssh_config_preview()->Result<Vec<ConfigHost>,String>{
+    #[cfg(windows)]
+    let home=std::env::var_os("USERPROFILE").ok_or("User profile directory unavailable")?;
+    #[cfg(not(windows))]
+    let home=std::env::var_os("HOME").ok_or("Home directory unavailable")?;
+    let path=std::path::PathBuf::from(home).join(".ssh").join("config");
+    let metadata=std::fs::symlink_metadata(&path)
+        .map_err(|_|"No local ~/.ssh/config found")?;
+    if !metadata.file_type().is_file()||metadata.len()>65536{
+        return Err("SSH config must be a regular file no larger than 64 KiB".into());
+    }
+    let content=std::fs::read_to_string(&path)
+        .map_err(|_|"Cannot read UTF-8 SSH configuration".to_string())?;
+    Ok(ssh_config_hosts(&content))
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum Event { Data(Vec<u8>), Exit(u32), Error(String) }
@@ -113,6 +209,34 @@ pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -
     args.extend([port.to_string(), "-l".into(), username.into(), host.into()]);
     Ok(args)
 }
+
+#[derive(Clone,Debug,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct JumpHost {host:String,port:u16,username:String}
+fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,target_user:&str)->Result<String,String>{
+    // The jump is a single literal host, never a config alias, URI or chain.
+    // Reject all metacharacters before handing a single -J argument to OpenSSH.
+    arguments(&jump.host,jump.port,&jump.username,AuthMode::Key)?;
+    if jump.host==target_host && jump.port==target_port && jump.username==target_user{
+        return Err("A jump host must not be identical to the target".into());
+    }
+    let host=if jump.host.contains(':')&&!jump.host.starts_with('['){
+        format!("[{}]",jump.host)
+    }else{jump.host.clone()};
+    Ok(format!("{}@{}:{}",jump.username,host,jump.port))
+}
+fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
+    host:&str,port:u16,username:&str)->Result<Vec<String>,String>{
+    if let Some(jump)=jump{
+        let spec=jump_destination(jump,host,port,username)?;
+        // Options are passed as separate argv entries. No shell and no
+        // ProxyCommand string constructed by NodeDesk. OpenSSH itself
+        // handles -J; the jump's own ssh_config differs from the target.
+        let index=args.len().checked_sub(1).ok_or("Missing SSH target")?;
+        args.splice(index..index,["-J".to_string(),spec]);
+    }
+    Ok(args)
+}
 fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
     // Reuse the validated OpenSSH destination and security/authentication settings.
     // sftp accepts -P for the port, not ssh's -p; its login is one user@host argument.
@@ -130,15 +254,44 @@ fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Resu
     args.push(format!("{username}@{destination_host}"));
     Ok(args)
 }
+fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
+    #[cfg(windows)] {
+        let root=std::env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
+        let suffix:&[&str]=match kind {
+            TerminalKind::Local => &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+            TerminalKind::LocalCmd => &["System32", "cmd.exe"],
+            _ => return Err("Unsupported local shell".into()),
+        };
+        let path=std::path::PathBuf::from(root).join(suffix.iter().collect::<std::path::PathBuf>());
+        if !path.is_file() {return Err("Local Windows shell unavailable".into());}
+        let args=if kind==TerminalKind::Local {vec!["-NoLogo".into(),"-NoProfile".into()]}
+            else {vec!["/Q".into()]};
+        return Ok((path.to_string_lossy().into_owned(),args));
+    }
+    #[cfg(not(windows))] {
+        if kind!=TerminalKind::Local {return Err("CMD is supported only on Windows".into());}
+        let path="/bin/sh";
+        if !std::path::Path::new(path).is_file() {return Err("Local shell unavailable".into());}
+        Ok((path.into(),vec!["-i".into()]))
+    }
+}
 #[tauri::command]
-pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode,
+    kind: TerminalKind, jump: Option<JumpHost>, cols: u16, rows: u16, events: Channel<Event>,
+    app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+    if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
+        return Err("Jump host is supported only in SSH/SFTP console tabs".into());
+    }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
-        TerminalKind::Ssh => ("ssh", arguments(&host, port, &username, auth)?),
-        TerminalKind::Sftp => ("sftp", sftp_arguments(&host, port, &username, auth)?),
-        TerminalKind::FilesAuth => ("ssh", bridge.as_ref().unwrap().arguments(auth)?),
+        TerminalKind::Ssh => ("ssh".into(),with_jump(arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?),
+        TerminalKind::Sftp => ("sftp".into(),with_jump(sftp_arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?),
+        TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
+        TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
     if sessions.contains_key(&id) || sessions.len() >= 16 { return Err("Session already exists or limit reached".into()); }
@@ -146,10 +299,10 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     let mut command = CommandBuilder::new(program);
     command.args(args);
     command.env("TERM", "xterm-256color");
-    command.env("SSH_ASKPASS_REQUIRE", "never");
+    if !matches!(kind, TerminalKind::Local | TerminalKind::LocalCmd) {command.env("SSH_ASKPASS_REQUIRE", "never");}
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start OpenSSH: {e}"))?;
+    let child = pair.slave.spawn_command(command).map_err(|e| format!("Cannot start terminal: {e}"))?;
     drop(pair.slave);
     let child = Arc::new(Mutex::new(child));
     if let Some(auth_bridge)=&bridge {
@@ -205,6 +358,54 @@ pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHan
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_config_preview_never_evaluates_ssh_commands_or_secrets(){
+        let entries=ssh_config_hosts(r#"
+Host example-prod
+  HostName 192.0.2.7
+  User deploy
+  Port 2222
+  ProxyCommand sh -c something-dangerous
+  IdentityFile ~/.ssh/id_prod
+  Include ~/.ssh/extra.conf
+Host *.internal
+  User catchall
+Host -oProxyCommand=bad
+  HostName other
+Match host *
+  User must_be_ignored
+Host local
+  HostName localhost
+  User tester
+"#);
+        assert_eq!(entries.len(),2);
+        assert_eq!(entries[0],ConfigHost{alias:"example-prod".into(),host:"192.0.2.7".into(),
+            port:2222,username:"deploy".into()});
+        assert_eq!(entries[1].alias,"local");
+        assert_eq!(entries[1].username,"tester");
+        assert!(!format!("{entries:?}").contains("something-dangerous"));
+        assert!(!format!("{entries:?}").contains("id_prod"));
+        assert!(ssh_config_hosts("Host *.com\n User bad\n").is_empty());
+        assert!(ssh_config_hosts("Host name\n HostName -oProxyCommand=evil\n").iter()
+            .all(|h|h.host=="name"));
+    }
+    #[test]
+    fn jump_is_one_validated_literal_host_for_terminal_only(){
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let ssh=with_jump(arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
+            Some(&jump),"target.internal",22,"deploy").unwrap();
+        assert_eq!(&ssh[ssh.len()-3..],["-J","gateway@bastion.example.org:2222","target.internal"]);
+        assert_eq!(&ssh[..2],["-F","none"]);
+        let sftp=with_jump(sftp_arguments("target.internal",2223,"deploy",AuthMode::Key).unwrap(),
+            Some(&jump),"target.internal",2223,"deploy").unwrap();
+        assert_eq!(&sftp[sftp.len()-3..],["-J","gateway@bastion.example.org:2222","deploy@target.internal"]);
+        for illegal in ["-oProxyCommand=bad","a,b","ssh://host","host;cmd","host example","host\nmal"]{
+            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into()};
+            assert!(jump_destination(&bad,"target.internal",22,"deploy").is_err(),"{illegal}");
+        }
+        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into()};
+        assert!(jump_destination(&same,"target.internal",22,"deploy").is_err());
+    }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }
     #[test]
@@ -250,6 +451,50 @@ mod tests {
     }
     #[test] fn dimensions() { assert!(size(0,24).is_err()); assert!(size(80,24).is_ok()); }
     #[test] fn close_is_idempotent() { let sessions = Sessions::default(); assert!(sessions.0.lock().unwrap().remove("missing").is_none()); }
+    #[test]
+    fn local_shell_command_is_fixed_and_contains_no_user_input() {
+        let (program,args)=local_command(TerminalKind::Local).unwrap();
+        assert!(std::path::Path::new(&program).is_absolute());
+        #[cfg(windows)] {
+            assert!(program.ends_with("powershell.exe"));
+            assert_eq!(args,vec!["-NoLogo".to_string(),"-NoProfile".to_string()]);
+            let (cmd,cmd_args)=local_command(TerminalKind::LocalCmd).unwrap();
+            assert!(cmd.ends_with("cmd.exe"));
+            assert_eq!(cmd_args,vec!["/Q".to_string()]);
+        }
+        #[cfg(not(windows))] {
+            assert_eq!(program,"/bin/sh");
+            assert_eq!(args,vec!["-i".to_string()]);
+            assert!(local_command(TerminalKind::LocalCmd).is_err());
+        }
+        assert!(local_command(TerminalKind::Ssh).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn local_shell_launches_inside_a_pty() {
+        let (program,mut args)=local_command(TerminalKind::Local).unwrap();
+        args.extend(["-c".into(),"printf ND_LOCAL_PTY_OK".into()]);
+        let pair=native_pty_system().openpty(size(80,24).unwrap()).unwrap();
+        let mut command=CommandBuilder::new(program);
+        command.args(args);
+        let mut reader=pair.master.try_clone_reader().unwrap();
+        let mut child=pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut bytes=Vec::new();
+        let mut chunk=[0u8;1024];
+        loop {match reader.read(&mut chunk){Ok(0)|Err(_)=>break,Ok(n)=>bytes.extend_from_slice(&chunk[..n])}}
+        assert_eq!(child.wait().unwrap().exit_code(),0);
+        assert!(String::from_utf8_lossy(&bytes).contains("ND_LOCAL_PTY_OK"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_shell_runs_fixed_command() {
+        let (program,mut args)=local_command(TerminalKind::Local).unwrap();
+        args.extend(["-Command".into(),"Write-Output ND_LOCAL_SHELL_OK".into()]);
+        let output=std::process::Command::new(program).args(args).output().unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("ND_LOCAL_SHELL_OK"));
+    }
     #[cfg(unix)]
     #[test]
     fn real_files_password_pam_bridge() {
@@ -346,7 +591,16 @@ mod tests {
             while std::time::Instant::now()<deadline {
                 if let Ok(bytes)=rx.recv_timeout(std::time::Duration::from_millis(100)) { output.push_str(&String::from_utf8_lossy(&bytes)); }
                 if !answered && output.contains("Are you sure") { writer.write_all(reply.as_bytes()).unwrap(); writer.flush().unwrap(); answered=true; }
-                if child.try_wait().unwrap().is_some() { while let Ok(bytes)=rx.try_recv() { output.push_str(&String::from_utf8_lossy(&bytes)); } break; }
+                if child.try_wait().unwrap().is_some() {
+                    // The PTY reader forwards output on a separate thread; the
+                    // child can exit before that thread flushes its last lines.
+                    // Wait briefly for buffered host-key errors instead of
+                    // flaking on an empty channel immediately after exit.
+                    while let Ok(bytes)=rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                        output.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    break;
+                }
             }
             if child.try_wait().unwrap().is_none() { let _=child.kill(); let _=child.wait(); panic!("SSH fixture timed out: {output}"); }
             assert!(output.contains(expected), "Expected {expected}: {output}");

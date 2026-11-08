@@ -9,6 +9,8 @@ export function Icon({ name }: { name: string }) {
     more: 'M5 11v2M12 11v2M19 11v2',
     SSH: 'm4 6 6 6-6 6M13 18h7',
     RDP: 'M3 4h18v13H3zM8 21h8M12 17v4',
+    VNC: 'M2 5h20v13H2zM5 21h14M12 18v3M7 10h10M7 13h10',
+    VPN: 'M12 2 20 6v6c0 5-4 8-8 10-4-2-8-5-8-10V6l8-4zM9 12l2 2 4-4',
   };
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name] ?? paths.folder} /></svg>;
 }

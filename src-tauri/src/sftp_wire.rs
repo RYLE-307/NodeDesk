@@ -174,6 +174,17 @@ impl<R: Read, W: Write> Client<R,W> {
         u32b(&mut b,0); // no attrs; server's umask controls new directory
         Self::ok(&self.request(14,b)?)
     }
+    /// POSIX mode bits only. Never accept setuid, setgid or sticky flags.
+    /// SFTP SETSTAT operates on a path and is NOT atomic with LSTAT.
+    pub fn set_permissions(&mut self, path: &str, mode: u32) -> Result<()> {
+        super::sftp_wire::path(path)?;
+        if mode > 0o777 {return Err("Only ordinary 000–777 POSIX modes are supported".into());}
+        let mut body = vec![];
+        string(&mut body,path.as_bytes());
+        u32b(&mut body,4); // SSH_FILEXFER_ATTR_PERMISSIONS, no other attrs
+        u32b(&mut body,mode);
+        Self::ok(&self.request(9,body)?) // SSH_FXP_SETSTAT
+    }
     pub fn rename(&mut self, old: &str, new: &str) -> Result<()> {
         let mut b = vec![]; string(&mut b,old.as_bytes()); string(&mut b,new.as_bytes());
         Self::ok(&self.request(18,b)?)
@@ -210,6 +221,28 @@ mod tests {
         assert!(name("файл с пробелом.bin").is_ok());
         assert_eq!(join("/tmp", "a;$(x).bin").unwrap(),"/tmp/a;$(x).bin");
         assert!(path("/tmp/../etc").is_err());
+    }
+    #[test]
+    fn chmod_is_bounded_setstat_without_other_attribute_flags() {
+        let mut stream=frame(&[2,0,0,0,3]);
+        let mut okay=vec![101]; u32b(&mut okay,1); u32b(&mut okay,0);
+        string(&mut okay,b"ok");string(&mut okay,b"");
+        stream.extend(frame(&okay));
+        let mut c=Client::new(Cursor::new(stream),Vec::new()).unwrap();
+        assert!(c.set_permissions("/tmp/file",0o4755).is_err());
+        assert!(c.set_permissions("/tmp/file",0o1777).is_err());
+        assert!(c.set_permissions("/tmp/../outside",0o644).is_err());
+        c.set_permissions("/tmp/file",0o640).unwrap();
+        let outgoing=c.writer;
+        let mut packet=Decoder(&outgoing[9..]); // Skip SFTP INIT frame
+        let payload_size=packet.uint().unwrap() as usize;
+        assert_eq!(payload_size,packet.0.len());
+        assert_eq!(packet.byte().unwrap(),9);
+        assert_eq!(packet.uint().unwrap(),1);
+        assert_eq!(packet.text().unwrap(),"/tmp/file");
+        assert_eq!(packet.uint().unwrap(),4);
+        assert_eq!(packet.uint().unwrap(),0o640);
+        packet.end().unwrap();
     }
     #[test] fn mutations_use_sftp_v3_codes_and_validate_missing() {
         // Version then one LSTAT reply "no such file" for request ID 1.

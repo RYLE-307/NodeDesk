@@ -1,9 +1,153 @@
 # План разработки
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive; direct key/agent on both.
-> mkdir/rename/delete, context menus and a bounded 50-file transfer queue are implemented; manual acceptance pending.
-> Full scope and acceptance: [V0.5](V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> The automated v0.7 engineering gate is tracked in [V0.7-RELEASE.md](V0.7-RELEASE.md).
+> It focuses on safe, recoverable multi-queue SFTP and validation of the
+> existing desktop/workspace slice. The long-tail parity matrix is not a
+> v0.7 checklist.
+
+> **Current development: v0.8.0-alpha.0 — guarded SFTP chmod, local SSH config preview, one-hop console ProxyJump, privacy-redacted transfer diagnostics and stale network result isolation. Native GUI acceptance deferred to v0.9–v1.0.**
+> v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
+> First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
+
+## Revised validation & release policy — 7 November 2026
+
+The operator requested **one consolidated manual test campaign at v0.9–v1.0**.
+Until then, do not request repeated native Windows/Arch acceptance after each
+small feature. Develop and integrate bounded functionality using automated
+Windows/Ubuntu desktop builds, browser scenarios, real disposable SSH/SFTP,
+Guacamole and VNC fixtures. **Green CI only establishes automated coverage;
+it is not manual GUI acceptance or production readiness.** No corporate VPN
+or customer/production systems may be used for implicit tests.
+
+| Stage | Goal | Exit criteria |
+| --- | --- | --- |
+| **v0.7 (engineering RC)** | Multi-queue SFTP, pause, verified upload/download resume, bounded opt-in recovery, existing desktop foundation | Green exact-head automated CI, checked metadata/notices/docs; no native GUI sign-off required |
+| **v0.8 (functional development)** | Finish high-value sysadmin features, beginning with guarded POSIX SFTP permission changes, SSH/SFTP diagnostics and further protocol/queue reliability | Automated regression and disposable integration tests on Windows/Linux; release as an **experimental development milestone** |
+| **v0.9 (combined acceptance)** | Operator tests the integrated workflows on **native Windows and Arch**, including SSH/SFTP, desktops, VPN read-only, workspace and network tools | Record defects, reproduce, repair, rerun CI and manual scenarios; no invented test passes |
+| **v1.0 (stabilization and design)** | Fix final defects, redesign UI/UX, accessibility and performance, evaluate missing high-priority features and finish documentation, packaging and licenses | Complete agreed native acceptance, security/license reviews and signed or clearly labeled release artifacts |
+
+Version numbers are engineering milestones, **not a claim of full MobaXterm
+parity**. CI-only candidate builds may be merged to keep GitHub maintainable,
+but must remain explicitly marked unverified until v0.9 native testing.
+Do not describe these builds as production-ready or silently turn on
+connections, VPNs, remote filesystem writes, or credential storage.
+
+## Full product scope requested on 7 November 2026
+
+The intended feature set is the entire [MobaXterm parity matrix](MOBAXTERM-PARITY.md)
+plus VPN, Proxmox, Zabbix, MikroTik and opt-in monitoring, rather than only
+the v0.6 slice. Implement and verify in dependency order: (1) session/catalog
+and local terminal foundations; (2) SSH/SFTP and transfer/editor/tunnels;
+(3) remote desktop and additional protocols; (4) VPN and infrastructure
+integrations; (5) packaging, license notices and release hardening. Each
+finished change still needs automated tests and Windows/Linux build checks.
+Combined native manual acceptance is now planned for **v0.9**, followed by
+bug fixes and visual redesign during **v1.0**. A green CI job is not a substitute for
+real network/protocol acceptance, and the draft PR must not be called a release.
+
+The first new foundation is a local shell tab (SH-01): fixed system PowerShell
+or CMD on Windows, `/bin/sh` on Linux, explicit start/stop and PTY lifecycle.
+No arbitrary executable path or command line crosses the WebView boundary.
+Linux Rust CI launches `/bin/sh` inside a disposable PTY; Windows Rust CI
+executes the fixed PowerShell path noninteractively. Neither touches remote hosts.
+Quick Connect (UI-06) now opens a transient SSH/RDP/VNC tab using the existing
+validated connection form. It does not save the entry or start a network
+session until the user explicitly chooses a protocol action.
+Catalog JSON import/export (CAT-02) validates the existing v1 schema and
+strips unknown fields, including credential-like fields, on both paths.
+Import confirms replacement, closes old session tabs and keeps the original
+catalog on invalid input. Native WebView file download/picker acceptance and
+older-format migrations remain outstanding.
+Open workspace tabs (UI-02) can now be reordered by drag/drop or Alt+Left/Right
+without changing saved catalog entries or starting connections.
+Recent (UI-06) stores only the last 20 catalog IDs in local preferences,
+filters deleted entries and never records Quick Connect destinations.
+Workspace split (UI-03/UI-07) now has one, two and four independently selected
+panes. A tab keeps the same mounted component when moved between panes, so an
+active terminal is not closed by the layout change. Column/row splitters can
+be adjusted with pointer or arrow keys and save their ratios. Native desktop
+acceptance remains outstanding.
+Network diagnostics (NET-01) resolves a manually entered host, probes one TCP
+port and offers an explicitly triggered system ICMP ping with two echo requests.
+The ping process has fixed argument lists, no shell, no user-controlled binary,
+a 10-second hard timeout and bounded display output. A reachable ICMP reply does
+not prove TCP service availability; a silent ping does not prove the host is
+down (ICMP may be filtered). No background requests or port ranges are used.
+Frontend/Rust tests cover invocation and argument validation; native manual
+Windows/Linux acceptance is pending. An explicitly triggered, bounded system
+traceroute is also provided: Windows tracert.exe (8 hops, 500 ms per probe) or
+Linux /usr/bin/traceroute (12 hops, one probe per hop), with a 25-second hard
+timeout. An absent platform tool reports an error without fallback to a shell.
+An explicit list of 1–12 unique TCP ports can also be checked on one manually entered host.
+This never expands ranges, resolves the host once, checks at most two returned IP addresses,
+and limits each TCP attempt to 400 ms. No connection is attempted on page load.
+DNS cancellation, range scans, persistent reports and reverse-DNS enrichment
+are still planned. ICMP and TCP results do not establish complete host availability.
+Terminal tabs now have scrollback search and bounded font zoom. Multiline paste
+requires confirmation because pasted commands may execute immediately. Clipboard
+copy/link handling, persisted font preferences and native acceptance remain open.
+The first SSH tunnel slice provides one explicit local forward per SSH workspace:
+the listener is fixed to 127.0.0.1, only unprivileged ports are accepted, and
+OpenSSH runs without a shell or password prompt using an already trusted host key
+and key/agent authentication. The tunnel stops with the tab or application.
+Remote/dynamic forwards, password/PAM tunnel auth and real target acceptance
+remain open.
+FS-02 now includes explicit UTF-8 remote text preview and an in-memory editor
+(128 KiB maximum). **Save as new copy** checks the original against the exact
+text read when the editor opened, then creates a distinct remote filename with
+SFTP v3 EXCL|CREAT. The original is never opened for writing, and an existing
+copy cannot be overwritten. It verifies the written copy and rechecks the
+source; if the source changed during saving, that conflict is reported.
+A failed write may leave an incomplete new file for manual inspection.
+There is no silent autosave, shell, persistent cache, or local temporary copy.
+SFTP v3 cannot provide a true atomic compare-and-swap overwrite: direct saving
+to the original, encoding selection, 3-way merge, recovery and manual native
+Windows/Arch acceptance remain open. The editor clears on profile/auth change.
+Added local-only **literal, case-sensitive Find Previous/Next**, exact-selection
+replacement, and explicitly confirmed Replace All. Matching is not a regex;
+search/replacement operates only on the in-memory text, with a 128 KiB output
+limit and at most 4096 replacements per action. No network or file write occurs
+until the separate Save as new copy command. Even after switching to read-only
+view, closing modified text requires a discard confirmation.
+
+Linux CI separately uses a disposable trusted sshd fixture to verify bytes
+through the local SSH forward to a loopback target; native Windows and
+user-owned tunnel-target acceptance remain open.
+
+## v0.8 functional increment (under development)
+
+**Guarded remote POSIX permissions:** the SFTP Files context menu now allows
+explicit **Change permissions…** on a remote regular file or directory, using
+three octal digits (000–777) and a confirmation including before/after mode;
+world-writable modes trigger an extra warning in the same confirmation.
+The native Rust/SFTP v3 backend forbids special setuid/setgid/sticky bits,
+rejects symlinks and stale type/mode/size/mtime listings, rechecks the
+result and never calls a shell/sudo or changes local ACLs.
+Automated Linux OpenSSH/SFTP fixture and Windows/Linux build/browser tests
+cover the feature; combined manual validation remains deferred to v0.9.
+The operation is not guaranteed atomic against a hostile SFTP server.
+Further v0.8 functionality: safe read-only preview of literal Host/HostName,
+User and Port in fixed local ~/.ssh/config; no Include, ProxyCommand,
+IdentityFile, aliases with wildcards or arbitrary config execution. One-hop
+OpenSSH ProxyJump is optional in SSH/SFTP **console tabs only** and is never
+persisted. The jump subprocess may consult the local gateway SSH config
+independently; operators must validate gateway fingerprints and directives.
+Files GUI and other protocols do NOT yet use this mechanism.
+SFTP provides redacted, manually downloaded transfer reports without names,
+paths, hosts, partial IDs or credentials; the UI shows only the expected
+partial path and never automatically deletes orphan files. Network results
+are invalidated after target changes without claiming backend cancellation.
+Nothing auto-connects or writes to remote files on page open.
+
+## v0.6 priorities
+
+1. **RDP launcher (in PR #11):** explicitly launch GUI client on Windows and Arch, no credentials in argv/catalog, keep certificate dialogs intact. CI checks frontend/Rust; manual native GUI acceptance pending.
+2. **Embedded RDP through Guacamole (draft PR #11):** HTTPS Guacamole 1.6 account login, authorized RDP discovery, and in-tab framebuffer/input over WSS to an independently provisioned gateway. Standard Guacamole tokens appear in WSS URL queries (must be redacted in proxy logs); exact-origin CORS is required. Does not speak native RDP TCP. [Scope and TLS requirements](V0.6-RDP-EMBEDDED.md). **Direct native Rust RDP is NOT yet implemented**: IronRDP TLS certificate verification must be addressed before acceptance.
+3. **VNC launcher (in PR #11):** TigerVNC, explicit external window, X.509-based encrypted authentication schemes only, no clipboard sharing, no secrets. See [V0.6 VNC](V0.6-VNC.md). Manual native login/certificate verification remains pending. **Embedded WSS noVNC** was added as a separate opt-in mode; it needs a trusted TLS gateway and an authentication policy. Direct TCP and SSH/VPN tunnels follow later. See [embedded desktops](V0.6-EMBEDDED-DESKTOP.md).
+4. **VPN system-profile manager (in PR #11):** read-only listing and manual connect/disconnect (with confirmation) of OS-owned profiles. Linux NetworkManager VPN/WireGuard; Windows current-user IKEv2/L2TP/SSTP, with control restricted to Required/Maximum encryption and other profiles visible read-only. Existing OS credentials only. No profile editing, plaintext secrets or automatic routing changes. [V0.6 VPN](V0.6-VPN.md). Actual desktop VPN acceptance pending.
+5. **QA/release:** native desktop acceptance on Windows/Arch, packaging, security checks and dependency notices before release.
+
+
 
 ## v0.2 alpha
 
@@ -90,8 +234,40 @@ Added bounded local/remote **mkdir, rename (no-overwrite), delete** and single-f
 Added per-pane regular-file checkboxes, capped at 50 files and a sequential
 upload/download operation. All files must pass preflight collision/type
 checks; any error or user cancellation stops the rest, and prior successful
-files remain. Manual runtime verification pending. This is not a persistent
-background queue. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
+files remain. A new **Retry unfinished** action (draft PR #11) requires manual
+refresh of BOTH filesystem listings and fresh explicit confirmation, rechecks
+original source size/mtime/type and destination collisions, and never replays
+already successful files. Normal retry restarts **from byte zero**. The user
+can instead explicitly choose **Resume verified upload** for the latest failed
+upload in the same tab/session: NodeDesk reads and compares every byte of its
+random-ID remote .part against the current local source *before any write*,
+writes only the missing suffix, then reads and verifies the entire completed
+remote copy before non-overwriting publish. Missing, symlinked, full-size,
+corrupt or changed partials are rejected. Neither remote partial nor local
+source is silently deleted on failure. No queue or partial reference survives
+a tab/app restart. The same verified, user-confirmed workflow is now available
+for **download in a batch**: interrupted downloads retain their private local
+partial (unlike single-file downloads, which still remove partials on failure),
+compare all retained bytes to the remote source BEFORE appending, then fetch
+only the remaining suffix. Before a no-overwrite local hard-link publish,
+NodeDesk checks the full downloaded contents byte-for-byte via a new SFTP read.
+Source changes, missing/unsafe or corrupt partials fail closed; no silent
+cleanup of retained failed-batch partials. Draft PR #11 now adds a first
+**opt-in, local recovery checkpoint** for the latest incomplete batch per
+SSH endpoint (up to 8 endpoints, 7-day expiry). Checkpoints are updated before
+each network write and at per-file transitions; an active file is treated
+as cancelled on restore. The checkpoint stores **unencrypted metadata only**:
+host/port/user, local and remote paths, filenames, source size/mtime/mode,
+completion states and previous random operation ID. Never store file contents,
+passwords, session cookies, private keys or auth session IDs. Restoring the
+record **does not connect or transfer**: the user must authenticate normally,
+load the checkpoint, refresh both panes, pass source/destination checks and
+confirm retry or byte-verified resume. A collision or changed file stops recovery.
+The metadata is explicitly removable. This is not a persistent background
+transfer service: no jobs run after app restart, and recovery only resumes the
+latest unfinished upload/download, not a catalog of unattended jobs.
+Native Windows/Arch GUI manual acceptance, crash/large-file stress and stronger
+provenance against malicious concurrent writers remain open. [Issue #9](https://github.com/RYLE-307/NodeDesk/issues/9).
 
 ### v0.5 review addition: transfer visibility
 

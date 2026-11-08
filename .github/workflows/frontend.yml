@@ -84,3 +84,10 @@ jobs:
         if: runner.os == 'Linux'
         run: bash tests/ssh-fixture.sh
       - run: npm run tauri build -- --no-bundle
+      - name: Windows preview for read-only desktop QA
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-windows-preview
+          path: src-tauri/target/release/nodedesk.exe
+          if-no-files-found: error

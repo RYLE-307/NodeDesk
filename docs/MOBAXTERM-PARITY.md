@@ -13,21 +13,21 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | ID | Возможность и критерий приёмки | W | L | Этап |
 | --- | --- | --- | --- | --- |
 | UI-01 | Tech Dark, раскрываемая навигация, пустое окно без автосессий | Каркас | Каркас | Основа |
-| UI-02 | Верхние вкладки: открыть, закрыть, переставить, восстановить каталог без автоподключения | План | План | Основа |
-| UI-03 | Split panes, изменение размеров, перенос сессии между панелями | План | План | Основа |
+| UI-02 | Верхние вкладки: открыть, закрыть, переставить, восстановить каталог без автоподключения | Частично: открыть/закрыть/переставить | Частично: открыть/закрыть/переставить | Основа |
+| UI-03 | Split panes, изменение размеров, перенос сессии между панелями | Реализация: 2/4 панели, resize, перенос | Реализация: 2/4 панели, resize, перенос | Основа; native приёмка ожидается |
 | UI-04 | Светлая/тёмная/системная тема; шрифты, масштаб, горячие клавиши | План | План | Основа |
 | UI-05 | Полный RU/EN, сохранение выбора, отсутствие непереведённых строк | Каркас | Каркас | Основа |
 | CAT-01 | Каталог: группы, избранное, поиск, редактирование, дублирование | План | План | Каталог |
-| CAT-02 | Импорт/экспорт, миграции формата, backup/restore, обработка повреждений | План | План | Каталог |
+| CAT-02 | Импорт/экспорт, миграции формата, backup/restore, обработка повреждений | Частично: JSON импорт/экспорт | Частично: JSON импорт/экспорт | Каталог; native WebView приёмка ожидается |
 | CAT-03 | Импорт сессий MobaXterm: документированное покрытие, без исполнения команд | План | План | Паритет |
 | SEC-01 | Хранилище секретов, блокировка, master password/OS vault; экспорт без секретов по умолчанию | План | План | База |
 | SSH-01 | Интерактивный SSH, PTY, resize, UTF-8, пароли/ключи/passphrase, keyboard-interactive | Реализация (ключи) | Реализация (ключи) | v0.3 |
 | SSH-02 | Host-key trust/change rejection, known_hosts, агент и agent forwarding | Реализация (без forwarding) | Реализация (без forwarding) | v0.3 |
-| SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | План | План | Паритет |
-| SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | План | План | Паритет |
+| SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | Частично: один ручной ProxyJump в SSH/SFTP консоли без GUI Files | Частично: один ручной ProxyJump в SSH/SFTP консоли без GUI Files | Цепочки, другие протоколы, доверие шлюза и нативная приёмка v0.9 остаются |
+| SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | Частично: локальный loopback key/agent | Частично: локальный loopback key/agent | Паритет |
 | SSH-05 | X11 forwarding: локальный X display и корректное закрытие соединения | План | План | Паритет |
 | FS-01 | SFTP рядом с SSH: список, upload/download, drag/drop, rename/delete, права, прогресс/отмена | Частичная реализация: листинг/передача | Частичная реализация: листинг/передача | v0.5 draft; см. ограничения ниже |
-| FS-02 | Удалённый текстовый редактор: кодировки, поиск, upload при сохранении, конфликт изменений | План | План | Паритет |
+| FS-02 | Удалённый текстовый редактор: кодировки, поиск, upload при сохранении, конфликт изменений | Частично: UTF-8 editor ≤128 KiB, буквальный поиск/замена, безопасный Save as new copy, конфликт источника; без перезаписи оригинала | Частично: UTF-8 editor ≤128 KiB, буквальный поиск/замена, безопасный Save as new copy, конфликт источника; без перезаписи оригинала | Нативная приёмка, редактирование оригинала с атомарной защитой от гонок, кодировки/слияние/восстановление — ожидаются |
 | FS-03 | SCP, FTP/FTPS: передача и TLS-проверка; предупреждение для незашифрованного FTP | План | План | Паритет |
 | RDP-01 | Встроенный desktop, параметры безопасности и проверка сертификата | План | План | Протоколы |
 | RDP-02 | Clipboard, диски, звук, multi-monitor, разрешение/DPI, fullscreen/reconnect | План | План | Паритет |
@@ -37,13 +37,13 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | MSH-01 | Mosh: roaming/reconnect, внешние компоненты явно указаны | План | План | Паритет |
 | X-01 | X11 server/display: запуск GUI, clipboard, OpenGL/Composite/RandR — отдельные проверки | План | План | Паритет |
 | X-02 | XDMCP: удалённая X-сессия и управление жизненным циклом | План | План | Паритет |
-| SH-01 | Local shell: PowerShell/CMD на W, системные shell на L, Bash где доступен | План | План | Протоколы |
+| SH-01 | Local shell: PowerShell/CMD на W, системные shell на L, Bash где доступен | Реализация: PowerShell/CMD | Реализация: `/bin/sh` | Протоколы; ручная приёмка ожидается |
 | SH-02 | Unix tools, rsync, выбор среды на W; установка/обновление дополнительных пакетов | План | План | Паритет |
-| TERM-01 | Эмуляция VT, ANSI/256/truecolor, Unicode, scrollback, selection, clipboard, search | План | План | Протоколы |
-| TERM-02 | Логи, настройка подсветки, ссылки, безопасная многострочная вставка | План | План | Паритет |
+| TERM-01 | Эмуляция VT, ANSI/256/truecolor, Unicode, scrollback, selection, clipboard, search | Частично: xterm и поиск | Частично: xterm и поиск | Протоколы |
+| TERM-02 | Логи, настройка подсветки, ссылки, безопасная многострочная вставка | Частично: подтверждение вставки | Частично: подтверждение вставки | Паритет |
 | AUTO-01 | Запись/редактирование/повтор макросов, явный запуск, секреты не записываются | План | План | Паритет |
 | AUTO-02 | Multi-execution: выбор целей и подтверждение опасных массовых действий | План | План | Паритет |
-| NET-01 | Ping, traceroute, DNS, port scan: таймауты, отмена, сохранение результатов | План | План | Утилиты |
+| NET-01 | Ping, traceroute, DNS, port scan: таймауты, отмена, сохранение результатов | Частично: DNS, TCP (1–12 явных портов), ICMP ping, traceroute; native проверка ожидается | Частично: DNS, TCP (1–12 явных портов), ICMP ping, traceroute; native проверка ожидается | Утилиты; диапазоны, отмена и сохранение результатов ожидаются |
 | SRV-01 | Встроенные сетевые серверы: инвентаризация типов по документации, start/stop, bind/firewall | План | План | Паритет |
 | DIST-01 | Portable/installable поставка, настройки по умолчанию и branding/customization | План | План | Релиз |
 | EXT-01 | Расширения/дополнительные инструменты: модель установки, доверие и лицензии | План | План | Паритет |
@@ -92,12 +92,12 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 | SSH-06 | P0 | Password + keyboard-interactive/PAM/2FA, скрытый ввод и отмена, host-key trust до секретов, никаких сохранённых паролей по умолчанию | План | План | [#5](https://github.com/RYLE-307/NodeDesk/issues/5) |
 | UX-01 | P0 | Контекстное меню дерева: right-click пустая область/группа/сессия, новое подключение/группа, edit/duplicate/move/delete, Shift+F10 | План | План | [#6](https://github.com/RYLE-307/NodeDesk/issues/6) |
 | UX-02 | P0 | Resize sidebar мышью за разделитель, пределы ширины, сохранение, keyboard resize | План | План | [#7](https://github.com/RYLE-307/NodeDesk/issues/7) |
-| UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | План | План | UX |
-| UI-07 | P1 | Drag/drop вкладок, упорядочивание, split в 2/4 панели с resize и корректным переносом активной сессии | План | План | Workspace |
-| FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | План | План | Files |
+| UI-06 | P1 | Quick Connect (без сохранения), recent, дерево по типам/клиентам, клавиатурная навигация, контекстные действия | Частично: Quick Connect/recent | Частично: Quick Connect/recent | UX |
+| UI-07 | P1 | Drag/drop вкладок, упорядочивание, split в 2/4 панели с resize и корректным переносом активной сессии | Реализация: drag/drop, 2/4, resize | Реализация: drag/drop, 2/4, resize | Workspace; native приёмка ожидается |
+| FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | Частично: очередь/retry, byte-verified upload/download resume, guarded SFTP chmod, opt-in checkpoint для ручного восстановления после перезапуска | Частично: очередь/retry, byte-verified upload/download resume, opt-in checkpoint для ручного восстановления после перезапуска | Нативная приёмка, постоянный фоновый движок, pause, массовые/локальные права, многоочередная история и стресс-тесты остаются |
 | TERM-03 | P1 | Прозрачный clipboard, поиск/выделение, zoom/fonts, настройки кодировки, ссылки, colors/themes, safe paste | План | План | Terminal |
 | CAT-04 | P1 | Управление сессиями: recent, duplicate, bulk edit, group import/export, backup/restore, формат MobaXterm где лицензия позволяет | План | План | Catalog |
-| SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | План | План | SSH |
+| SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | Частично: просмотр Host/HostName/User/Port и ручной одношаговый console ProxyJump | Частично: просмотр Host/HostName/User/Port и ручной одношаговый console ProxyJump | Нет полного импорта и применения config, IdentityFile, цепочек, GUI gateway или agent forwarding |
 | SSH-08 | P1 | Tunnels manager, отдельный UI local/remote/dynamic forward, ports/status/reconnect и safety restrictions | План | План | SSH |
 | RDP-03 | P1 | RDP clipboard, multi-monitor, динамический DPI/resize, звук, drive/printer redirection, security profiles | План | План | Remote |
 | VNC-02 | P1 | VNC clipboard, encoding/compression, scaling, fullscreen и gateway | План | План | Remote |
@@ -165,3 +165,57 @@ SSH/SFTP peer for the native client (not a Windows sshd/PAM claim). Certificates
 password-change and mixed-method MFA chains remain unsupported. GUI acceptance
 on Arch/Windows is pending; keep PR #10 draft and do not merge before the user
 accepts. See [architecture, security and exact limits](V0.5-SFTP-GUI.md).
+
+## v0.6 review slice: remote desktops
+
+- RDP catalog entries start external `mstsc.exe` (Windows) or `sdl-freerdp3`
+  (Arch) on explicit click. Not embedded; credentials belong to the viewer.
+- VNC catalog entries start external TigerVNC Viewer (Arch/Windows), restricting
+  direct negotiation to X509Vnc/X509Plain. No unencrypted or anonymous-VNC
+  fallback, clipboard, automatic reconnect, saved passwords or installed viewer
+  bundling. May not connect to legacy VNC-only servers without an audited tunnel.
+- Native GUI/manual connection and trust acceptance on Windows/Arch remain
+  outstanding. No claims of built-in RDP/VNC screens or session parity.
+- See [RDP](V0.6-RDP.md) and [VNC](V0.6-VNC.md).
+
+## v0.6 review slice: system VPN integration
+
+NodeDesk now has a dedicated System VPN tool for existing operating-system
+profiles, not new VPN configuration management. Linux: NetworkManager
+VPN/WireGuard. Windows: current-user built-in IKEv2, L2TP and SSTP profiles;
+only Required/Maximum encryption profiles allow control, while others are
+read-only. It lists OS-reported status and requests
+confirmation before activating or deactivating by OS-assigned identifier.
+Secrets, keys and routes remain with the OS; third-party VPN clients, Windows
+all-user phonebook entries, PPTP and automatic tunnel type are unsupported.
+No background monitoring, VPN-before-RDP orchestration, in-app credentials
+or independent proof of route/DNS isolation. No native desktop test yet.
+[Acceptance and security notes](V0.6-VPN.md).
+
+## Embedded VNC WSS-only slice (v0.6 draft)
+
+A separate noVNC 1.7.0 (MPL-2.0) viewer renders RFB frames **inside**
+NodeDesk tabs over an explicitly configured `wss://` WebSocket-to-RFB
+gateway with valid OS-trusted TLS. Manual password input, framebuffer and
+remote keyboard/mouse are supported in code. This is **not** the raw TCP
+VNC external X.509 launcher and does **not** enforce that same RFB
+authentication type or guarantee the origin's access policy. Credentials
+are transiently handled in the WebView and not persisted. Real Arch/Windows
+WSS desktop tests remain pending. **RDP is embedded via a separate Guacamole
+gateway, not a native Rust RDP engine**. The gateway authentication session
+must be configured separately; no live RDP tests yet.
+[Architecture / acceptance](V0.6-EMBEDDED-DESKTOP.md).
+
+## In-tab Guacamole RDP (draft PR #11)
+
+The RDP workspace contains a Guacamole 1.6 browser client rendering remote
+canvas layers and forwarding keyboard/mouse inside the NodeDesk tab. It now
+supports standard HTTPS account login, enumerates authorized RDP profiles and
+opens an explicit Guacamole WSS tunnel. Apache Guacamole + guacd must
+be deployed and trusted separately; exact-origin CORS is required and
+WSS URL query strings containing session tokens must be redacted by proxies. This is **not a native RDP TCP client**;
+NodeDesk uses short-lived Guacamole tokens in memory; the upstream gateway
+still governs RDP target identity, NLA and server trust.
+The existing external FreeRDP/mstsc launcher remains unchanged.
+No real RDP screen or server-certificate identity has been manually accepted.
+[Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).

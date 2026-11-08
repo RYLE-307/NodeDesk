@@ -69,7 +69,7 @@ export function transferBatchPlan(names: readonly string[], source: Listing | nu
 }
 
 /** Ephemeral transfer report. No credentials or session identifiers. */
-export type BatchItemState = "queued" | "active" | "done" | "failed" | "cancelled" | "skipped";
+export type BatchItemState = "queued" | "active" | "done" | "failed" | "cancelled" | "skipped" | "paused";
 export type BatchItem = { name: string; state: BatchItemState };
 export function startBatch(names: readonly string[]): BatchItem[] {
   return names.map(name => ({name, state:"queued"}));
@@ -83,4 +83,61 @@ export function finishBatch(items: readonly BatchItem[]): BatchItem[] {
   // before a backend result; a conservative incomplete status is safest.
   return items.map(item => item.state === "queued" ? {...item,state:"skipped"}
     : item.state === "active" ? {...item,state:"cancelled"} : item);
+}
+
+/** Explicit, ephemeral queue retry. Never retry files already marked done.
+ * The caller must supply freshly reloaded panes from the same connection and
+ * keep every destination conflict check in the real SFTP backend.
+ */
+export function remainingBatchIndexes(items: readonly BatchItem[]): number[] {
+  return items.flatMap((item,index)=>
+    item.state==="failed" || item.state==="cancelled" || item.state==="skipped" || item.state==="paused"
+      ? [index] : []);
+}
+export function retryBatchPlan(
+  originalNames: readonly string[],
+  items: readonly BatchItem[],
+  source: Listing | null,
+  destination: Listing | null,
+  sourceSnapshot: readonly FileEntry[]
+): {indexes:number[];names:string[]} {
+  if(items.length!==originalNames.length || sourceSnapshot.length!==originalNames.length
+    || !items.every((item,index)=>item.name===originalNames[index]
+      && sourceSnapshot[index].name===originalNames[index])) {
+    throw new Error("Transfer report does not match the original queue");
+  }
+  const indexes=remainingBatchIndexes(items);
+  if(!indexes.length)throw new Error("No incomplete files to retry");
+  if(!source || !destination)throw new Error("Refresh both filesystem panes before retry");
+  const names=indexes.map(index=>originalNames[index]);
+  const checked=transferBatchPlan(names,source,destination);
+  for(const index of indexes){
+    const original=sourceSnapshot[index];
+    const updated=source.entries.find(entry=>entry.name===original.name);
+    if(!updated || updated.kind!==original.kind || updated.size!==original.size
+      || updated.modified!==original.modified || updated.permissions!==original.permissions){
+      throw new Error(`Source metadata changed: ${original.name}; create a new transfer plan`);
+    }
+  }
+  return {indexes,names:checked};
+}
+
+/** User-triggered diagnostic report: never export host, user, name, path,
+ * session ID, partial ID, file contents, credentials or private metadata. */
+export function redactedTransferReport(items:readonly BatchItem[],upload:boolean,
+  generatedAt:string):{
+    schema:1;generatedAt:string;direction:"upload"|"download";
+    total:number;completed:number;unfinished:number;
+    files:{index:number;state:BatchItemState}[];
+  } {
+  if(!items.length||items.length>50 ||
+    !items.every(item=>["queued","active","done","failed","cancelled","skipped","paused"].includes(item.state))){
+    throw new Error("Invalid transfer report");
+  }
+  return {
+    schema:1,generatedAt,direction:upload?"upload":"download",
+    total:items.length,completed:items.filter(x=>x.state==="done").length,
+    unfinished:items.filter(x=>x.state!=="done").length,
+    files:items.map((item,index)=>({index:index+1,state:item.state}))
+  };
 }

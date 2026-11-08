@@ -1,13 +1,13 @@
 # NodeDesk
 
-> Current review / Текущая проверяемая версия: **v0.5 SFTP GUI slice**.
-> GUI: Linux OpenSSH password/PAM; Windows native password/keyboard-interactive or OpenSSH key/agent; bounded CRUD, selected-file Drag & Drop and a 50-file sequential queue (draft, pending manual acceptance).
-> Full scope and acceptance: [V0.5](docs/V0.5-SFTP-GUI.md). Historical notes below may describe older releases.
+> **Development: v0.8.0-alpha.0 — not a stable release.** SFTP multi-queue, pause/resume, guarded chmod, safe SSH config preview, transient one-hop console jump and redacted diagnostics are in the review branch.
+> Native Windows/Arch GUI acceptance is **deferred by request to v0.9–v1.0**. This candidate is CI-only, not production-ready.
+> See [v0.8 development notes](docs/V0.8-RELEASE-NOTES.md), [v0.8 functional plan](docs/V0.8-PLAN.md), [v0.7 engineering gates](docs/V0.7-RELEASE.md), and the [deferred native QA checklist](docs/V0.7-ACCEPTANCE.md).
 
 [Русский](README.ru.md) · **EN**
 
 Offline-first infrastructure workspace for Windows and Linux, built with Tauri 2,
-React, TypeScript and Rust. Current review version: **0.5.0-alpha.0**.
+React, TypeScript and Rust. Development version: **0.8.0-alpha.0** (experimental; native GUI QA deferred).
 
 ## Available
 
@@ -21,7 +21,7 @@ React, TypeScript and Rust. Current review version: **0.5.0-alpha.0**.
 Real SSH/SFTP consoles support key/agent/password/PAM. The v0.5 Files GUI
 supports structured SFTP browsing and binary transfer with Linux password/PAM
 auth bridge, Windows native password/keyboard-interactive or direct key/agent auth.
-RDP, live monitoring and protected secret storage remain future work. No automatic connections, fake terminals, telemetry
+The RDP workspace now offers an external mstsc/FreeRDP window or an embedded Guacamole 1.6 frontend with standard HTTPS account login, authorized RDP discovery and WSS rendering. Embedded noVNC and OS-owned VPN profile control are also in the draft. Live monitoring and protected persistent secret storage remain future work. No automatic connections, fake terminals, telemetry
 or credentials are collected. Catalog storage is local WebView profile storage,
 not encryption or backup. [Storage contract and acceptance checks](docs/V0.2.md).
 
@@ -46,14 +46,13 @@ npm run tauri build -- --no-bundle
 Keep `package-lock.json`; use `npm ci` on Arch and Windows. Before pulling, inspect
 `git status` and commit or stash local edits; do not delete conflicting icons or
 lock files. Dependency installation needs internet; normal catalog use does not.
-Installers remain disabled pending platform validation and release preparation.
+Bundled installers remain disabled pending manual platform validation. A successful `tauri build -- --no-bundle` produces a developer binary, not a signed/validated installer.
 
-CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. Arch launch of
-v0.1–v0.4 was confirmed by the user; v0.5 latest GUI still needs manual acceptance.
+CI tests/builds frontend and compiles Tauri on Windows and Ubuntu. The user confirmed an earlier v0.5 Arch GUI launched and uploaded a file. No native GUI acceptance of the integrated v0.7 candidate has been performed; combined manual verification is planned for v0.9–v1.0.
 Cargo.lock is tracked. Real-server SFTP integration runs in Linux CI; Windows
 runs native integration against an independent loopback SSH/SFTP peer, unit tests and Tauri builds. Desktop GUI acceptance is pending.
 
-[Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[v0.7 release notes](docs/RELEASE-NOTES-V0.7.0.md) · [candidate acceptance](docs/V0.7-ACCEPTANCE.md) · [third-party license notices](docs/THIRD-PARTY-NOTICES.md) · [RDP v0.6 notes](docs/V0.6-RDP.md) · [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [MobaXterm parity goals](docs/MOBAXTERM-PARITY.md) · [MIT](LICENSE)
 
 
@@ -92,3 +91,60 @@ Uncheck interactive login for the existing key/agent path. CA/certificate trust,
 password changes and arbitrary mixed-method MFA chains are outside this slice.
 Linux real-sshd/PAM and Windows independent-peer CI are separate from manual GUI
 acceptance. [Exact architecture and limits](docs/V0.5-SFTP-GUI.md). PR #10 stays draft.
+
+### v0.6 VNC integration (draft)
+
+The existing v1 connection catalog now supports VNC profiles (default port
+5900). Opening the VNC tab does not connect; **Open VNC** launches an externally
+installed TigerVNC viewer. A strict `X509Vnc,X509Plain` allowlist rejects
+unauthenticated or anonymous-transport VNC. Viewer password/certificate prompts
+remain outside NodeDesk; no passwords, insecure fallback, clipboard sharing,
+automatic reconnection or catalog credentials. Linux needs the `tigervnc`
+package; Windows needs the official TigerVNC Viewer installation. The **new embedded viewer** uses noVNC inside the NodeDesk tab over an independently configured authenticated **wss://** gateway. It cannot connect directly to raw TCP 5900. Its security depends on trusted gateway TLS and enforced VNC/gateway authentication, unlike the external client's X.509-only setting. Live manual acceptance is pending.
+[VNC security and QA](docs/V0.6-VNC.md).
+
+### v0.6 system VPN manager (draft)
+
+**System VPN** is a separate tool tab, not a connection catalog item.
+It lists existing OS-managed profiles with status, and allows explicit
+Connect/Disconnect with a confirmation about route, DNS and remote-access
+changes. On Linux it supports NetworkManager VPN/WireGuard profiles identified
+by UUID. On Windows it lists current-user built-in IKEv2/L2TP/SSTP profiles;
+only Required/Maximum encryption profiles allow control with OS-managed
+credentials. Other encryption settings are visible read-only. NodeDesk neither
+imports nor stores passwords, keys, credentials, DNS settings or routes.
+Unsupported third-party VPN clients, Windows all-user profiles and old PPTP
+are intentionally excluded. Native Windows/Arch live VPN acceptance is
+still pending. [VPN scope and safety](docs/V0.6-VPN.md).
+
+### v0.6 embedded desktop status
+
+Embedded **VNC** now uses noVNC 1.7.0 (MPL-2.0) to render a live RFB
+framebuffer and send keyboard/mouse events inside the NodeDesk tab. It needs
+an explicit operator-controlled `wss://` WebSocket/RFB gateway with a
+certificate trusted by the operating system, and an authentication policy
+enforced by the gateway/origin server. NodeDesk rejects a session if the RFB
+server never challenged for credentials, but that does not replace gateway
+access controls. Connection and credential entry are
+manual and transient; the URL and password are not persisted. This is not
+the same as X509Vnc-only external TigerVNC authentication. No direct raw
+TCP VNC, no anonymous-gateway security guarantee, and no native Arch/Windows
+live WSS acceptance yet.
+
+Embedded **RDP through Guacamole** now includes standard HTTPS account login, a list of the user's authorized RDP profiles, and explicit WSS connection inside a NodeDesk tab. A separately installed Guacamole/guacd server and exact-origin CORS configuration are required. Guacamole 1.6 places an ephemeral token in WSS query parameters, so the proxy must redact URL query logs; NodeDesk requires acknowledgement and never persists passwords or tokens. It is **not a native Rust RDP engine** and cannot connect directly to TCP:3389. Real Windows/Arch gateway acceptance is pending.
+
+[Embedded desktop architecture and license notices](docs/V0.6-EMBEDDED-DESKTOP.md).
+
+[Gateway-based in-tab RDP, native TLS blocker and QA](docs/V0.6-RDP-EMBEDDED.md).
+
+### Real Guacamole/xrdp integration QA (v0.6 draft)
+
+A disposable Docker Compose test lab now exercises Guacamole 1.6 account
+login, PostgreSQL authorization, guacd, a real Linux xrdp server and
+TLS-validated WSS remote framebuffer transport. A separate Chromium
+integration test opens the embedded RDP workspace in NodeDesk and verifies
+the live connected state, on-page framebuffer canvas, disconnect and
+logout. This is **not** proof of native Tauri behavior on Arch/Windows
+or a real Windows RDP host; pixel accuracy and keyboard/mouse acceptance
+are still outstanding. No production connections are involved.
+[Reproducible isolated lab and safety notes](tests/guacamole-lab/README.md).

@@ -2,7 +2,7 @@
 //! SFTP packets supply filesystem semantics. No shell, CLI listing or secret input.
 use crate::{sftp_wire::{self as wire, Client, Result, CHUNK}, ssh::{self, AuthMode}};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::HashMap, fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
@@ -293,6 +293,66 @@ pub async fn files_mutate(id: String, mut request: Mutation, app: tauri::AppHand
         }
     }).await.map_err(|_| "File mutation task failed".to_string())?
 }
+/// Explicit, guarded POSIX permissions only. Never target symlinks,
+/// devices or special bits. The listing snapshot must still match before
+/// modifying any remote object. SFTP v3 cannot prevent hostile path races.
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ChangePermissions {
+    destination: Destination,
+    directory: String,
+    name: String,
+    expected_kind: String,
+    expected_permissions: u32,
+    expected_size: Option<u64>,
+    expected_modified: Option<u64>,
+    mode: u32,
+}
+fn remote_chmod(c: &mut Sftp, request: &ChangePermissions, op: &Operation) -> Result<()> {
+    if request.mode > 0o777 {
+        return Err("Only ordinary POSIX mode bits 000–777 are supported".into());
+    }
+    expected_kind(&request.expected_kind)?;
+    wire::path(&request.directory)?;
+    wire::name(&request.name)?;
+    let parent=c.realpath(&request.directory)?;op.check()?;
+    let target=wire::join(&parent,&request.name)?;
+    let before=c.lstat(&target)?;
+    if before.kind()!=request.expected_kind ||
+        before.permissions!=Some(request.expected_permissions) ||
+        before.size!=request.expected_size ||
+        before.modified.map(u64::from)!=request.expected_modified {
+        return Err("Remote entry metadata changed; refresh before modifying permissions".into());
+    }
+    if before.permissions.unwrap_or(0) & 0o7000 != 0 {
+        return Err("Cannot modify an entry with special permission bits".into());
+    }
+    if before.permissions.unwrap_or(0) & 0o777 == request.mode {
+        return Err("Choose a different permission mode".into());
+    }
+    op.check()?;
+    c.set_permissions(&target,request.mode)?;
+    op.check()?;
+    let after=c.lstat(&target)?;
+    if after.kind()!=request.expected_kind ||
+        after.permissions.map(|mode|mode & 0o777)!=Some(request.mode) {
+        return Err("Remote server did not confirm requested mode; refresh listing".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn files_chmod(id:String, mut request:ChangePermissions, app:tauri::AppHandle)->Result<()> {
+    wire::name(&request.name)?;wire::path(&request.directory)?;
+    if request.mode>0o777{return Err("Unsupported permission bits".into());}
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        remote_chmod(&mut client,&request,&guard.op)
+    }).await.map_err(|_|"Permission-change task failed".to_string())?
+}
+
 #[tauri::command]
 pub async fn files_list(id: String, mut destination: Option<Destination>, path: String, app: tauri::AppHandle) -> Result<Listing> {
     if let Some(d)=&mut destination { resolve_auth(d,&app)?; }
@@ -302,6 +362,151 @@ pub async fn files_list(id: String, mut destination: Option<Destination>, path: 
         match destination { Some(d) => { let mut c = connect(&d,&g.op)?; remote_list(&mut c,&path,&g.op) }, None => local_list(&path,&g.op) }
     }).await.map_err(|_| "File task failed".to_string())?
 }
+/// Read-only small UTF-8 preview. No local temporary file, shell or write request.
+const PREVIEW_LIMIT: usize = 128 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PreviewRequest { destination: Destination, directory: String, name: String }
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct Preview { name: String, content: String, bytes: usize }
+
+fn decode_preview(bytes: Vec<u8>) -> Result<String> {
+    if bytes.len() > PREVIEW_LIMIT {return Err("Preview exceeds 128 KiB limit".into());}
+    if bytes.iter().any(|b| *b == 0) {return Err("Binary files cannot be previewed".into());}
+    let content=String::from_utf8(bytes).map_err(|_|"Only UTF-8 text can be previewed".to_string())?;
+    if content.chars().any(|c| c.is_control() && !matches!(c,'\n'|'\r'|'\t')) {
+        return Err("Unsupported control characters in text preview".into());
+    }
+    Ok(content)
+}
+fn preview_remote(c: &mut Sftp, directory: &str, name: &str, op: &Operation) -> Result<Preview> {
+    wire::path(directory)?; wire::name(name)?; op.check()?;
+    let parent=c.realpath(directory)?; op.check()?;
+    let path=wire::join(&parent,name)?;
+    let before=c.lstat(&path)?;
+    if before.kind()!="file" {return Err("Preview requires a regular file".into());}
+    let size=before.size.ok_or("File size unavailable; preview refused")?;
+    if size > PREVIEW_LIMIT as u64 {return Err("Preview exceeds 128 KiB limit".into());}
+    let handle=c.open(&path,1)?;
+    let mut bytes=Vec::with_capacity(size as usize);
+    loop {
+        op.check()?;
+        match c.read(&handle,bytes.len() as u64)? {
+            None=>break,
+            Some(chunk)=>{
+                if chunk.len() > PREVIEW_LIMIT.saturating_sub(bytes.len()){
+                    return Err("Preview exceeds 128 KiB limit".into());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+    }
+    c.close(&handle)?;op.check()?;
+    if bytes.len() as u64 != size {return Err("File changed during preview".into());}
+    let after=c.lstat(&path)?;
+    if after.kind()!="file"||after.size!=before.size||after.modified!=before.modified{
+        return Err("File changed during preview".into());
+    }
+    let bytes_len=bytes.len();
+    Ok(Preview{name:name.to_owned(),content:decode_preview(bytes)?,bytes:bytes_len})
+}
+#[tauri::command]
+pub async fn files_preview(id: String, mut request: PreviewRequest, app: tauri::AppHandle) -> Result<Preview> {
+    wire::name(&request.name)?; wire::path(&request.directory)?;
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        preview_remote(&mut client,&request.directory,&request.name,&guard.op)
+    }).await.map_err(|_|"File preview task failed".to_string())?
+}
+
+
+/** Non-destructive SFTP text editing: the original file is never opened for
+ * writing. Save creates a *new* file with SSH_FXF_CREAT|SSH_FXF_EXCL; a remote
+ * editor cannot honestly promise atomic compare-and-swap with SFTP v3.
+ */
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SaveTextCopyRequest {
+    destination: Destination,
+    directory: String,
+    original_name: String,
+    original_content: String,
+    new_name: String,
+    content: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct SavedTextCopy {name:String,bytes:usize,source_unchanged:bool}
+
+fn save_text_copy(c:&mut Sftp,request:&SaveTextCopyRequest,op:&Operation)->Result<SavedTextCopy>{
+    wire::path(&request.directory)?;
+    wire::name(&request.original_name)?;
+    wire::name(&request.new_name)?;
+    if request.new_name==request.original_name {
+        return Err("Choose a different filename; original cannot be overwritten".into());
+    }
+    // Both texts are sent in memory; neither is logged, stored or saved locally.
+    decode_preview(request.original_content.as_bytes().to_vec())?;
+    decode_preview(request.content.as_bytes().to_vec())?;
+    op.check()?;
+    let original=preview_remote(c,&request.directory,&request.original_name,op)?;
+    if original.content!=request.original_content {
+        return Err("Original file changed since opening; copy was not created".into());
+    }
+    let parent=c.realpath(&request.directory)?;op.check()?;
+    let target=wire::join(&parent,&request.new_name)?;
+    // The exclusive-create flag makes collisions fail *at the server*.
+    // Never use RENAME or POSIX rename here: both could overwrite a target.
+    let handle=c.open(&target,2|8|32)?;
+    let bytes=request.content.as_bytes();
+    let mut written=0usize;
+    while written<bytes.len(){
+        if let Err(e)=op.check(){
+            let _=c.close(&handle);
+            return Err(format!("{e}; new copy may be incomplete"));
+        }
+        let end=usize::min(written+CHUNK,bytes.len());
+        if let Err(e)=c.write(&handle,written as u64,&bytes[written..end]){
+            let _=c.close(&handle);
+            return Err(format!("{e}; new copy may be incomplete"));
+        }
+        written=end;
+    }
+    if let Err(e)=c.close(&handle){
+        return Err(format!("{e}; inspect newly created copy before retrying"));
+    }
+    op.check().map_err(|e|format!("{e}; new copy may exist"))?;
+    let saved=preview_remote(c,&request.directory,&request.new_name,op)
+        .map_err(|e|format!("New copy created but verification failed: {e}"))?;
+    if saved.content!=request.content {
+        return Err("New copy content verification failed; inspect manually".into());
+    }
+    // A concurrent, uncooperative writer may alter the source after the first
+    // comparison. Original is untouched; report its latest observable state.
+    let source_unchanged=preview_remote(c,&request.directory,&request.original_name,op)
+        .map(|now|now.content==request.original_content).unwrap_or(false);
+    Ok(SavedTextCopy{name:request.new_name.clone(),bytes:bytes.len(),source_unchanged})
+}
+#[tauri::command]
+pub async fn files_save_text_copy(id:String,mut request:SaveTextCopyRequest,app:tauri::AppHandle)->Result<SavedTextCopy>{
+    wire::path(&request.directory)?;
+    wire::name(&request.original_name)?;
+    wire::name(&request.new_name)?;
+    resolve_auth(&mut request.destination,&app)?;
+    let guard=register(&id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let _guard=&guard;
+        let mut client=connect(&request.destination,&guard.op)?;
+        save_text_copy(&mut client,&request,&guard.op)
+    }).await.map_err(|_|"Text copy task failed".to_string())?
+}
+
 #[tauri::command]
 pub fn files_cancel(id: String, state: State<'_,Operations>) -> Result<()> {
     operation_id(&id)?;
@@ -312,8 +517,12 @@ fn private_new(path: &Path) -> Result<fs::File> {
     #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
     options.open(path).map_err(|_| "Cannot create local file (destination may exist)".into())
 }
-struct PartialLocal(PathBuf);
-impl Drop for PartialLocal { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
+struct PartialLocal { path: PathBuf, keep_on_error: bool }
+impl Drop for PartialLocal {
+    fn drop(&mut self) {
+        if !self.keep_on_error { let _ = fs::remove_file(&self.path); }
+    }
+}
 fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>) -> Result<()> {
     let before = fs::symlink_metadata(source).map_err(|_| "Local source unavailable")?;
     if !before.is_file() || before.is_symlink() { return Err("Only regular files can be uploaded".into()); }
@@ -342,10 +551,97 @@ fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Opera
     // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
     Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
 }
-fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>) -> Result<()> {
+/// Explicit resume: verify every byte of a remote partial against the opened
+/// local source before writing, then recheck the entire file before publication.
+/// Only previous NodeDesk operation IDs are accepted by the caller UI.
+fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
+    op:&Operation,events:&Channel<Progress>)->Result<()> {
+    let before=fs::symlink_metadata(source).map_err(|_|"Local source unavailable")?;
+    if !before.is_file()||before.is_symlink(){return Err("Regular local file required".into());}
+    let mut opts=OpenOptions::new();opts.read(true);
+    #[cfg(windows)] {use std::os::windows::fs::OpenOptionsExt;opts.custom_flags(0x00200000);}
+    let mut f=opts.open(source).map_err(|_|"Cannot open local source")?;
+    let opened=f.metadata().map_err(|_|"Cannot stat local source")?;
+    if !opened.is_file()||opened.is_symlink(){return Err("Regular local file required".into());}
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev()!=opened.dev()||before.ino()!=opened.ino(){
+            return Err("Local source changed".into());
+        }
+    }
+    let size=opened.len();op.check()?;
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    let attrs=c.lstat(temp)?;
+    if attrs.kind()!="file"{return Err("Regular partial required".into());}
+    let prefix_len=attrs.size.ok_or("Partial size unavailable")?;
+    if prefix_len==0||prefix_len>=size {
+        return Err("Partial must contain between 1 and size-1 bytes".into());
+    }
+    // Compare remote prefix against local bytes before requesting write access.
+    let read_handle=c.open(temp,1)?;
+    let mut offset=0_u64;
+    while offset<prefix_len {
+        op.check()?;
+        let chunk=c.read(&read_handle,offset)?.ok_or("Partial truncated")?;
+        if chunk.len() as u64>prefix_len-offset{return Err("Partial exceeds prefix".into());}
+        let mut local=vec![0;chunk.len()];
+        f.read_exact(&mut local).map_err(|_|"Local source shortened")?;
+        if chunk!=local{return Err("Partial differs from source; no write".into());}
+        offset+=chunk.len() as u64;
+    }
+    c.close(&read_handle)?;op.check()?;
+    let verified=c.lstat(temp)?;
+    if verified.kind()!="file"||verified.size!=attrs.size||
+        verified.modified!=attrs.modified{
+        return Err("Partial changed during verification".into());
+    }
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    // SSH_FXF_WRITE without CREATE, TRUNC or APPEND. The verified prefix stays.
+    let h=c.open(temp,2)?;
+    let mut bytes=vec![0;CHUNK];
+    let mut written=prefix_len;
+    while written<size {
+        op.check()?;
+        let n=f.read(&mut bytes).map_err(|_|"Local read failed")?;
+        if n==0||n as u64>size-written{return Err("Local source changed".into());}
+        c.write(&h,written,&bytes[..n])?;
+        written+=n as u64;
+        events.send(Progress{bytes:written,total:Some(size)})
+            .map_err(|_|"Transfer view closed")?;
+    }
+    c.close(&h)?;op.check()?;
+    if f.metadata().map_err(|_|"Cannot inspect local source")?.len()!=size {
+        return Err("Local source changed during resume".into());
+    }
+    let full=c.lstat(temp)?;
+    if full.kind()!="file"||full.size!=Some(size){
+        return Err("Remote file size changed; not published".into());
+    }
+    // A second full-file comparison detects modifications to either prefix
+    // or suffix. The original user file is only ever opened read-only.
+    f.seek(SeekFrom::Start(0)).map_err(|_|"Cannot rewind local file")?;
+    let reader=c.open(temp,1)?;
+    let mut at=0_u64;
+    while at<size {
+        op.check()?;
+        let chunk=c.read(&reader,at)?.ok_or("Remote file truncated")?;
+        if chunk.len() as u64>size-at {return Err("Remote file grew".into());}
+        let mut expected=vec![0;chunk.len()];
+        f.read_exact(&mut expected).map_err(|_|"Local file changed")?;
+        if chunk!=expected{return Err("Remote data mismatch; no publication".into());}
+        at+=chunk.len() as u64;
+    }
+    c.close(&reader)?;op.check()?;
+    if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
+    // SFTP v3 rename (not overwrite-capable posix-rename); hostile concurrent
+    // writers cannot be excluded atomically by this protocol.
+    c.rename(temp,remote)
+}
+
+fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
-    let mut f = private_new(temp)?; let _partial = PartialLocal(temp.into()); let h = c.open(remote,1)?;
+    let mut f = private_new(temp)?; let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
     let mut offset = 0;
     loop {
         op.check()?;
@@ -358,15 +654,182 @@ fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Op
     f.sync_all().map_err(|_| "Local sync failed")?; drop(f); op.check()?;
     // Atomic no-replace publication (rename would overwrite on Unix).
     fs::hard_link(temp,target).map_err(|_| "Cannot publish download: destination exists or filesystem lacks hard links".to_string())?;
+    if keep_partial {
+        fs::remove_file(temp).map_err(|_|"Downloaded file published but partial cleanup failed".to_string())?;
+    }
     Ok(())
 }
+/// Resumes an explicitly retained local partial from the current queue only.
+/// No local file is opened for writing before checking its complete prefix
+/// against the trusted SFTP source. Existing final targets are never replaced.
+fn copy_download_resume(c:&mut Sftp,remote:&str,target:&Path,temp:&Path,
+    op:&Operation,events:&Channel<Progress>)->Result<()> {
+    op.check()?;
+    if target.symlink_metadata().is_ok() {
+        return Err("Local destination exists; overwrite disabled".into());
+    }
+    let source_before=c.lstat(remote)?;
+    if source_before.kind()!="file" {return Err("Regular remote source required".into());}
+    let total=source_before.size.ok_or("Remote size unavailable; cannot resume")?;
+    let local_before=fs::symlink_metadata(temp).map_err(|_|"Local partial missing")?;
+    if !local_before.is_file() || local_before.is_symlink() {
+        return Err("Local partial must be a regular file".into());
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if local_before.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point partial refused".into());
+        }
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if local_before.nlink()!=1 {return Err("Hard-linked partial refused".into());}
+    }
+    // No FOLLOW: do not allow a symlink swapped in between lstat and open.
+    let mut opts=OpenOptions::new();opts.read(true).write(true);
+    #[cfg(target_os="linux")] {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(0o400000); // Linux O_NOFOLLOW
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    #[cfg(all(unix,not(target_os="linux")))] {
+        return Err("Safe partial reopen is not supported on this platform".into());
+    }
+    let mut f=opts.open(temp).map_err(|_|"Cannot safely reopen local partial")?;
+    let local_open=f.metadata().map_err(|_|"Cannot inspect local partial")?;
+    if !local_open.is_file() || local_open.len()!=local_before.len() {
+        return Err("Local partial changed before verification".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if local_before.dev()!=local_open.dev() || local_before.ino()!=local_open.ino() ||
+            local_open.nlink()!=1 {
+            return Err("Local partial changed before verification".into());
+        }
+    }
+    let prefix_len=local_open.len();
+    if prefix_len==0 || prefix_len>total {
+        return Err("Local partial size invalid for resume".into());
+    }
+    let h=c.open(remote,1)?;
+    let mut at=0_u64;
+    // A remote READ may return bytes beyond the end of the partial prefix.
+    // Compare only bytes that are already present locally, then use that
+    // same open SFTP source handle to download the remaining suffix.
+    while at<prefix_len {
+        op.check()?;
+        let chunk=c.read(&h,at)?.ok_or("Remote source shortened")?;
+        let compare=usize::min(chunk.len(),(prefix_len-at) as usize);
+        let mut expected=vec![0;compare];
+        f.read_exact(&mut expected).map_err(|_|"Local partial truncated")?;
+        if chunk[..compare]!=expected {
+            return Err("Local partial does not match remote source; no write".into());
+        }
+        at+=compare as u64;
+    }
+    op.check()?;
+    let local_verified=fs::symlink_metadata(temp).map_err(|_|"Local partial vanished")?;
+    if !local_verified.is_file() || local_verified.len()!=prefix_len {
+        return Err("Local partial changed while verifying".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if local_verified.dev()!=local_open.dev() ||
+            local_verified.ino()!=local_open.ino() || local_verified.nlink()!=1 {
+            return Err("Local partial changed while verifying".into());
+        }
+    }
+    let source_verified=c.lstat(remote)?;
+    if source_verified.kind()!="file" || source_verified.size!=source_before.size ||
+        source_verified.modified!=source_before.modified {
+        return Err("Remote source changed during verification".into());
+    }
+    if target.symlink_metadata().is_ok() {
+        return Err("Local destination exists; overwrite disabled".into());
+    }
+    f.seek(SeekFrom::Start(prefix_len)).map_err(|_|"Cannot seek local partial")?;
+    at=prefix_len;
+    while at<total {
+        op.check()?;
+        let chunk=c.read(&h,at)?.ok_or("Remote source shortened during resume")?;
+        if chunk.len() as u64>total-at {
+            return Err("Remote source grew during resume".into());
+        }
+        f.write_all(&chunk).map_err(|_|"Cannot append local partial")?;
+        at+=chunk.len() as u64;
+        events.send(Progress{bytes:at,total:Some(total)}).map_err(|_|"Transfer view closed")?;
+    }
+    c.close(&h)?;op.check()?;
+    f.sync_all().map_err(|_|"Cannot sync local partial")?;
+    if f.metadata().map_err(|_|"Cannot inspect local partial")?.len()!=total {
+        return Err("Local partial size changed".into());
+    }
+    let source_after=c.lstat(remote)?;
+    if source_after.kind()!="file"||source_after.size!=source_before.size||
+        source_after.modified!=source_before.modified {
+        return Err("Remote source changed; download cannot be published".into());
+    }
+    // End-to-end verification through a fresh SFTP read, including the
+    // previously retained prefix and newly downloaded suffix.
+    f.seek(SeekFrom::Start(0)).map_err(|_|"Cannot rewind local partial")?;
+    let check=c.open(remote,1)?;
+    let mut check_at=0_u64;
+    while check_at<total {
+        op.check()?;
+        let chunk=c.read(&check,check_at)?.ok_or("Remote source truncated during verification")?;
+        if chunk.len() as u64>total-check_at {
+            return Err("Remote source grew during verification".into());
+        }
+        let mut bytes=vec![0;chunk.len()];
+        f.read_exact(&mut bytes).map_err(|_|"Local partial changed while verifying")?;
+        if bytes!=chunk {return Err("Download integrity check failed; not published".into());}
+        check_at+=chunk.len() as u64;
+    }
+    c.close(&check)?;op.check()?;
+    let final_source=c.lstat(remote)?;
+    if final_source.kind()!="file" || final_source.size!=source_before.size ||
+        final_source.modified!=source_before.modified {
+        return Err("Remote source changed before publication".into());
+    }
+    let final_partial=fs::symlink_metadata(temp).map_err(|_|"Local partial vanished")?;
+    if !final_partial.is_file() || final_partial.is_symlink() ||
+        final_partial.len()!=total {
+        return Err("Local partial changed before publication".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if final_partial.dev()!=local_open.dev() || final_partial.ino()!=local_open.ino() ||
+            final_partial.nlink()!=1 {
+            return Err("Local partial replaced before publication".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if final_partial.file_attributes() & 0x400 != 0 {
+            return Err("Local partial changed to a reparse point".into());
+        }
+    }
+    drop(f);
+    // Atomic no-replace local publication, same as ordinary download.
+    fs::hard_link(temp,target).map_err(|_|"Cannot publish download without overwrite".to_string())?;
+    fs::remove_file(temp).map_err(|_|"Download published but partial cleanup failed".to_string())?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool }
+pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String>, #[serde(default)] retain_partial: bool }
 #[tauri::command]
 pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
     resolve_auth(&mut request.destination,&app)?;
     wire::name(&request.name)?; wire::path(&request.remote_directory)?;
+    if let Some(previous)=&request.resume_id {
+        if previous==&id{return Err("Invalid resume request".into());}
+        operation_id(previous)?;
+    }
     let g = register(&id,&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = &g; let local = local_dir(&request.local_directory)?;
@@ -374,9 +837,22 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
         let parent = c.realpath(&request.remote_directory)?; let remote = wire::join(&parent,&request.name)?;
         let partial = format!(".nodedesk-{id}.part");
         if request.upload {
-            let temp = wire::join(&parent,&partial)?;
-            copy_upload(&mut c,&target,&remote,&temp,&g.op,&events).map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
-        } else { copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events) }
+            if let Some(previous)=request.resume_id.as_deref() {
+                let old=wire::join(&parent,&format!(".nodedesk-{previous}.part"))?;
+                copy_upload_resume(&mut c,&target,&remote,&old,&g.op,&events)
+                    .map_err(|e|format!("{e}; partial remains at {old}"))
+            } else {
+                let temp=wire::join(&parent,&partial)?;
+                copy_upload(&mut c,&target,&remote,&temp,&g.op,&events)
+                    .map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
+            }
+        } else if let Some(previous)=request.resume_id.as_deref() {
+            let old=local.join(format!(".nodedesk-{previous}.part"));
+            copy_download_resume(&mut c,&remote,&target,&old,&g.op,&events)
+                .map_err(|e|format!("{e}; partial remains at {}",old.display()))
+        } else {
+            copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events,request.retain_partial)
+        }
     }).await.map_err(|_| "Transfer task failed".to_string())?
 }
 #[cfg(all(test,unix))]
@@ -397,12 +873,12 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
         let events=Channel::<Progress>::new(|_|Ok(()));
         copy_upload(&mut c,&source,&remote,&temp,&op,&events)?;
         let target=local.join("download.bin"); let partial=local.join(".download.part");
-        copy_download(&mut c,&remote,&target,&partial,&op,&events)?;
+        copy_download(&mut c,&remote,&target,&partial,&op,&events,false)?;
         assert_eq!(fs::read(&target).unwrap(),bytes);
-        assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+        assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
         let cancelled=Arc::new(Operation::default()); let mut slave=connect(&d,&cancelled)?;
         let cancel_op=cancelled.clone(); let cancel_events=Channel::<Progress>::new(move |_|{cancel_op.cancel();Ok(())});
-        assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+        assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events,false).is_err());
         assert!(!partial.exists()); assert!(!local.join("cancelled.bin").exists());
         // Cancelling a transfer kills only its subsystem child; login survives.
         assert_eq!(c.realpath(".")?,home);
@@ -421,9 +897,19 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
     let events=Channel::<Progress>::new(|_|Ok(()));
     copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    // Native Windows ssh2 adapter also verifies the real partial-resume path.
+    let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();
+    let resume_part=wire::join(&home,&format!(".native-resume-{case}.part")).unwrap();
+    let h=c.open(&resume_part,2|8|32).unwrap();
+    c.write(&h,0,&bytes[..40000]).unwrap();c.close(&h).unwrap();
+    copy_upload_resume(&mut c,&source,&resume_remote,&resume_part,&op,&events).unwrap();
+    let resume_local=local.join("resumed.bin");
+    let resume_tmp=local.join(".resumed.part");
+    copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events,false).unwrap();
+    assert_eq!(fs::read(&resume_local).unwrap(),bytes);
     let target=local.join("download.bin");let partial=local.join(".download.part");
-    copy_download(&mut c,&remote,&target,&partial,&op,&events).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
-    assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events).is_err());
+    copy_download(&mut c,&remote,&target,&partial,&op,&events,false).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
+    assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
     assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
     let folder=format!("native-folder-{case}");
     remote_mutate(&mut c,&home,&folder,MutationAction::Mkdir,None,None,&op).unwrap();
@@ -432,13 +918,41 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let name=format!("native-{case}.bin");let renamed=format!("renamed-{case}.bin");
     remote_mutate(&mut c,&home,&name,MutationAction::Rename,Some(&renamed),Some("file"),&op).unwrap();
     remote_mutate(&mut c,&home,&renamed,MutationAction::Rename,Some(&name),Some("file"),&op).unwrap();
+    // Windows native ssh2: verified byte-offset download and corrupt prefix.
+    let download_part=local.join(".native-down-resume.part");
+    fs::write(&download_part,&bytes[..40000]).unwrap();
+    let down_resumed=local.join("down-resumed.bin");
+    copy_download_resume(&mut c,&remote,&down_resumed,&download_part,&op,&events).unwrap();
+    assert_eq!(fs::read(&down_resumed).unwrap(),bytes);
+    assert!(!download_part.exists());
+    let bad_part=local.join(".native-bad.part");
+    fs::write(&bad_part,vec![0xff_u8;30000]).unwrap();
+    assert!(copy_download_resume(&mut c,&remote,&local.join("bad-down.bin"),&bad_part,&op,&events).is_err());
+    assert_eq!(fs::read(&bad_part).unwrap(),vec![0xff_u8;30000]);
+    if case==0 {
+        // Independent Windows Paramiko peer: multi-chunk binary round trip
+        // beyond the small auth fixture, with no existing destination replaced.
+        let big:Vec<u8>=(0..(4*1024*1024+19)).map(|n|((n*29+7)%251) as u8).collect();
+        let big_source=local.join("large-source.bin");fs::write(&big_source,&big).unwrap();
+        let big_remote=wire::join(&home,"native-large.bin").unwrap();
+        let big_part=wire::join(&home,".native-large.part").unwrap();
+        copy_upload(&mut c,&big_source,&big_remote,&big_part,&op,&events).unwrap();
+        let big_dest=local.join("large-download.bin");
+        copy_download(&mut c,&big_remote,&big_dest,&local.join(".native-large-down.part"),
+            &op,&events,false).unwrap();
+        assert_eq!(fs::read(&big_dest).unwrap(),big);
+        assert!(copy_upload(&mut c,&big_source,&big_remote,&big_part,&op,&events).is_err());
+    }
     let cancelled=Arc::new(Operation::default());let mut slave=connect(&d,&cancelled).unwrap();
     let cancel=cancelled.clone();let cancel_events=Channel::<Progress>::new(move |_|{cancel.cancel();Ok(())});
-    assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events).is_err());
+    assert!(copy_download(&mut slave,&remote,&local.join("cancelled.bin"),&partial,&cancelled,&cancel_events,false).is_err());
     assert!(!partial.exists());assert!(!local.join("cancelled.bin").exists());
-    // Windows cancellation interrupts the TCP socket and requires a fresh login.
+    // Windows cancellation invalidates the login and refuses every new SFTP
+    // channel. Do not assert an existing channel's *next* packet fails:
+    // ssh2/OS transport may still return already-buffered data after shutdown.
+    // Frontend never reuses an in-flight cancelled operation.
     assert!(connect(&d,&Operation::default()).is_err());
-    assert!(c.realpath(".").is_err());
+    drop(c);
 }
 #[cfg(test)]
 mod tests {
@@ -450,6 +964,18 @@ mod tests {
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
         assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
+    }
+    #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
+        assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
+        assert!(decode_preview(b"binary\0data".to_vec()).is_err());
+        assert!(decode_preview(vec![0xff,0xfe]).is_err());
+        assert!(decode_preview(vec![0x1b,0x5b,0x6d]).is_err());
+        assert!(decode_preview(vec![b'a';PREVIEW_LIMIT+1]).is_err());
+    }
+    #[test] fn text_editor_rejects_nontext_and_oversize_content(){
+        assert!(decode_preview(vec![0;1]).is_err());
+        assert!(decode_preview(vec![b'x';PREVIEW_LIMIT+1]).is_err());
+        assert_eq!(decode_preview("текст\n".as_bytes().to_vec()).unwrap(),"текст\n");
     }
     #[test] fn cancellation_is_idempotent() { let op = Operation::default(); assert!(op.check().is_ok()); op.cancel(); op.cancel(); assert!(op.check().is_err()); }
     #[test] fn cancel_before_registration_and_limits() {
@@ -504,7 +1030,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nodedesk-test-{}",std::process::id())); fs::create_dir_all(&root).unwrap();
         let path = root.join("target"); let _ = fs::remove_file(&path);
         let f = private_new(&path).unwrap(); drop(f); assert!(private_new(&path).is_err());
-        drop(PartialLocal(path.clone())); assert!(!path.exists()); fs::remove_dir(root).unwrap();
+        drop(PartialLocal {path:path.clone(),keep_on_error:true});
+        assert!(path.exists(),"explicit batch retention does not remove partial");
+        drop(PartialLocal {path:path.clone(),keep_on_error:false});
+        assert!(!path.exists());
+        fs::remove_dir(root).unwrap();
         assert!(local_dir("../").is_err());
     }
     #[cfg(unix)]
@@ -523,7 +1053,7 @@ mod tests {
         // real_host_key_checks separately verifies first trust via the existing console.
         let op = Arc::new(Operation::default());
         let weak = Arc::downgrade(&op);
-        let timer = std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(20)); if let Some(op)=weak.upgrade() { op.cancel(); } });
+        let timer = std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(60)); if let Some(op)=weak.upgrade() { op.cancel(); } });
         let mut c = open("trusted-gui",&op).unwrap();
         let local = PathBuf::from(&dir).join("gui-local"); let remote = PathBuf::from(&dir).join("gui-remote");
         fs::create_dir(&local).unwrap(); fs::create_dir(&remote).unwrap();
@@ -535,14 +1065,183 @@ mod tests {
         let events = Channel::<Progress>::new(|_| Ok(()));
         copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
         assert_eq!(fs::read(&dest).unwrap(),bytes);
+        // Verified byte-offset upload: prefix is written through real SFTP v3,
+        // remainder is appended only after an exact prefix comparison.
+        let resume_dest=wire::join(remote_path,"resumed.bin").unwrap();
+        let resume_part=wire::join(remote_path,".resume-test.part").unwrap();
+        let partial_handle=c.open(&resume_part,2|8|32).unwrap();
+        c.write(&partial_handle,0,&bytes[..45000]).unwrap();
+        c.close(&partial_handle).unwrap();
+        copy_upload_resume(&mut c,&source,&resume_dest,&resume_part,&op,&events).unwrap();
+        assert_eq!(fs::read(&resume_dest).unwrap(),bytes);
+        assert!(!Path::new(&resume_part).exists());
+        assert!(copy_upload_resume(&mut c,&source,&resume_dest,&resume_part,&op,&events).is_err());
+        // Refuse a remote partial whose bytes differ, leaving it untouched.
+        let corrupt_dest=wire::join(remote_path,"corrupt-resume.bin").unwrap();
+        let corrupt_part=wire::join(remote_path,".corrupt-resume.part").unwrap();
+        let corrupt=vec![255_u8;40000];
+        let h=c.open(&corrupt_part,2|8|32).unwrap();
+        c.write(&h,0,&corrupt).unwrap();c.close(&h).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&corrupt_dest,&corrupt_part,&op,&events).is_err());
+        assert!(!Path::new(&corrupt_dest).exists());
+        assert_eq!(fs::read(&corrupt_part).unwrap(),corrupt);
+        // A destination collision must abort even if the partial matches.
+        let collision_dest=wire::join(remote_path,"existing-target.bin").unwrap();
+        fs::write(&collision_dest,b"untouched").unwrap();
+        let matching_part=wire::join(remote_path,".matching-part.bin").unwrap();
+        let h=c.open(&matching_part,2|8|32).unwrap();
+        c.write(&h,0,&bytes[..32768]).unwrap();c.close(&h).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&collision_dest,&matching_part,&op,&events).is_err());
+        assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
+        assert_eq!(fs::read(&matching_part).unwrap(),&bytes[..32768]);
+        let missing_part=wire::join(remote_path,".missing-resume.part").unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"missing-resume.bin").unwrap(),
+            &missing_part,&op,&events).is_err());
+        let empty_part=wire::join(remote_path,".empty-resume.part").unwrap();
+        fs::write(&empty_part,b"").unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"empty-resume.bin").unwrap(),
+            &empty_part,&op,&events).is_err());
+        let oversized=wire::join(remote_path,".oversized-resume.part").unwrap();
+        fs::write(&oversized,vec![0_u8;bytes.len()+1]).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"oversized-resume.bin").unwrap(),
+            &oversized,&op,&events).is_err());
+        let link_partial=wire::join(remote_path,".symlink-resume.part").unwrap();
+        std::os::unix::fs::symlink(&source,&link_partial).unwrap();
+        assert!(copy_upload_resume(&mut c,&source,&wire::join(remote_path,"symlink-resume.bin").unwrap(),
+            &link_partial,&op,&events).is_err());
         let listing = remote_list(&mut c,remote_path,&op).unwrap();
         assert!(listing.entries.iter().any(|e|e.name==filename && e.kind=="file"));
         let downloaded = local.join("download.bin"); let partial = local.join(".download.part");
-        copy_download(&mut c,&dest,&downloaded,&partial,&op,&events).unwrap();
+        copy_download(&mut c,&dest,&downloaded,&partial,&op,&events,false).unwrap();
         assert_eq!(fs::read(&downloaded).unwrap(),bytes); assert!(!partial.exists());
-        assert!(copy_download(&mut c,&dest,&downloaded,&partial,&op,&events).is_err());
+        assert!(copy_download(&mut c,&dest,&downloaded,&partial,&op,&events,false).is_err());
+        // Recover an interrupted local download by validating every prefix
+        // byte through real SFTP before writing any additional data.
+        let resume_partial=local.join(".nodedesk-resume-download.part");
+        fs::write(&resume_partial,&bytes[..45000]).unwrap();
+        let resumed=local.join("download-resumed.bin");
+        copy_download_resume(&mut c,&dest,&resumed,&resume_partial,&op,&events).unwrap();
+        assert_eq!(fs::read(&resumed).unwrap(),bytes);
+        assert!(!resume_partial.exists());
+        assert!(copy_download_resume(&mut c,&dest,&resumed,&resume_partial,&op,&events).is_err());
+        // An incorrect prefix fails closed, leaving the partial unchanged.
+        let corrupt_partial=local.join(".nodedesk-corrupted.part");
+        fs::write(&corrupt_partial,vec![0xff_u8;40000]).unwrap();
+        let denied=local.join("denied-resume.bin");
+        assert!(copy_download_resume(&mut c,&dest,&denied,&corrupt_partial,&op,&events).is_err());
+        assert!(!denied.exists());
+        assert_eq!(fs::read(&corrupt_partial).unwrap(),vec![0xff_u8;40000]);
+        // Missing/empty/oversized/symlinked/hard-linked partials all refuse.
+        let missing_partial=local.join(".missing.part");
+        assert!(copy_download_resume(&mut c,&dest,&denied,&missing_partial,&op,&events).is_err());
+        let empty_partial=local.join(".empty.part");fs::write(&empty_partial,b"").unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&empty_partial,&op,&events).is_err());
+        let oversize_partial=local.join(".oversize.part");
+        fs::write(&oversize_partial,vec![b'x';bytes.len()+1]).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&oversize_partial,&op,&events).is_err());
+        let symlink_partial=local.join(".symlink.part");
+        std::os::unix::fs::symlink(&source,&symlink_partial).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&symlink_partial,&op,&events).is_err());
+        let hardlink_partial=local.join(".hardlink.part");
+        fs::hard_link(&corrupt_partial,&hardlink_partial).unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&denied,&hardlink_partial,&op,&events).is_err());
+        // Prevent publishing into an existing target without touching either.
+        let existing=local.join("existing.bin");fs::write(&existing,b"untouched").unwrap();
+        assert!(copy_download_resume(&mut c,&dest,&existing,&corrupt_partial,&op,&events).is_err());
+        assert_eq!(fs::read(&existing).unwrap(),b"untouched");
+        // Batch cancellation retains a private partial; the next independent
+        // authenticated SFTP operation verifies and resumes it safely.
+        let keep_op=Arc::new(Operation::default());
+        let mut keep_c=open("trusted-gui",&keep_op).unwrap();
+        let keep_cancel=keep_op.clone();
+        let keep_events=Channel::<Progress>::new(move |_|{keep_cancel.cancel();Ok(())});
+        let kept=local.join(".nodedesk-retained-download.part");
+        let kept_target=local.join("retained-resumed.bin");
+        assert!(copy_download(&mut keep_c,&dest,&kept_target,&kept,&keep_op,&keep_events,true).is_err());
+        assert!(!kept_target.exists());
+        assert!(kept.exists());
+        assert!(fs::metadata(&kept).unwrap().len()>0);
+        let resume_op=Arc::new(Operation::default());
+        let mut fresh_c=open("trusted-gui",&resume_op).unwrap();
+        copy_download_resume(&mut fresh_c,&dest,&kept_target,&kept,&resume_op,&events).unwrap();
+        assert_eq!(fs::read(&kept_target).unwrap(),bytes);
+        assert!(!kept.exists());
+        resume_op.stop();
+        // Bounded multi-chunk stress: cancel an 8 MiB+ transfer after several
+        // progress events, reopen a fresh trusted SFTP session, and verify
+        // the complete binary file after resuming. No corporate hosts.
+        let large_bytes:Vec<u8>=(0..(8*1024*1024+17))
+            .map(|n| ((n*37+11)%251) as u8).collect();
+        let large_source=local.join("large-stress-source.bin");
+        fs::write(&large_source,&large_bytes).unwrap();
+        let large_remote=wire::join(remote_path,"large-stress.bin").unwrap();
+        let large_temp=wire::join(remote_path,".large-stress.part").unwrap();
+        copy_upload(&mut c,&large_source,&large_remote,&large_temp,&op,&events).unwrap();
+        let cancel_stress=Arc::new(Operation::default());
+        let mut stress_c=open("trusted-gui",&cancel_stress).unwrap();
+        let abort=cancel_stress.clone();
+        let callbacks=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted=callbacks.clone();
+        let stress_events=Channel::<Progress>::new(move |_|{
+            if counted.fetch_add(1,Ordering::SeqCst)>=3 {abort.cancel();}
+            Ok(())
+        });
+        let large_partial=local.join(".large-down.part");
+        let large_target=local.join("large-resumed.bin");
+        assert!(copy_download(&mut stress_c,&large_remote,&large_target,
+            &large_partial,&cancel_stress,&stress_events,true).is_err());
+        assert!(!large_target.exists());
+        let partial_size=fs::metadata(&large_partial).unwrap().len();
+        assert!(partial_size>=128*1024 && partial_size<large_bytes.len() as u64);
+        let stress_resume=Arc::new(Operation::default());
+        let mut stress_fresh=open("trusted-gui",&stress_resume).unwrap();
+        let fresh_events=Channel::<Progress>::new(|_|Ok(()));
+        copy_download_resume(&mut stress_fresh,&large_remote,&large_target,
+            &large_partial,&stress_resume,&fresh_events).unwrap();
+        assert_eq!(fs::read(&large_target).unwrap(),large_bytes);
+        assert!(!large_partial.exists());
+        stress_resume.stop();
         assert!(copy_upload(&mut c,&source,&dest,&temp,&op,&events).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes); // collision must never clobber
+        // Read-only UTF-8 preview uses the same authenticated SFTP transport.
+        let note="nodedesk-preview.txt";let note_path=wire::join(remote_path,note).unwrap();
+        fs::write(&note_path,"Тестовая заметка\nsecond line").unwrap();
+        let view=preview_remote(&mut c,remote_path,note,&op).unwrap();
+        assert_eq!(view.content,"Тестовая заметка\nsecond line");
+        assert_eq!(view.bytes,view.content.as_bytes().len());
+        let request=SaveTextCopyRequest{
+            destination:d.clone(),directory:remote_path.to_owned(),
+            original_name:note.to_owned(),original_content:view.content.clone(),
+            new_name:"nodedesk-preview-edited.txt".into(),
+            content:"Тестовая заметка\nupdated text".into()
+        };
+        let saved=save_text_copy(&mut c,&request,&op).unwrap();
+        assert_eq!(saved.bytes,request.content.as_bytes().len());
+        assert!(saved.source_unchanged);
+        assert_eq!(fs::read_to_string(remote.join(&request.new_name)).unwrap(),request.content);
+        assert_eq!(fs::read_to_string(&note_path).unwrap(),view.content);
+        // Existing output must never be replaced, including by a second save.
+        assert!(save_text_copy(&mut c,&request,&op).is_err());
+        assert_eq!(fs::read_to_string(remote.join(&request.new_name)).unwrap(),request.content);
+        let mut conflict=SaveTextCopyRequest{
+            new_name:"nodedesk-conflict-copy.txt".into(),..request
+        };
+        fs::write(&note_path,"changed on server").unwrap();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        assert!(!remote.join(&conflict.new_name).exists());
+        // Client-supplied traversal and original-name overwrite are rejected.
+        conflict.new_name="../outside".into();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        conflict.new_name=note.into();
+        assert!(save_text_copy(&mut c,&conflict,&op).is_err());
+        fs::remove_file(remote.join("nodedesk-preview-edited.txt")).unwrap();
+
+        assert!(preview_remote(&mut c,remote_path,filename,&op).is_err());
+        fs::write(remote.join("oversize.txt"),vec![b'x';PREVIEW_LIMIT+1]).unwrap();
+        assert!(preview_remote(&mut c,remote_path,"oversize.txt",&op).is_err());
+        assert!(preview_remote(&mut c,remote_path,"../outside",&op).is_err());
+        fs::remove_file(remote.join(note)).unwrap();
+        fs::remove_file(remote.join("oversize.txt")).unwrap();
         assert!(c.lstat(&format!("{remote_path}/missing")).is_err());
         // Real SFTP v3 CRUD: mkdir, collision refusal, rename without clobber,
         // non-recursive delete, and type/symlink validation.
@@ -553,13 +1252,39 @@ mod tests {
         assert!(remote.join("renamed folder").is_dir());
         assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Rename,Some(filename),Some("directory"),&op).is_err());
         assert_eq!(fs::read(&dest).unwrap(),bytes);
+        let chmod_before=c.lstat(&dest).unwrap();
+        assert!(chmod_before.permissions.is_some(),"SFTP must report POSIX permissions");
+        let original_mode=chmod_before.permissions.unwrap();
+        let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
+        let chmod=ChangePermissions {
+            destination:Destination{host:String::new(),port:0,username:String::new(),
+                auth_session:None,control:None,native:None},
+            directory:remote_path.to_string(),name:filename.to_string(),
+            expected_kind:"file".into(),expected_permissions:original_mode,
+            expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),
+            mode:different
+        };
+        remote_chmod(&mut c,&chmod,&op).unwrap();
+        let updated=c.lstat(&dest).unwrap();
+        assert_eq!(updated.permissions.unwrap() & 0o777,different);
+        assert!(remote_chmod(&mut c,&chmod,&op).is_err(),"stale listing rejected");
+        let mut malicious=ChangePermissions{mode:0o4755,..chmod};
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"special bits rejected");
+        malicious.mode=0o600;malicious.name="../outside".into();
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"traversal rejected");
+        malicious.name="link".into();malicious.expected_kind="file".into();
+        // The symlink fixture appears later; create one for this test, then remove it.
+        std::os::unix::fs::symlink(&dest,remote.join("chmod-link")).unwrap();
+        malicious.name="chmod-link".into();
+        assert!(remote_chmod(&mut c,&malicious,&op).is_err(),"symlink must be refused");
+        fs::remove_file(remote.join("chmod-link")).unwrap();
         fs::write(remote.join("renamed folder").join("child"),b"x").unwrap();
         assert!(remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).is_err());
         remote_mutate(&mut c,&format!("{remote_path}/renamed folder"),"child",MutationAction::Delete,None,Some("file"),&op).unwrap();
         remote_mutate(&mut c,remote_path,"renamed folder",MutationAction::Delete,None,Some("directory"),&op).unwrap();
         assert!(!remote.join("renamed folder").exists());
         std::os::unix::fs::symlink(&dest,remote.join("link")).unwrap();
-        assert!(copy_download(&mut c,&format!("{remote_path}/link"),&local.join("link-copy"),&partial,&op,&events).is_err());
+        assert!(copy_download(&mut c,&format!("{remote_path}/link"),&local.join("link-copy"),&partial,&op,&events,false).is_err());
         // Cancel during a real transfer, not just before the command: the first
         // progress callback kills the transport and the local partial is removed.
         let cancelled = Arc::new(Operation::default());
@@ -567,7 +1292,7 @@ mod tests {
         let cancel_op = cancelled.clone();
         let cancel_events = Channel::<Progress>::new(move |_| { cancel_op.cancel(); Ok(()) });
         let cancelled_target = local.join("cancelled.bin");
-        assert!(copy_download(&mut cc,&dest,&cancelled_target,&partial,&cancelled,&cancel_events).is_err());
+        assert!(copy_download(&mut cc,&dest,&cancelled_target,&partial,&cancelled,&cancel_events,false).is_err());
         assert!(!partial.exists()); assert!(!cancelled_target.exists());
         assert!(cancelled.child.lock().unwrap().is_none());
         // An exclusive remote partial remains identifiable after upload cancel;

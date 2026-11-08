@@ -1,0 +1,87 @@
+name: Disposable Guacamole RDP integration
+on:
+  pull_request:
+    paths:
+      - "tests/guacamole-lab/**"
+      - "tests/browser/guacamole-live.spec.mjs"
+      - ".github/workflows/guacamole-lab.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: guac-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guacamole-rdp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare disposable RDP lab
+        run: |
+          bash tests/guacamole-lab/prepare.sh
+          docker compose -f tests/guacamole-lab/compose.yaml config --quiet
+      - name: Boot Guacamole, PostgreSQL, xrdp and loopback TLS
+        # Playwright serves NodeDesk on port 1437 (not Tauri dev's 1420).
+        env:
+          NODEDESK_ORIGIN: http://127.0.0.1:1437
+        run: docker compose -f tests/guacamole-lab/compose.yaml up -d
+      - name: Extract temporary lab CA
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if docker compose -f tests/guacamole-lab/compose.yaml cp               proxy:/data/caddy/pki/authorities/local/root.crt               tests/guacamole-lab/generated/caddy-root.crt 2>/dev/null; then break; fi
+            sleep 2
+          done
+          test -s tests/guacamole-lab/generated/caddy-root.crt
+      - name: Wait for isolated xrdp TCP listener
+        shell: bash
+        run: |
+          for attempt in {1..50}; do
+            if docker compose -f tests/guacamole-lab/compose.yaml exec -T rdp \
+              bash -c 'echo >/dev/tcp/127.0.0.1/3389' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Disposable xrdp container did not open port 3389" >&2
+          exit 1
+      - name: Verify Guacamole user login + real RDP WSS framebuffer negotiation
+        shell: bash
+        run: |
+          set -a
+          source tests/guacamole-lab/.env
+          set +a
+          NODE_EXTRA_CA_CERTS="$PWD/tests/guacamole-lab/generated/caddy-root.crt"             node --experimental-strip-types tests/guacamole-lab/verify.mjs
+      - name: Trust disposable localhost CA in ephemeral Linux Chromium runner
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3-tools
+          sudo install -m 0644 tests/guacamole-lab/generated/caddy-root.crt \
+            /usr/local/share/ca-certificates/nodedesk-guac-lab.crt
+          sudo update-ca-certificates >/dev/null
+          mkdir -p "$HOME/.pki/nssdb"
+          certutil -N --empty-password -d sql:"$HOME/.pki/nssdb"
+          certutil -A -d sql:"$HOME/.pki/nssdb" -n "NodeDesk ephemeral QA" -t "C,," \
+            -i tests/guacamole-lab/generated/caddy-root.crt
+      - name: Test real xrdp pixels inside NodeDesk Chromium workspace
+        shell: bash
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          set -a
+          source tests/guacamole-lab/.env
+          set +a
+          NODEDESK_GUAC_LIVE=1 \
+            npx playwright test tests/browser/guacamole-live.spec.mjs --workers=1 --reporter=line
+      - name: Tear down the disposable network and volumes
+        if: always()
+        run: |
+          docker compose -f tests/guacamole-lab/compose.yaml down -v --remove-orphans || true
+          rm -rf tests/guacamole-lab/generated tests/guacamole-lab/.env

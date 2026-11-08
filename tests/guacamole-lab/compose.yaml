@@ -1,0 +1,83 @@
+name: nodedesk-guacamole-qa
+
+# Disposable local RDP test lab. Only reverse-proxy HTTPS binds the host.
+# All credentials are generated in an ignored .env file by prepare.sh.
+services:
+  # Bootstrap files contain disposable credentials and stay 0600 on the host.
+  # Copy them to a private Docker volume readable by PostgreSQL's uid.
+  init-sql:
+    image: busybox:1.37
+    command: ["sh", "-c", "cp /source/*.sql /init/ && chmod 0444 /init/*.sql"]
+    volumes:
+      - ./generated/init:/source:ro
+      - bootstrap:/init
+    networks: [lab]
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?Run prepare.sh first}
+    volumes:
+      - bootstrap:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    depends_on:
+      init-sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
+      interval: 5s
+      retries: 20
+      timeout: 3s
+    networks: [lab]
+  guacd:
+    image: guacamole/guacd:1.6.0
+    networks: [lab]
+  rdp:
+    # This community image is a disposable Xfce/xrdp test peer ONLY.
+    # It never gets published on the host or used with real accounts.
+    image: danchitnis/xrdp:ubuntu-xfce
+    command: ["${QA_RDP_USER:?}", "${QA_RDP_PASSWORD:?}", "no"]
+    networks: [lab]
+  guacamole:
+    image: guacamole/guacamole:1.6.0
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_ENABLED: "true"
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USERNAME: guacamole_user
+      # Guacamole 1.6.0 has a known *_FILE compatibility issue;
+      # use disposable .env only, never a committed production secret.
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD:?}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+      rdp:
+        condition: service_started
+    networks: [lab]
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      NODEDESK_ORIGIN: ${NODEDESK_ORIGIN:-http://127.0.0.1:1420}
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [guacamole]
+    # Host-published loopback port needs a normal ingress bridge; the
+    # backend network remains internal and is never host-published.
+    networks: [lab, ingress]
+
+networks:
+  lab:
+    internal: true
+  ingress: {}
+
+volumes:
+  bootstrap:
+  pgdata:
+  caddy_data:

@@ -333,13 +333,33 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .tab-pane[hidden] { display:none; }
 .ssh-pane { height:100%; min-height:300px; display:flex; flex-direction:column; padding:8px; gap:6px; }
 .ssh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.terminal-tools { font-size:12px; }
+.terminal-tools label { display:flex; align-items:center; gap:5px; }
+.terminal-tools input { width:clamp(100px,18vw,210px); }
+.terminal-tools button { min-width:28px; }
+.tunnel-workspace { padding:16px; max-width:850px; }
+.tunnel-fields { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0; }
+.tunnel-fields label { display:flex; flex-direction:column; gap:4px; min-width:150px; }
 .ssh-help { font-size:12px; margin:0; }
 .ssh-screen { flex:1; min-height:200px; overflow:hidden; background:#11151b; }
 .secondary-selector { position:absolute; right:16px; top:48px; z-index:1; }
 .workspace { position:relative; }
 
-.workspace { display:flex; }
-.split-workspace { display:flex; }
+.workspace { display:grid; grid-template-columns:minmax(0,1fr); }
+.workspace.split-workspace { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.workspace.quad-workspace { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(2,minmax(0,1fr)); }
+.tab-pane { min-height:0; overflow:auto; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+.pane-choice { max-width:160px; margin:4px; flex:none; }
+.pane-empty { margin:0; padding:16px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+.pane-divider { position:absolute; z-index:4; background:transparent; touch-action:none; }
+.pane-divider:hover,.pane-divider:focus-visible { background:var(--accent); opacity:.5; }
+.column-divider { top:0; bottom:0; width:8px; transform:translateX(-50%); cursor:col-resize; }
+.row-divider { left:0; right:0; height:8px; transform:translateY(-50%); cursor:row-resize; }
+.network-fields { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:12px 0; }
+.network-fields label { display:flex; flex-direction:column; gap:4px; }
+.network-fields input { max-width:260px; }
+.network-fields input[type="number"] { width:110px; }
+.network-ping-output { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; overflow:auto; font-size:12px; padding:10px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
 
 /* SSH authentication selection is local to an open terminal tab; never persisted. */
 .ssh-auth { display:flex; align-items:center; gap:6px; font-size:12px; }
@@ -433,3 +453,70 @@ footer select { padding: 4px 6px; font-size: 12px; }
 .files-batch-report li span:last-child { flex-shrink:0; }
 .files-batch-done span:last-child { color:var(--accent); }
 .files-batch-failed span:last-child, .files-batch-cancelled span:last-child { color:var(--danger); }
+
+/* v0.6 external RDP launcher — distinct from the embedded SSH/SFTP workspaces. */
+.rdp-workspace { padding:16px; max-width:900px; }
+.rdp-workspace h2 { margin:0 0 14px; }
+.rdp-workspace p { overflow-wrap:anywhere; }
+.rdp-workspace button { margin:10px 0; }
+
+/* v0.6 system VPN manager. No credentials or editors in this view. */
+.vpn-workspace { padding:16px; max-width:1000px; min-width:0; }
+.vpn-workspace h2 { margin:0 0 12px; }
+.vpn-workspace > button { margin:8px 0; }
+.vpn-table-wrap { max-width:100%; overflow-x:auto; }
+.vpn-table { border-collapse:collapse; width:100%; min-width:430px; font-size:12px; }
+.vpn-table th,.vpn-table td { border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; }
+.vpn-table th { color:var(--muted); }
+.vpn-table td:first-child { overflow-wrap:anywhere; }
+.vpn-table button { min-width:88px; }
+
+/* v0.6 embedded noVNC view; auto-resize stays inside the workspace. */
+.vnc-embedded { margin:8px 0 20px; border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+.vnc-embedded h3 { margin:4px 0 8px; }
+.vnc-embedded-controls,.vnc-embedded-password { display:flex; align-items:end; flex-wrap:wrap; gap:10px; margin:8px 0; }
+.vnc-embedded-controls label:first-child { flex:1 1 270px; min-width:0; }
+.vnc-embedded-controls input[type="url"] { width:100%; max-width:100%; min-width:0; }
+.vnc-embedded-password label { flex:1 1 180px; }
+.vnc-embedded-password input { display:block; max-width:100%; width:100%; }
+.vnc-embedded-surface { min-height:320px; height:min(62dvh,680px); width:100%; overflow:hidden; background:#242424; border:1px solid var(--line); border-radius:6px; }
+.vnc-embedded-surface canvas { max-width:100%; }
+
+/* v0.6 embedded Guacamole desktop inside RDP tab */
+.rdp-embedded { padding:12px; border:1px solid var(--line); border-radius:8px; margin:8px 0 20px; min-width:0; }
+.rdp-embedded h3 { margin:4px 0 10px; }
+.rdp-embedded-controls { display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:6px 0; }
+.rdp-embedded-controls label:first-child { flex:1 1 260px; min-width:0; }
+.rdp-embedded-controls input[type="url"] { max-width:100%; width:100%; min-width:0; }
+.rdp-embedded-surface { background:#1c1c1c; border:1px solid var(--line); border-radius:6px; min-height:320px; height:min(62dvh,680px); overflow:auto; outline-offset:3px; }
+.rdp-embedded-surface:focus-visible { outline:2px solid currentColor; }
+.rdp-embedded-surface canvas { display:block; }
+
+
+/* Explicit, bounded read-only SFTP text preview. Never renders remote HTML. */
+.files-preview { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:6px; min-width:0; }
+.files-preview-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.files-preview-heading strong { overflow-wrap:anywhere; }
+.files-preview pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:340px; overflow:auto; border:1px solid var(--line); background:var(--panel); padding:12px; font-size:12px; user-select:text; }
+
+
+/* SFTP editor: plain text only, no local persistence and no automatic saving. */
+.files-editor-label { display:flex; flex-direction:column; gap:6px; margin:10px 0; }
+.files-editor-textarea { font-family:monospace; width:100%; min-height:210px; max-height:500px; resize:vertical; white-space:pre; overflow:auto; tab-size:4; }
+.files-editor-footer { display:flex; align-items:end; flex-wrap:wrap; gap:10px; margin:10px 0; }
+.files-editor-footer label { flex:1; min-width:180px; display:flex; flex-direction:column; gap:6px; }
+.files-editor-footer input { width:100%; min-width:0; }
+
+
+/* Search is local-only and never calls SFTP. Keep controls usable at narrow widths. */
+.files-editor-search { display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin:12px 0; }
+.files-editor-search label { display:flex; flex:1 1 180px; flex-direction:column; gap:5px; min-width:140px; }
+.files-editor-search input { width:100%; min-width:0; }
+.files-editor-search [role="status"] { flex-basis:100%; overflow-wrap:anywhere; }
+
+
+/* Opt-in checkpoint controls remain compact; no remote data is rendered here. */
+.files-recovery { margin:10px 0; padding:10px; border:1px solid var(--line); border-radius:6px; }
+.files-recovery > label { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.files-recovery .files-ops { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.files-recovery .files-ops span { overflow-wrap:anywhere; }

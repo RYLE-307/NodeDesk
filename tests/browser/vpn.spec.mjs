@@ -82,7 +82,7 @@ test("empty system VPN list is not populated with fake connections",async({page}
 test("read-only Windows profile is visible but cannot be dialed",async({page})=>{
   const pane=await open(page,{readOnly:true});
   await expect(pane).toContainText("Office VPN");
-  await expect(pane).toContainText("Read only — review encryption in Windows");
+  await expect(pane).toContainText("Read-only — protocol or encryption policy unsupported");
   await expect(pane.getByRole("button",{name:"Connect",exact:true})).toHaveCount(0);
   expect(await page.evaluate(()=>window.fixture.calls.filter(v=>v.cmd==="vpn_set"))).toHaveLength(0);
 });

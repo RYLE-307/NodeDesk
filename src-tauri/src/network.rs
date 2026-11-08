@@ -48,7 +48,8 @@ fn register(id:String,app:&tauri::AppHandle)->Result<ActiveDiagnostic,String>{
     if id.len()!=36||!id.chars().all(|c|c.is_ascii_hexdigit()||c=='-'){
         return Err("Invalid diagnostic ID".into());
     }
-    let mut active=app.state::<Diagnostics>().0.lock().map_err(|_|"Diagnostic lock failed")?;
+    let state=app.state::<Diagnostics>();
+    let mut active=state.0.lock().map_err(|_|"Diagnostic lock failed")?;
     if active.active.contains_key(&id)||active.active.len()>=8{return Err("Diagnostic limit or duplicate ID".into());}
     let op=Arc::new(Diagnostic::default());
     if active.cancelled.remove(&id){op.cancel();}

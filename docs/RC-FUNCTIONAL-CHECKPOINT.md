@@ -108,3 +108,16 @@ rejection while gateway trust remains valid. A per-test wrapper configures
 only the disposable gateway SSH child; it does not alter the developer's
 known_hosts. Windows/Arch native acceptance and multi-host/corporate
 topologies are still NOT TESTED.
+
+
+## P1 SSH remote forwarding (2026-11-08, review increment)
+- Manual remote -R forwarding added to the tunnel manager. The remote SSH
+  server is requested to bind to 127.0.0.1 on a nonprivileged port and forward
+  only to the local machine's 127.0.0.1 target port. No arbitrary destination
+  host, public bind option, password, shell or automatic connection is allowed.
+- A separate UI confirmation warns that sshd GatewayPorts can override the
+  requested bind; verify actual remote listener and firewall. No support for
+  public exposure or remote forwarding rules across disconnected sessions.
+- Rust validation and a real disposable SSH reverse-forward fixture exercise
+  target-local bytes. Playwright verifies consent and exact restricted spec.
+  Native Arch/Windows acceptance remains NOT TESTED.

@@ -34,3 +34,12 @@ native Windows/Arch GUI acceptance at the end. Record actual protocol versions,
 trust prompts, cancellation, reconnect and SHA256 for transfers. Unrun checks
 remain **not tested**. Do not merge the final candidate or cut a release while
 required gates are open.
+
+
+### SSH remote forwarding review slice (2026-11-08)
+The tunnel manager now offers manual remote (-R) forwarding to a fixed local
+127.0.0.1 target, requesting remote 127.0.0.1 binding only, with a distinct
+confirmation warning about sshd GatewayPorts server policy. It rejects
+privileged remote ports and arbitrary local targets, and uses the existing
+key/agent and host-key trust model. Rust loopback integration and browser
+tests are added; CI and native Windows/Arch acceptance remain pending.

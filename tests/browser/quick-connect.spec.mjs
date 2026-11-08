@@ -26,7 +26,7 @@ test("read-only SSH config preview fills Quick Connect without commands or auto-
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
     }));
-    window.__TAURI__={};
+    window.__TAURI__={};window.isTauri=true;
     window.__TAURI_INTERNALS__={
       transformCallback(){return 1;},unregisterCallback(){},
       async invoke(cmd){

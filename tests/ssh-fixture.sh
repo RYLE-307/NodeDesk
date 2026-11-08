@@ -2,10 +2,10 @@
 set -euo pipefail
 # Isolated local server. Nothing touches the user's ~/.ssh or known_hosts.
 fixture=$(mktemp -d)
-server_pid=""
+server_pids=()
 auth_user="ndfixture$$"
 cleanup() {
-  if [[ -n "$server_pid" ]]; then sudo kill "$server_pid" 2>/dev/null || true; fi
+  for pid in "${server_pids[@]}"; do sudo kill "$pid" 2>/dev/null || true; done
   sudo userdel "$auth_user" 2>/dev/null || true
   # PAM may create private cache files owned by the disposable account.
   # Delete only the exact directory created by mktemp, never a computed parent.
@@ -48,10 +48,30 @@ Subsystem sftp internal-sftp
 EOF
 sudo mkdir -p /run/sshd
 sudo /usr/sbin/sshd -D -e -f "$fixture/sshd_config" &
-server_pid=$!
+server_pids+=("$!")
 for _ in {1..50}; do
   if ssh-keyscan -p 22229 127.0.0.1 >/dev/null 2>&1; then break; fi
   sleep 0.1
+done
+# Two additional isolated sshd listeners exercise an actual two-hop -J chain.
+# All three run in the same disposable CI fixture and use only loopback.
+for hop_port in 22230 22231; do
+  sed -e "s/^Port 22229$/Port $hop_port/" \
+      -e "s#^PidFile .*#PidFile $fixture/pid-$hop_port#" \
+      "$fixture/sshd_config" > "$fixture/sshd_config-$hop_port"
+  sudo /usr/sbin/sshd -D -e -f "$fixture/sshd_config-$hop_port" &
+  server_pids+=("$!")
+  ready=0
+  for _ in {1..50}; do
+    if ssh-keyscan -p "$hop_port" 127.0.0.1 >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    sleep 0.1
+  done
+  if [[ "$ready" != 1 ]]; then
+    echo "Disposable SSH hop did not start on port $hop_port" >&2
+    exit 1
+  fi
 done
 NODEDESK_SSH_FIXTURE="$fixture" cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
 filename='binary пробел ;$(x).bin'

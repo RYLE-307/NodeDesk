@@ -192,3 +192,14 @@ topologies are still NOT TESTED.
   destination checks are added. A separate real two-host or three-host
   network fixture, cross-hop auth failures and native Windows/Arch
   acceptance remain NOT TESTED. This is not a completed P0 row.
+
+
+## Disposable real two-hop SFTP integration (2026-11-08)
+The Linux CI fixture now starts three separate OpenSSH sshd listeners,
+each bound to 127.0.0.1 only, on distinct ports. A Rust integration case
+opens structured SFTP through both -J intermediate listeners, checks a
+realpath/list response and rejects a second hop with an unknown host key.
+The test injects a private ssh_config only into the disposable test command,
+never modifies real known_hosts, and preserves -F none in production.
+Real independent network hosts, MFA/agent failures and Windows/Arch operator
+acceptance remain NOT TESTED.

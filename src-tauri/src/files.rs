@@ -1102,6 +1102,61 @@ mod tests {
         assert!(spawn_transport(make_command(&unknown),&bad).is_err());
         bad.stop();
     }
+    #[cfg(unix)]
+    #[test] fn real_two_hop_sftp_via_three_disposable_sshd_listeners() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let root=PathBuf::from(dir);
+        let user=std::env::var("USER").unwrap();
+        let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let known=root.join("twohop-known");
+        let mut lines=String::new();
+        for port in [22229u16,22230,22231] {
+            lines.push_str(&format!("[127.0.0.1]:{port} {host_key}"));
+        }
+        fs::write(&known,lines).unwrap();
+        let known_without_second=root.join("twohop-missing-second");
+        let partial=format!("[127.0.0.1]:22229 {host_key}[127.0.0.1]:22230 {host_key}");
+        fs::write(&known_without_second,partial).unwrap();
+        let make_config=|path:&std::path::Path,trust:&std::path::Path| {
+            fs::write(path,format!(
+                "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+                trust.display(),root.join("client").display())).unwrap();
+            fs::set_permissions(path,fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        let full_config=root.join("twohop-ssh-config");
+        let missing_config=root.join("twohop-second-untrusted-config");
+        make_config(&full_config,&known);
+        make_config(&missing_config,&known_without_second);
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22230,"username":user,
+            "next":{"host":"127.0.0.1","port":22231,"username":user}
+        })).unwrap();
+        let d=Destination{host:"127.0.0.1".into(),port:22229,username:user,
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|config:&std::path::Path| {
+            let mut args=transport_args(&d).unwrap();
+            let at=args.iter().position(|v|v=="-F").unwrap();
+            assert_eq!(args[at+1],"none"); // production remains fail-closed
+            args[at+1]=config.to_string_lossy().into_owned();
+            let mut command=Command::new("/usr/bin/ssh");
+            command.arg(format!("-oUserKnownHostsFile={}",known.display()));
+            command.arg("-oGlobalKnownHostsFile=/dev/null");
+            command.args(args);
+            command
+        };
+        let good=Operation::default();
+        let mut client=spawn_transport(make_command(&full_config),&good).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        assert!(client.list(&home).unwrap().len()<=wire::MAX_ENTRIES);
+        drop(client);good.stop();
+        // The target and first hop remain trusted. The second is untrusted.
+        // A noninteractive client must refuse before reaching SFTP.
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&missing_config),&bad).is_err());
+        bad.stop();
+    }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
         assert!(decode_preview(b"binary\0data".to_vec()).is_err());

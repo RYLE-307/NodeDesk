@@ -74,3 +74,12 @@ native acceptance result. Automated passes alone do not close a row.
 - Clipboard access is never initiated by opening or connecting a session.
   Browser coverage checks no-selection behavior; native clipboard success on
   Windows/Arch and large-output acceptance remain **NOT TESTED**.
+
+## Network report privacy (2026-11-08, review increment)
+- JSON report schema v2 redacts hostname, IP addresses, traceroute hops and raw
+  diagnostic command output by default. Durations, statuses and up to 12
+  explicit TCP port numbers remain. Detailed export requires opt-in checkbox
+  and a separate confirmation; target edits clear the opt-in.
+- Pure unit tests verify absence of sensitive fields; browser tests cover
+  redacted download and opt-in full download. Native Windows/Arch acceptance
+  and exact-head CI validation are still pending.

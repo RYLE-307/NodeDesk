@@ -177,10 +177,38 @@ test("network report downloads only completed results for the current target",as
   expect(download.suggestedFilename()).toBe("nodedesk-network-report.json");
   const fs=await import("node:fs/promises");
   const report=JSON.parse(await fs.readFile(await download.path(),"utf8"));
-  expect(report).toMatchObject({version:1,target:{host:"localhost"},
-    tcp:{port:8080,addresses:["127.0.0.1"],tcpReachable:true,elapsedMs:3},
+  expect(report).toMatchObject({version:2,redacted:true,target:null,
+    tcp:{port:8080,tcpReachable:true,elapsedMs:3},
     ping:null,trace:null,ports:null});
+  expect(JSON.stringify(report)).not.toContain("localhost");
+  expect(JSON.stringify(report)).not.toContain("127.0.0.1");
   await pane.getByLabel("Host").fill("another.local");
   await expect(downloadButton).toBeDisabled();
   expect(await page.evaluate(()=>window.calls)).toHaveLength(1);
+});
+
+test("network report includes sensitive output only with explicit opt-in and consent",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd){if(cmd==="network_ping")return {reachable:true,elapsedMs:7,output:"PING PRIVATE 10.90.1.7"};
+        throw Error("Unexpected network command");}};
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByLabel("Host").fill("private.example.internal");
+  await pane.getByRole("button",{name:"Ping",exact:true}).click();
+  await expect(pane.getByRole("status",{name:"Ping result"})).toBeVisible();
+  await pane.getByRole("checkbox",{name:"Include target addresses and tool output (sensitive)"}).check();
+  const button=pane.getByRole("button",{name:"Download report"});
+  page.once("dialog",dialog=>dialog.accept());
+  const download=page.waitForEvent("download");
+  await button.click();
+  const file=await download;
+  const fs=await import("node:fs/promises");
+  const report=JSON.parse(await fs.readFile(await file.path(),"utf8"));
+  expect(report).toMatchObject({version:2,redacted:false,target:{host:"private.example.internal"},
+    ping:{reachable:true,elapsedMs:7,output:"PING PRIVATE 10.90.1.7"}});
 });

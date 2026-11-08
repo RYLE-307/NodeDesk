@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from "react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
+import {createNetworkReport} from "./networkReport";
 
 type ProbeResult={addresses:string[];tcpReachable:boolean;elapsedMs:number};
 type PingResult={reachable:boolean;elapsedMs:number;output:string};
@@ -31,6 +32,7 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   const [scanBusy,setScanBusy]=useState(false);
   const [scanResult,setScanResult]=useState<PortScanResult|null>(null);
   const [scanError,setScanError]=useState("");
+  const [includeSensitive,setIncludeSensitive]=useState(false);
   // Invalidate stale results and stop native diagnostic processes when the
   // target changes or the workspace closes.
   const targetVersion=useRef(0);
@@ -78,13 +80,17 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
     cancelProbe(false);cancelPing(false);cancelTrace(false);cancelScan(false);
     setBusy(false);setPingBusy(false);setTraceBusy(false);setScanBusy(false);
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
+    setIncludeSensitive(false);
     setError("");setPingError("");setTraceError("");setScanError("");
   }
   function downloadReport(){
-    if(!result && !pingResult && !traceResult && !scanResult)return;
-    const report={version:1,createdAt:new Date().toISOString(),target:{host:host.trim()},
-      tcp:result?{port, ...result}:null,ping:pingResult,trace:traceResult,
-      ports:scanResult};
+    if((!result && !pingResult && !traceResult && !scanResult) ||
+       busy || pingBusy || traceBusy || scanBusy)return;
+    if(includeSensitive && !window.confirm(ru
+      ? "Полный отчёт содержит адреса и вывод сетевых команд. Скачать?"
+      : "The full report contains addresses and raw diagnostic output. Download?"))return;
+    const report=createNetworkReport({host,port,tcp:result,ping:pingResult,trace:traceResult,ports:scanResult},
+      {includeSensitive,createdAt:new Date().toISOString()});
     const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
     const link=document.createElement("a");
     link.href=url;link.download="nodedesk-network-report.json";
@@ -188,10 +194,13 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       </button>
       {scanBusy&&<button type="button" onClick={()=>cancelScan(true)}>{ru?"Отменить порты":"Cancel port check"}</button>}
     </div>
-    <button type="button" disabled={!result&&!pingResult&&!traceResult&&!scanResult}
+    <label><input type="checkbox" checked={includeSensitive} onChange={e=>setIncludeSensitive(e.target.checked)}/>
+      {ru?"Включить адреса целей и вывод утилит (конфиденциально)":"Include target addresses and tool output (sensitive)"}
+    </label>
+    <button type="button" disabled={busy||pingBusy||traceBusy||scanBusy||(!result&&!pingResult&&!traceResult&&!scanResult)}
       onClick={downloadReport}>{ru?"Скачать отчёт":"Download report"}</button>
-    <p className="ssh-help">{ru?"Отчёт создаётся только по нажатию и содержит адрес, результаты и вывод сетевых утилит. Проверьте его перед передачей другим людям.":
-      "The report is created only on click and includes the host, results and diagnostic output. Review it before sharing."}</p>
+    <p className="ssh-help">{ru?"По умолчанию отчёт скрывает имена хостов, IP-адреса и сырой вывод команд. Полные данные доступны только после включения опции и подтверждения. Никогда не отправляйте полный отчёт без проверки.":
+      "By default the report omits hostnames, IP addresses and raw tool output. Sensitive details require opting in and confirmation. Review any full report before sharing."}</p>
     {scanError&&<p role="alert" className="error">{scanError}</p>}
     {scanResult&&<div role="status" aria-label={ru?"Результат проверки портов":"Port check result"}>
       <p>{ru?"Адреса":"Addresses"}: {scanResult.addresses.join(", ")} ({scanResult.elapsedMs} ms)</p>

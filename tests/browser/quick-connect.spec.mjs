@@ -50,5 +50,9 @@ test("read-only SSH config preview fills Quick Connect without commands or auto-
     .toHaveLength(0);
   await editor.getByRole("button",{name:"Open tab"}).click();
   await expect(page.getByRole("button",{name:"Close: lab-ssh"})).toBeVisible();
-  expect(await page.evaluate(()=>window.invocations)).toEqual(["ssh_config_preview"]);
+  // Opening an SSH workspace may fetch local feature capabilities, but
+  // must not authenticate, connect, list remote files or transfer anything.
+  const calls=await page.evaluate(()=>window.invocations);
+  expect(calls).toContain("ssh_config_preview");
+  expect(calls.filter(name=>!["ssh_config_preview","files_capabilities"].includes(name))).toEqual([]);
 });

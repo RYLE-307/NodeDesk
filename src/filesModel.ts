@@ -121,3 +121,23 @@ export function retryBatchPlan(
   }
   return {indexes,names:checked};
 }
+
+/** User-triggered diagnostic report: never export host, user, name, path,
+ * session ID, partial ID, file contents, credentials or private metadata. */
+export function redactedTransferReport(items:readonly BatchItem[],upload:boolean,
+  generatedAt:string):{
+    schema:1;generatedAt:string;direction:"upload"|"download";
+    total:number;completed:number;unfinished:number;
+    files:{index:number;state:BatchItemState}[];
+  } {
+  if(!items.length||items.length>50 ||
+    !items.every(item=>["queued","active","done","failed","cancelled","skipped","paused"].includes(item.state))){
+    throw new Error("Invalid transfer report");
+  }
+  return {
+    schema:1,generatedAt,direction:upload?"upload":"download",
+    total:items.length,completed:items.filter(x=>x.state==="done").length,
+    unfinished:items.filter(x=>x.state!=="done").length,
+    files:items.map((item,index)=>({index:index+1,state:item.state}))
+  };
+}

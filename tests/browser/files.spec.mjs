@@ -1026,3 +1026,39 @@ test('remote POSIX chmod requires valid octal input and a separate confirmation'
   });
   expect(calls[0].request.destination.authSession).toBeTruthy();
 });
+
+
+test('redacted SFTP transfer report exports statuses without filenames or connection metadata',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>Object.assign(window.fixture,{
+    ready:true,emptyRemote:true,extraLocal:true,allowTransfer:true,
+    failOnNameOnce:'extra.bin'
+  }));
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
+  page.once('dialog',d=>d.accept());
+  await files.getByRole('button',{name:'Upload selected (2)'}).click();
+  const report=files.getByRole('region',{name:'Transfer report'});
+  await expect(report).toContainText('File transfers: 1/2');
+  await expect(report.getByText('Partial-file diagnostic (.part)')).toBeVisible();
+  await report.getByText('Partial-file diagnostic (.part)').click();
+  await expect(report.locator('code')).toContainText('.nodedesk-');
+  const downloadEvent=page.waitForEvent('download');
+  await report.getByRole('button',{name:'Download redacted report'}).click();
+  const download=await downloadEvent;
+  expect(download.suggestedFilename()).toBe('nodedesk-transfer-report-redacted.json');
+  const fsModule=await import('node:fs/promises');
+  const json=JSON.parse(await fsModule.readFile(await download.path(),'utf8'));
+  expect(json.total).toBe(2);
+  expect(json.completed).toBe(1);
+  expect(json.files.map(x=>x.state)).toEqual(['done','failed']);
+  for(const secret of ['sample.bin','extra.bin','/remote','/local','password','authSession']){
+    expect(JSON.stringify(json)).not.toContain(secret);
+  }
+});

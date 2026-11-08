@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { SshTerminal } from "./SshTerminal";
 import type { Connection } from "./catalog";
-import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, startBatch, updateBatchItem, finishBatch, remainingBatchIndexes, retryBatchPlan, visibleEntries, OperationGate } from "./filesModel";
+import { childPath, parentPath, portableName, progressPercent, transferAllowed, transferBatchPlan, startBatch, updateBatchItem, finishBatch, remainingBatchIndexes, retryBatchPlan, redactedTransferReport, visibleEntries, OperationGate } from "./filesModel";
 import type { BatchItem, BatchItemState, FileEntry, Listing, Progress } from "./filesModel";
 import {adjacentMatch, countLiteral, replaceAllLiteral, replaceLiteralSelection,
   MAX_REPLACEMENTS, MAX_SEARCH_TERM} from "./textEditorSearch";
@@ -120,6 +120,15 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       setError(ru?"Не удалось сохранить контрольную точку очереди. Продолжение после перезапуска недоступно.":
         "Cannot save queue checkpoint. Recovery after restart is unavailable.");
     }
+  }
+  function downloadRedactedReport(){
+    if(!batchReport.length || !retryPlan || busy)return;
+    const report=redactedTransferReport(batchReport,retryPlan.upload,new Date().toISOString());
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;link.download="nodedesk-transfer-report-redacted.json";
+    document.body.append(link);link.click();link.remove();
+    window.setTimeout(()=>URL.revokeObjectURL(url),10000);
   }
   function archiveCurrent():boolean {
     if(!retryPlan || !batchReport.length)return true;
@@ -792,6 +801,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
               ? (ru?"Возобновить загрузку с проверкой":"Resume verified upload")
               : (ru?"Возобновить скачивание с проверкой":"Resume verified download")}
           </button>}
+        {batchFinished && retryPlan && !busy && <button type="button"
+          onClick={downloadRedactedReport}>
+          {ru?"Скачать отчёт без имён и адресов":"Download redacted report"}
+        </button>}
         {batchFinished && !busy && <button type="button" onClick={() => {
           setBatchReport([]);setBatchFinished(false);setRetryPlan(null);
           setPartialUpload(null);setPartialDownload(null);
@@ -799,6 +812,17 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         }}>
           {ru ? "Очистить отчёт" : "Clear report"}</button>}
       </div>
+      {batchFinished && retryPlan && (retryPlan.upload?partialUpload:partialDownload) &&
+        remainingBatchIndexes(batchReport).length>0 && <details className="ssh-help">
+          <summary>{ru?"Диагностика частичного файла (.part)":"Partial-file diagnostic (.part)"}</summary>
+          <p>{ru
+            ?"После сбоя может остаться неполный файл. Ниже только ожидаемый путь; существование файла не подтверждено. Перед удалением проверь источник и результаты передачи."
+            :"A failed transfer may leave a partial file. This is only an expected path, not proof of existence. Check the source and outcome before cleanup."}</p>
+          <code style={{overflowWrap:"anywhere"}}>{childPath(
+            retryPlan.upload?retryPlan.remoteDirectory:retryPlan.localDirectory,
+            `.nodedesk-${(retryPlan.upload?partialUpload:partialDownload)!.previousId}.part`,
+            retryPlan.upload)}</code>
+        </details>}
       {batchFinished && retryPlan && remainingBatchIndexes(batchReport).length>0 && <p className="ssh-help">
         {ru?"Обнови ОБЕ панели. Обычный повтор начинает файл с нуля; проверенное возобновление сравнивает частичный файл с источником перед дозагрузкой. Готовые файлы не повторяются.":
           "Refresh BOTH panes. Normal retry starts at byte zero; verified resume compares the partial to its source before transferring the remainder. Completed files are untouched."}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, startBatch, updateBatchItem, finishBatch, remainingBatchIndexes, retryBatchPlan, OperationGate } from "../src/filesModel.ts";
+import { portableName, childPath, parentPath, transferAllowed, progressPercent, visibleEntries, transferBatchPlan, startBatch, updateBatchItem, finishBatch, remainingBatchIndexes, retryBatchPlan, redactedTransferReport, OperationGate } from "../src/filesModel.ts";
 
 test("reject traversal, Windows devices, alternate streams and control characters", () => {
   for (const name of ["", ".", "..", "a/b", "a\\b", "x:y", "NUL.txt", "COM1", "CONOUT$", "file.", "x\n", "\x1b[31m", "x*"]) {
@@ -122,4 +122,23 @@ test("retry queue includes only incomplete items and validates refreshed source 
     {name:"b",state:"cancelled"},{name:"c",state:"skipped"}]),[1,2]);
   assert.deepEqual(remainingBatchIndexes([{name:"a",state:"done"},
     {name:"b",state:"paused"}]),[1]);
+});
+
+test("redacted transfer report contains no filenames, hosts, paths, credentials or partial IDs",()=>{
+  const report=redactedTransferReport([
+    {name:"client-secret-key.pem",state:"done"},
+    {name:"vpn-password.txt",state:"failed"},
+    {name:"corp-id.bin",state:"paused"}
+  ],true,"2026-11-08T09:00:00Z");
+  assert.deepEqual(report.files,[
+    {index:1,state:"done"},{index:2,state:"failed"},{index:3,state:"paused"}
+  ]);
+  assert.equal(report.total,3);
+  assert.equal(report.completed,1);
+  assert.equal(report.unfinished,2);
+  const encoded=JSON.stringify(report);
+  for(const secret of ["client-secret-key","vpn-password","corp-id","authSession","192.168.","/home/"]){
+    assert.equal(encoded.includes(secret),false);
+  }
+  assert.throws(()=>redactedTransferReport([],false,"test"));
 });

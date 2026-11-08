@@ -44,3 +44,27 @@ test("terminal tools change font and guard multiline paste without a session",as
   });
   expect(prevented).toBe(true);
 });
+
+test("terminal paste rejects control sequences and oversize, but permits confirmed multiline",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false})));
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Local terminal"}).click();
+  const pane=page.getByRole("region",{name:"Local terminal"});
+  const decisions=await pane.locator(".ssh-screen").evaluate(element=>{
+    const paste=text=>{
+      const clipboardData=new DataTransfer();clipboardData.setData("text/plain",text);
+      const event=new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData});
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    let confirmations=0;
+    window.confirm=()=>{confirmations++;return true;};
+    const normal=paste("whoami");
+    const escaped=paste("whoami\u001b[0m");
+    const oversized=paste("a".repeat(16385));
+    const multiline=paste("pwd\nwhoami");
+    return {normal,escaped,oversized,multiline,confirmations};
+  });
+  expect(decisions).toEqual({normal:false,escaped:true,oversized:true,multiline:false,confirmations:1});
+  await expect(pane.getByRole("status")).toContainText("Paste blocked");
+});

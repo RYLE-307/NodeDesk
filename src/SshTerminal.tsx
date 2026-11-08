@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
 import { TunnelWorkspace } from "./TunnelWorkspace";
+import { decideTerminalPaste } from "./terminalPaste";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -48,8 +49,15 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     const screen=container.current!;
     const guardPaste=(event:ClipboardEvent)=>{
       const value=event.clipboardData?.getData("text/plain")??"";
-      if (!value.includes("\n") && !value.includes("\r")) return;
-      if (!window.confirm(currentLanguage.current==="ru"
+      const decision=decideTerminalPaste(value);
+      if (decision==="reject-size" || decision==="reject-control") {
+        event.preventDefault();
+        setStatus(currentLanguage.current==="ru"
+          ? (decision==="reject-size" ? "Вставка заблокирована: слишком большой текст" : "Вставка заблокирована: управляющие символы")
+          : (decision==="reject-size" ? "Paste blocked: text too large" : "Paste blocked: control characters"));
+        return;
+      }
+      if (decision==="confirm" && !window.confirm(currentLanguage.current==="ru"
         ? "Вставить несколько строк в терминал? Команды могут выполниться сразу."
         : "Paste multiple lines into the terminal? Commands may run immediately.")) event.preventDefault();
     };

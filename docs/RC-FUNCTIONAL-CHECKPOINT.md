@@ -57,3 +57,12 @@ native acceptance result. Automated passes alone do not close a row.
   passphrase. It cannot be combined with password/PAM login. Disposable Linux
   fixture coverage and Windows/Linux CI for this increment are pending.
 - Production-stable release: prohibited while the above gates remain open.
+
+## Terminal paste guard (2026-11-08, review increment)
+- The shared SSH/SFTP/local xterm paste handler rejects pasted control/escape
+  bytes, bidi direction overrides and payloads above 16 KiB UTF-8. CR/LF
+  pastes still require explicit confirmation. Ordinary typing is unchanged.
+- New pure unit cases and a Playwright browser scenario cover ordinary text,
+  multiline consent, escape sequences, and bounded Unicode payloads.
+- This code is **not native Windows/Arch accepted**. Exact-head automated CI
+  must pass before treating the increment as verified.

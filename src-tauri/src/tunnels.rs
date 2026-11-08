@@ -1,11 +1,15 @@
-//! Explicit, loopback-only SSH local forwarding. Existing host trust and key/agent auth only.
+//! Explicit, loopback-only SSH local and dynamic forwarding. Existing host trust and key/agent auth only.
 use std::{collections::HashMap,process::{Child,Command,Stdio},sync::{Arc,Mutex},time::Duration};
 use serde::{Deserialize,Serialize};
 use tauri::{ipc::Channel,State,Manager};
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct LocalForward {ssh_host:String,ssh_port:u16,username:String,local_port:u16,target_host:String,target_port:u16}
+pub struct LocalForward {ssh_host:String,ssh_port:u16,username:String,local_port:u16,
+    #[serde(default)] kind:Option<ForwardKind>,target_host:String,target_port:u16}
+#[derive(Clone,Copy,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="camelCase")]
+enum ForwardKind { Local, Dynamic }
 #[derive(Clone,Serialize)]
 #[serde(tag="kind",content="value",rename_all="camelCase")]
 pub enum TunnelEvent { Exit(u32), Error(String) }
@@ -17,18 +21,31 @@ pub struct Tunnels(Mutex<HashMap<String,Running>>);
 impl Tunnels {pub fn shutdown(&self){if let Ok(mut tunnels)=self.0.lock(){tunnels.clear();}}}
 
 fn arguments(spec:&LocalForward)->Result<Vec<String>,String>{
-    if spec.local_port<1024||spec.target_port==0||!crate::network::valid_host(&spec.target_host){return Err("Invalid local forward target or port".into());}
+    if spec.local_port<1024{return Err("Invalid local forward port".into());}
+    let kind=spec.kind.unwrap_or(ForwardKind::Local);
+    match kind {
+        ForwardKind::Local if spec.target_port==0||!crate::network::valid_host(&spec.target_host)=>
+            return Err("Invalid local forward target or port".into()),
+        ForwardKind::Dynamic if !spec.target_host.is_empty()||spec.target_port!=0=>
+            return Err("Dynamic forward has no fixed target".into()),
+        _=>{}
+    }
     let mut args=crate::ssh::arguments(&spec.ssh_host,spec.ssh_port,&spec.username,crate::ssh::AuthMode::Key)?;
     args.retain(|arg| !matches!(arg.as_str(),"-tt"|"-oClearAllForwardings=yes"|"-oBatchMode=no"|"-oNumberOfPasswordPrompts=3"|"-oStrictHostKeyChecking=ask"));
-    let target=spec.target_host.trim_start_matches('[').trim_end_matches(']');
-    let target=if target.contains(':'){format!("[{target}]")}else{target.into()};
-    let forward=format!("127.0.0.1:{}:{target}:{}",spec.local_port,spec.target_port);
+    let forward=match kind {
+        ForwardKind::Local=>{
+            let target=spec.target_host.trim_start_matches('[').trim_end_matches(']');
+            let target=if target.contains(':'){format!("[{target}]")}else{target.into()};
+            format!("127.0.0.1:{}:{target}:{}",spec.local_port,spec.target_port)
+        },
+        ForwardKind::Dynamic=>format!("127.0.0.1:{}",spec.local_port)
+    };
     // Never expose the listening socket to the LAN. No prompt, config file,
     // agent forwarding, remote shell or fallback to an unknown host key.
     let destination=args.pop().ok_or("Missing SSH destination")?;
     args.extend(["-N".into(),"-T".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),
         "-oClearAllForwardings=no".into(),"-oExitOnForwardFailure=yes".into(),"-oGatewayPorts=no".into(),
-        "-L".into(),forward,destination]);
+        (if kind==ForwardKind::Local{"-L"}else{"-D"}).into(),forward,destination]);
     Ok(args)
 }
 fn check_local_port(port:u16)->Result<(),String>{
@@ -79,7 +96,7 @@ pub fn tunnel_stop(id:String,state:State<'_,Tunnels>)->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn sample()->LocalForward{LocalForward{ssh_host:"example.org".into(),ssh_port:22,username:"admin".into(),local_port:15432,target_host:"127.0.0.1".into(),target_port:5432}}
+    fn sample()->LocalForward{LocalForward{ssh_host:"example.org".into(),ssh_port:22,username:"admin".into(),local_port:15432,kind:None,target_host:"127.0.0.1".into(),target_port:5432}}
     #[test]fn local_forward_is_loopback_only_and_noninteractive(){
         let args=arguments(&sample()).unwrap();
         let option=args.iter().position(|arg|arg=="-L").unwrap();
@@ -93,6 +110,18 @@ mod tests{
         spec=sample();spec.local_port=80;assert!(arguments(&spec).is_err());
         spec=sample();spec.ssh_host="-oProxyCommand=evil".into();assert!(arguments(&spec).is_err());
         spec=sample();spec.target_host="::1".into();assert!(arguments(&spec).unwrap().contains(&"127.0.0.1:15432:[::1]:5432".into()));
+    }
+    #[test]fn dynamic_forward_is_loopback_only_without_fixed_target(){
+        let mut spec=sample();spec.kind=Some(ForwardKind::Dynamic);
+        assert!(arguments(&spec).is_err());
+        spec.target_host.clear();spec.target_port=0;
+        let args=arguments(&spec).unwrap();
+        let option=args.iter().position(|arg|arg=="-D").unwrap();
+        assert_eq!(args[option+1],"127.0.0.1:15432");
+        for flag in ["-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oExitOnForwardFailure=yes","-oForwardAgent=no","-N","-T"]{
+            assert!(args.contains(&flag.into()));
+        }
+        assert!(!args.contains(&"-L".into()));
     }
     #[test]fn occupied_loopback_port_is_detectable_without_ssh(){
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -110,7 +139,7 @@ mod tests{
         let spare=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let local_port=spare.local_addr().unwrap().port();drop(spare);
         let spec=LocalForward{ssh_host:"127.0.0.1".into(),ssh_port:22229,
-            username:std::env::var("USER").unwrap(),local_port,target_host:"127.0.0.1".into(),
+            username:std::env::var("USER").unwrap(),local_port,kind:None,target_host:"127.0.0.1".into(),
             target_port:target.local_addr().unwrap().port()};
         let mut command=Command::new("ssh");
         command.args([format!("-oUserKnownHostsFile={dir}/trusted-gui"),"-oGlobalKnownHostsFile=/dev/null".into(),
@@ -136,5 +165,50 @@ mod tests{
         let mut request=[0u8;4];accepted.read_exact(&mut request).unwrap();assert_eq!(&request,b"PING");
         accepted.write_all(b"PONG").unwrap();
         let mut response=[0u8;4];client.read_exact(&mut response).unwrap();assert_eq!(&response,b"PONG");
+    }
+    #[cfg(unix)]
+    #[test]fn real_dynamic_socks_forward_reaches_only_explicit_test_target(){
+        use std::io::{Read,Write};
+        struct KillOnDrop(Child);
+        impl Drop for KillOnDrop{fn drop(&mut self){let _=self.0.kill();let _=self.0.wait();}}
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else{return;};
+        let target=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let spare=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local_port=spare.local_addr().unwrap().port();drop(spare);
+        let spec=LocalForward{ssh_host:"127.0.0.1".into(),ssh_port:22229,
+            username:std::env::var("USER").unwrap(),local_port,kind:Some(ForwardKind::Dynamic),
+            target_host:String::new(),target_port:0};
+        let mut command=Command::new("ssh");
+        command.args([format!("-oUserKnownHostsFile={dir}/trusted-gui"),"-oGlobalKnownHostsFile=/dev/null".into(),
+            "-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+        command.args(arguments(&spec).unwrap()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child=KillOnDrop(command.spawn().unwrap());
+        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        let mut client=loop{
+            if let Ok(stream)=std::net::TcpStream::connect(("127.0.0.1",local_port)){break stream;}
+            if child.0.try_wait().unwrap().is_some()||std::time::Instant::now()>deadline{
+                panic!("Disposable SSH SOCKS forward did not listen");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.write_all(&[5,1,0]).unwrap();
+        let mut greeting=[0u8;2];client.read_exact(&mut greeting).unwrap();assert_eq!(greeting,[5,0]);
+        let port=target.local_addr().unwrap().port();
+        let mut request=vec![5,1,0,1,127,0,0,1];request.extend(port.to_be_bytes());
+        client.write_all(&request).unwrap();
+        let mut reply=[0u8;10];client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply[..4],&[5,0,0,1]);
+        client.write_all(b"PING").unwrap();
+        let (mut accepted,_)=loop{
+            match target.accept(){Ok(pair)=>break pair,Err(error) if error.kind()==std::io::ErrorKind::WouldBlock=>{
+                assert!(std::time::Instant::now()<deadline,"SOCKS forward did not reach target");
+                std::thread::sleep(Duration::from_millis(20));
+            },Err(error)=>panic!("Target listener failed: {error}")}
+        };
+        let mut payload=[0u8;4];accepted.read_exact(&mut payload).unwrap();assert_eq!(&payload,b"PING");
+        accepted.write_all(b"PONG").unwrap();
+        client.read_exact(&mut payload).unwrap();assert_eq!(&payload,b"PONG");
     }
 }

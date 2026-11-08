@@ -20,7 +20,7 @@ automated scenarios; it does not prove desktop, protocol or security parity.
 | Area | Remaining gate |
 | --- | --- |
 | File protocols | SCP, rsync, FTP/FTPS with bounded transfers, TLS validation, collision policy and lab fixtures. |
-| SSH advanced | Identity-file selection, ProxyJump chains, remote/dynamic tunnels and X11 forwarding with explicit trust boundaries. Current single-hop console jump is limited. |
+| SSH advanced | Direct identity-file selection and loopback-only dynamic SOCKS5 forwarding are implemented, pending CI/native acceptance. ProxyJump chains, remote tunnels and X11 forwarding need explicit trust boundaries; current single-hop console jump is limited. |
 | Other sessions | Telnet, serial, Mosh and X11/XDMCP with platform-specific capability/permission checks. Rlogin/Rsh need an explicit security decision. |
 | Workspace/terminal | Catalog migrations and MobaXterm import, terminal clipboard/link/log controls, background transfer lifecycle, accessibility and visual review. |
 | Network/infrastructure | Diagnostics cancellation; manually downloaded result reports are implemented, pending CI/native acceptance. Proxmox, Zabbix and MikroTik need scoped API credentials, opt-in polling and disposable mocks. |

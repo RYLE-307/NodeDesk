@@ -8,6 +8,11 @@ executable remains a portable preview. No artifact is published as a release.
 The Windows installer may require the OS WebView2 runtime and relies on
 separately installed OpenSSH, RDP and VNC clients for the corresponding external
 features. The DEB declares `openssh-client` because SSH and SFTP need it.
+CI obtains the pinned Tauri NSIS tool archive and plugin through the GitHub
+release asset API and checks their upstream SHA-1 values before bundling. This
+avoids a repeatedly observed 504 from the public release download URL; Tauri
+also verifies the tool files in its local cache. No third-party binary is
+committed to this repository.
 Optional Linux ping, traceroute, desktop viewers and system VPN tooling remain
 separate OS dependencies; the UI reports unavailable tools instead of silently
 installing them.

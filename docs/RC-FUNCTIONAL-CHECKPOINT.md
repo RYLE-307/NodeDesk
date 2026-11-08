@@ -23,7 +23,8 @@ native acceptance result. Automated passes alone do not close a row.
 
 - [ ] SCP, rsync, FTP/FTPS: bounded transfers, collision handling, TLS trust,
   cancellation and disposable protocol fixtures.
-- [ ] SSH: advanced tunnels, X11, safe gateway chains, agent-forwarding trust
+- [ ] SSH: local and dynamic loopback tunnels implemented (dynamic fixture and
+  native acceptance pending); remote tunnels, X11, safe gateway chains, agent-forwarding trust
   decision and exact identity-file behaviour.
 - [ ] Telnet, serial, Mosh, X11/XDMCP: platform capabilities and permissions;
   decide whether insecure Rlogin/Rsh can be supported safely.

@@ -84,6 +84,10 @@ jobs:
         if: runner.os == 'Linux'
         run: bash tests/ssh-fixture.sh
       - run: npm run tauri build -- --no-bundle
+      - name: Prepare verified NSIS tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./ops/packaging/prepare-nsis.ps1
       - name: Bundle Windows installer preview
         if: runner.os == 'Windows'
         run: npm run tauri bundle -- --config ops/packaging/preview-windows.json --bundles nsis --no-sign --ci

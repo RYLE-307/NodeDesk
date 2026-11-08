@@ -1056,6 +1056,8 @@ mod tests {
             cmd.env("PATH",format!("{}:{}",wrapper_dir.display(),std::env::var("PATH").unwrap_or_default()));
             cmd.arg(format!("-oUserKnownHostsFile={}",known_hosts.display()));
             cmd.arg("-oGlobalKnownHostsFile=/dev/null");
+            // Test-only outer identity: production GUI gateway requires an agent.
+            cmd.arg("-i").arg(root.join("client"));
             cmd.args(transport_args(&d).unwrap());
             cmd
         };

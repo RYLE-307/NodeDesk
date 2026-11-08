@@ -101,6 +101,27 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
   }
+  async function copySelection() {
+    const selection=terminal.current?.getSelection()??"";
+    if (!selection) {
+      setStatus(ru?"Сначала выделите текст в терминале":"Select terminal output to copy");
+      return;
+    }
+    if (selection.length>65536 || new TextEncoder().encode(selection).length>65536) {
+      setStatus(ru?"Выделение слишком большое для копирования":"Selection too large to copy");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatus(ru?"Буфер обмена недоступен":"Clipboard unavailable");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      setStatus(ru?"Выделенный текст скопирован":"Selected text copied");
+    } catch {
+      setStatus(ru?"Копирование отклонено системой":"Clipboard write denied");
+    }
+  }
   function changeFont(delta:number) {
     setFontSize(current=>{
       const next=Math.min(24,Math.max(10,current+delta));
@@ -156,6 +177,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();searchAddon.current?.findNext(query);}}}/></label>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findPrevious(query)} aria-label={ru?"Предыдущее совпадение":"Previous match"}>↑</button>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findNext(query)} aria-label={ru?"Следующее совпадение":"Next match"}>↓</button>
+      <button type="button" onClick={()=>void copySelection()} aria-label={ru?"Копировать выделение":"Copy selected text"}>{ru?"Копировать":"Copy selection"}</button>
       <button type="button" onClick={()=>changeFont(-1)} aria-label={ru?"Уменьшить шрифт":"Decrease font size"}>−</button>
       <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
       <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>

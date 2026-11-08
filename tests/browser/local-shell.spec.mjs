@@ -68,3 +68,13 @@ test("terminal paste rejects control sequences and oversize, but permits confirm
   expect(decisions).toEqual({normal:false,escaped:true,oversized:true,multiline:false,confirmations:1});
   await expect(pane.getByRole("status")).toContainText("Paste blocked");
 });
+
+test("terminal copy requires selected terminal text and never reads clipboard implicitly",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false})));
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Local terminal"}).click();
+  const pane=page.getByRole("region",{name:"Local terminal"});
+  await pane.getByRole("button",{name:"Copy selected text"}).click();
+  await expect(pane.getByRole("status")).toContainText("Select terminal output to copy");
+  await expect(pane.getByRole("button",{name:"Copy selected text"})).toBeEnabled();
+});

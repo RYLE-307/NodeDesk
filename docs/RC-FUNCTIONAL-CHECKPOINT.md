@@ -66,3 +66,11 @@ native acceptance result. Automated passes alone do not close a row.
   multiline consent, escape sequences, and bounded Unicode payloads.
 - This code is **not native Windows/Arch accepted**. Exact-head automated CI
   must pass before treating the increment as verified.
+
+## Terminal clipboard copy (2026-11-08, review increment)
+- An explicit **Copy selection** button copies only xterm's actively selected text,
+  not the full scrollback. Empty selections, OS clipboard denial and unavailable
+  clipboard APIs have visible errors; copying is bounded to 64 KiB UTF-8.
+- Clipboard access is never initiated by opening or connecting a session.
+  Browser coverage checks no-selection behavior; native clipboard success on
+  Windows/Arch and large-output acceptance remain **NOT TESTED**.

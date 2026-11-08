@@ -23,7 +23,7 @@ automated scenarios; it does not prove desktop, protocol or security parity.
 | SSH advanced | Identity-file selection, ProxyJump chains, remote/dynamic tunnels and X11 forwarding with explicit trust boundaries. Current single-hop console jump is limited. |
 | Other sessions | Telnet, serial, Mosh and X11/XDMCP with platform-specific capability/permission checks. Rlogin/Rsh need an explicit security decision. |
 | Workspace/terminal | Catalog migrations and MobaXterm import, terminal clipboard/link/log controls, background transfer lifecycle, accessibility and visual review. |
-| Network/infrastructure | Diagnostics cancellation and reports; Proxmox, Zabbix and MikroTik with scoped API credentials, opt-in polling and disposable mocks. |
+| Network/infrastructure | Diagnostics cancellation; manually downloaded result reports are implemented, pending CI/native acceptance. Proxmox, Zabbix and MikroTik need scoped API credentials, opt-in polling and disposable mocks. |
 | Monitoring | Local read-only CPU/RAM/disk/network sampling is in this branch, explicitly opt-in. Remote monitoring, alerting and native acceptance remain open. |
 
 ## Verification rule

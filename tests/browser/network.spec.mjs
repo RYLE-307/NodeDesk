@@ -126,3 +126,35 @@ test("changing diagnostic target invalidates in-flight results and does not star
   expect(await page.evaluate(()=>window.calls.map(x=>x.args.target.host)))
     .toEqual(["test-old.local"]);
 });
+
+test("network report downloads only completed results for the current target",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args});
+        if(cmd==="network_probe")return {addresses:["127.0.0.1"],tcpReachable:true,elapsedMs:3};
+        throw Error("Unexpected command");}}
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  const downloadButton=pane.getByRole("button",{name:"Download report"});
+  await expect(downloadButton).toBeDisabled();
+  await pane.getByLabel("Host").fill("localhost");
+  await pane.getByRole("spinbutton",{name:"Port",exact:true}).fill("8080");
+  await pane.getByRole("button",{name:"Check TCP"}).click();
+  await expect(downloadButton).toBeEnabled();
+  const event=page.waitForEvent("download");
+  await downloadButton.click();
+  const download=await event;
+  expect(download.suggestedFilename()).toBe("nodedesk-network-report.json");
+  const fs=await import("node:fs/promises");
+  const report=JSON.parse(await fs.readFile(await download.path(),"utf8"));
+  expect(report).toMatchObject({version:1,target:{host:"localhost"},
+    tcp:{port:8080,addresses:["127.0.0.1"],tcpReachable:true,elapsedMs:3},
+    ping:null,trace:null,ports:null});
+  await pane.getByLabel("Host").fill("another.local");
+  await expect(downloadButton).toBeDisabled();
+  expect(await page.evaluate(()=>window.calls)).toHaveLength(1);
+});

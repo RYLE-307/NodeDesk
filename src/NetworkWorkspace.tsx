@@ -45,6 +45,17 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
     setError("");setPingError("");setTraceError("");setScanError("");
   }
+  function downloadReport(){
+    if(!result && !pingResult && !traceResult && !scanResult)return;
+    const report={version:1,createdAt:new Date().toISOString(),target:{host:host.trim()},
+      tcp:result?{port, ...result}:null,ping:pingResult,trace:traceResult,
+      ports:scanResult};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;link.download="nodedesk-network-report.json";
+    document.body.append(link);link.click();link.remove();
+    window.setTimeout(()=>URL.revokeObjectURL(url),10000);
+  }
 
   async function run(){
     if(busy)return;
@@ -134,6 +145,10 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
         {scanBusy?(ru?"Проверка портов…":"Checking ports…"):(ru?"Проверить порты":"Check ports")}
       </button>
     </div>
+    <button type="button" disabled={!result&&!pingResult&&!traceResult&&!scanResult}
+      onClick={downloadReport}>{ru?"Скачать отчёт":"Download report"}</button>
+    <p className="ssh-help">{ru?"Отчёт создаётся только по нажатию и содержит адрес, результаты и вывод сетевых утилит. Проверьте его перед передачей другим людям.":
+      "The report is created only on click and includes the host, results and diagnostic output. Review it before sharing."}</p>
     {scanError&&<p role="alert" className="error">{scanError}</p>}
     {scanResult&&<div role="status" aria-label={ru?"Результат проверки портов":"Port check result"}>
       <p>{ru?"Адреса":"Addresses"}: {scanResult.addresses.join(", ")} ({scanResult.elapsedMs} ms)</p>

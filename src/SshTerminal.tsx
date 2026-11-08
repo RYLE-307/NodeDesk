@@ -22,6 +22,10 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState(""), [busy, setBusy] = useState(false);
   const [auth, setAuth] = useState<AuthMode>(passwordOnly ? "password" : "auto");
+  const [jumpEnabled,setJumpEnabled]=useState(false);
+  const [jumpHost,setJumpHost]=useState("");
+  const [jumpUser,setJumpUser]=useState("");
+  const [jumpPort,setJumpPort]=useState("22");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
   const ru = language === "ru";
@@ -70,6 +74,8 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     setBusy(true); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
+    const jump = !local && (kind==="ssh"||kind==="sftp") && jumpEnabled
+      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort)} : null;
     const events = new Channel<Event>();
     events.onmessage = event => {
       if (session.current !== id) return;
@@ -81,7 +87,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
@@ -103,9 +109,32 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
           <option value="password">{ru ? "Пароль / PAM" : "Password / PAM"}</option>
         </select>
       </label>}
-      <button disabled={busy} onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
+      <button disabled={busy || (jumpEnabled && (kind==="ssh"||kind==="sftp") &&
+          (!jumpHost || !jumpUser || !Number.isInteger(Number(jumpPort)) ||
+            Number(jumpPort)<1 || Number(jumpPort)>65535))}
+        onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
+    {!local && (kind==="ssh" || kind==="sftp") && <div className="ssh-jump-options">
+      <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
+        onChange={e=>setJumpEnabled(e.target.checked)}/>
+        {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}
+      </label>
+      {jumpEnabled && <>
+        <label>{ru?"Хост шлюза":"Jump host"}<input value={jumpHost}
+          aria-label="Jump host" disabled={busy} maxLength={253} autoComplete="off"
+          onChange={e=>setJumpHost(e.target.value)}/></label>
+        <label>{ru?"Пользователь шлюза":"Jump username"}<input value={jumpUser}
+          aria-label="Jump username" disabled={busy} maxLength={200} autoComplete="off"
+          onChange={e=>setJumpUser(e.target.value)}/></label>
+        <label>{ru?"Порт шлюза":"Jump port"}<input type="number" min="1" max="65535"
+          value={jumpPort} aria-label="Jump port" disabled={busy}
+          onChange={e=>setJumpPort(e.target.value)}/></label>
+        <p className="ssh-help">{ru
+          ?"Только один явно заданный шлюз, только SSH/SFTP-консоль. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. Для GUI Files шлюз пока не поддерживается."
+          :"One explicit jump host, SSH/SFTP console only. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Not supported for Files GUI."}</p>
+      </>}
+    </div>}
     <div className="ssh-toolbar terminal-tools">
       <label>{ru?"Поиск в выводе":"Find in output"} <input aria-label={ru?"Поиск в выводе":"Find in output"} value={query}
         onChange={event=>{setQuery(event.target.value);if(event.target.value)searchAddon.current?.findNext(event.target.value);else searchAddon.current?.clearDecorations();}}

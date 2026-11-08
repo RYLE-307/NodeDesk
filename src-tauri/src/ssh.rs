@@ -209,6 +209,34 @@ pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -
     args.extend([port.to_string(), "-l".into(), username.into(), host.into()]);
     Ok(args)
 }
+
+#[derive(Clone,Debug,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct JumpHost {host:String,port:u16,username:String}
+fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,target_user:&str)->Result<String,String>{
+    // The jump is a single literal host, never a config alias, URI or chain.
+    // Reject all metacharacters before handing a single -J argument to OpenSSH.
+    arguments(&jump.host,jump.port,&jump.username,AuthMode::Key)?;
+    if jump.host==target_host && jump.port==target_port && jump.username==target_user{
+        return Err("A jump host must not be identical to the target".into());
+    }
+    let host=if jump.host.contains(':')&&!jump.host.starts_with('['){
+        format!("[{}]",jump.host)
+    }else{jump.host.clone()};
+    Ok(format!("{}@{}:{}",jump.username,host,jump.port))
+}
+fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
+    host:&str,port:u16,username:&str)->Result<Vec<String>,String>{
+    if let Some(jump)=jump{
+        let spec=jump_destination(jump,host,port,username)?;
+        // Options are passed as separate argv entries. No shell and no
+        // ProxyCommand string constructed by NodeDesk. OpenSSH itself
+        // handles -J; the jump's own ssh_config differs from the target.
+        let index=args.len().checked_sub(1).ok_or("Missing SSH target")?;
+        args.splice(index..index,["-J".to_string(),spec]);
+    }
+    Ok(args)
+}
 fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
     // Reuse the validated OpenSSH destination and security/authentication settings.
     // sftp accepts -P for the port, not ssh's -p; its login is one user@host argument.
@@ -248,13 +276,20 @@ fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
     }
 }
 #[tauri::command]
-pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode, kind: TerminalKind, cols: u16, rows: u16, events: Channel<Event>, app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode,
+    kind: TerminalKind, jump: Option<JumpHost>, cols: u16, rows: u16, events: Channel<Event>,
+    app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
+    if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
+        return Err("Jump host is supported only in SSH/SFTP console tabs".into());
+    }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
-        TerminalKind::Ssh => ("ssh".into(), arguments(&host, port, &username, auth)?),
-        TerminalKind::Sftp => ("sftp".into(), sftp_arguments(&host, port, &username, auth)?),
+        TerminalKind::Ssh => ("ssh".into(),with_jump(arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?),
+        TerminalKind::Sftp => ("sftp".into(),with_jump(sftp_arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?),
         TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
         TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
@@ -353,6 +388,23 @@ Host local
         assert!(ssh_config_hosts("Host *.com\n User bad\n").is_empty());
         assert!(ssh_config_hosts("Host name\n HostName -oProxyCommand=evil\n").iter()
             .all(|h|h.host=="name"));
+    }
+    #[test]
+    fn jump_is_one_validated_literal_host_for_terminal_only(){
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let ssh=with_jump(arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
+            Some(&jump),"target.internal",22,"deploy").unwrap();
+        assert_eq!(&ssh[ssh.len()-3..],["-J","gateway@bastion.example.org:2222","target.internal"]);
+        assert_eq!(&ssh[..2],["-F","none"]);
+        let sftp=with_jump(sftp_arguments("target.internal",2223,"deploy",AuthMode::Key).unwrap(),
+            Some(&jump),"target.internal",2223,"deploy").unwrap();
+        assert_eq!(&sftp[sftp.len()-3..],["-J","gateway@bastion.example.org:2222","deploy@target.internal"]);
+        for illegal in ["-oProxyCommand=bad","a,b","ssh://host","host;cmd","host example","host\nmal"]{
+            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into()};
+            assert!(jump_destination(&bad,"target.internal",22,"deploy").is_err(),"{illegal}");
+        }
+        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into()};
+        assert!(jump_destination(&same,"target.internal",22,"deploy").is_err());
     }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }

@@ -104,9 +104,9 @@ native acceptance result. Automated passes alone do not close a row.
 A Unix-only Rust integration test launches OpenSSH ProxyJump to the real
 disposable sshd fixture, authenticates both hops using the fixture key and
 reads a structured SFTP directory. It also checks unknown target host key
-rejection while gateway trust remains valid. A per-test wrapper configures
-only the disposable gateway SSH child; it does not alter the developer's
-known_hosts. Windows/Arch native acceptance and multi-host/corporate
+rejection while gateway trust remains valid. A per-test OpenSSH config supplies trusted host keys and a disposable identity
+to both SSH processes. The production transport still passes -F none, and
+the test never edits a developer's known_hosts. Windows/Arch native acceptance and multi-host/corporate
 topologies are still NOT TESTED.
 
 

@@ -131,7 +131,6 @@ fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
 }
 fn spawn_transport(mut command: Command, op: &Operation) -> Result<Sftp> {
     command.env("SSH_ASKPASS_REQUIRE","never").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    #[cfg(test)] if command.get_envs().any(|(key,value)| key==std::ffi::OsStr::new("NODEDESK_GATEWAY_DEBUG") && value.is_some()) { command.stderr(Stdio::inherit()); }
     #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
     let mut slot = op.child.lock().map_err(|_| "Process lock failed")?; op.check()?;
     let mut child = command.spawn().map_err(|_| "Cannot start OpenSSH".to_string())?;
@@ -1032,36 +1031,35 @@ mod tests {
         let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
         let user=std::env::var("USER").unwrap();
         let root=PathBuf::from(&dir);
-        // The wrapper applies fixture-only OpenSSH trust to ProxyJump's
-        // *separate* ssh process, which does not inherit the target's -F none.
-        // Never alter the test runner's real ~/.ssh/known_hosts.
-        let wrapper_dir=root.join("gateway-wrapper");
-        fs::create_dir_all(&wrapper_dir).unwrap();
-        let wrapper=wrapper_dir.join("ssh");
+        // Use a disposable config only inside this fixture: the real Files
+        // transport always keeps -F none. ProxyJump launches a separate ssh
+        // process, and OpenSSH forwards the -F argument to that child.
         let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
         let known=root.join("gateway-known");
         fs::write(&known,format!("[127.0.0.1]:22229 {host_key}[localhost]:22229 {host_key}")).unwrap();
-        let script=format!("#!/bin/sh\nexec /usr/bin/ssh -F none -oBatchMode=yes -oStrictHostKeyChecking=yes -oUserKnownHostsFile='{}' -oGlobalKnownHostsFile=/dev/null -i '{}' \"$@\"\n",
-            known.display(),root.join("client").display());
-        fs::write(&wrapper,script).unwrap();
-        fs::set_permissions(&wrapper,fs::Permissions::from_mode(0o700)).unwrap();
-        // One disposable sshd plays both roles, via different literal host
-        // names, to exercise two actual SSH handshakes and an SSH -W hop.
+        let config=root.join("gateway-ssh-config");
+        fs::write(&config,format!(
+            "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+            known.display(),root.join("client").display())).unwrap();
+        fs::set_permissions(&config,fs::Permissions::from_mode(0o600)).unwrap();
+        // One disposable sshd represents both SSH hops using different host
+        // names. Each hop must authenticate and validate its host key.
         let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
             "host":"127.0.0.1","port":22229,"username":user
         })).unwrap();
-        let d=Destination{host:"localhost".into(),port:22229,username:user.clone(),
+        let d=Destination{host:"localhost".into(),port:22229,username:user,
             auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
-        let make_command=|known_hosts:&std::path::Path| {
+        let make_command=|trusted_hosts:&std::path::Path| {
             let mut cmd=Command::new("/usr/bin/ssh");
-            cmd.env("PATH",format!("{}:{}",wrapper_dir.display(),std::env::var("PATH").unwrap_or_default()));
-            cmd.env("NODEDESK_GATEWAY_DEBUG","1");
-            cmd.arg("-vvv");
-            cmd.arg(format!("-oUserKnownHostsFile={}",known_hosts.display()));
+            // The outer target's trust is explicitly selected, separately
+            // from the gateway's trust in the fixture-only config.
+            cmd.arg(format!("-oUserKnownHostsFile={}",trusted_hosts.display()));
             cmd.arg("-oGlobalKnownHostsFile=/dev/null");
-            // Test-only outer identity: production GUI gateway requires an agent.
-            cmd.arg("-i").arg(root.join("client"));
-            cmd.args(transport_args(&d).unwrap());
+            let mut args=transport_args(&d).unwrap();
+            let pos=args.iter().position(|arg|arg=="-F").unwrap();
+            assert_eq!(args[pos+1],"none");
+            args[pos+1]=config.to_string_lossy().into_owned();
+            cmd.args(args);
             cmd
         };
         let op=Operation::default();
@@ -1070,11 +1068,10 @@ mod tests {
         assert!(!home.is_empty());
         let listing=client.list(&home).unwrap();
         assert!(listing.len()<=wire::MAX_ENTRIES);
-        drop(client);
-        op.stop();
-        // The gateway remains trusted, but the target's key is deliberately
-        // unknown: strict target trust must fail without prompting.
-        let unknown=root.join("unknown-target");
+        drop(client);op.stop();
+        // Gateway remains trusted, but target becomes untrusted. No prompt,
+        // automatic acceptance or successful SFTP handshake is permitted.
+        let unknown=root.join("gateway-unknown-target");
         fs::write(&unknown,"").unwrap();
         let bad=Operation::default();
         assert!(spawn_transport(make_command(&unknown),&bad).is_err());

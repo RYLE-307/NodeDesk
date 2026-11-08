@@ -607,7 +607,7 @@ export default function App() {
           <img className="logo" src={logo} alt="" />
           {expanded && (
             <strong>
-              NodeDesk <small>0.6</small>
+              NodeDesk <small>0.8 α</small>
             </strong>
           )}
           <button

@@ -23,7 +23,7 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | SEC-01 | Хранилище секретов, блокировка, master password/OS vault; экспорт без секретов по умолчанию | План | План | База |
 | SSH-01 | Интерактивный SSH, PTY, resize, UTF-8, пароли/ключи/passphrase, keyboard-interactive | Реализация (ключи) | Реализация (ключи) | v0.3 |
 | SSH-02 | Host-key trust/change rejection, known_hosts, агент и agent forwarding | Реализация (без forwarding) | Реализация (без forwarding) | v0.3 |
-| SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | План | План | Паритет |
+| SSH-03 | Jump host/ProxyJump, цепочки шлюзов и SSH gateway для других протоколов | Частично: один ручной ProxyJump в SSH/SFTP консоли без GUI Files | Частично: один ручной ProxyJump в SSH/SFTP консоли без GUI Files | Цепочки, другие протоколы, доверие шлюза и нативная приёмка v0.9 остаются |
 | SSH-04 | Local/remote/dynamic tunnels: создание, остановка, ошибки порта, reconnect | Частично: локальный loopback key/agent | Частично: локальный loopback key/agent | Паритет |
 | SSH-05 | X11 forwarding: локальный X display и корректное закрытие соединения | План | План | Паритет |
 | FS-01 | SFTP рядом с SSH: список, upload/download, drag/drop, rename/delete, права, прогресс/отмена | Частичная реализация: листинг/передача | Частичная реализация: листинг/передача | v0.5 draft; см. ограничения ниже |
@@ -97,7 +97,7 @@ Real interactive SSH via OpenSSH + native PTY + xterm.js is implemented in this 
 | FS-04 | P1 | Автоматический SFTP browser при SSH + отдельные SFTP-подключения, двусторонний DnD, статус передачи, pause/cancel, права | Частично: очередь/retry, byte-verified upload/download resume, guarded SFTP chmod, opt-in checkpoint для ручного восстановления после перезапуска | Частично: очередь/retry, byte-verified upload/download resume, opt-in checkpoint для ручного восстановления после перезапуска | Нативная приёмка, постоянный фоновый движок, pause, массовые/локальные права, многоочередная история и стресс-тесты остаются |
 | TERM-03 | P1 | Прозрачный clipboard, поиск/выделение, zoom/fonts, настройки кодировки, ссылки, colors/themes, safe paste | План | План | Terminal |
 | CAT-04 | P1 | Управление сессиями: recent, duplicate, bulk edit, group import/export, backup/restore, формат MobaXterm где лицензия позволяет | План | План | Catalog |
-| SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | План | План | SSH |
+| SSH-07 | P1 | Выбор файла ключа, ssh config, gateway/ProxyJump/proxy, agent forwarding с подтверждением рисков | Частично: просмотр Host/HostName/User/Port и ручной одношаговый console ProxyJump | Частично: просмотр Host/HostName/User/Port и ручной одношаговый console ProxyJump | Нет полного импорта и применения config, IdentityFile, цепочек, GUI gateway или agent forwarding |
 | SSH-08 | P1 | Tunnels manager, отдельный UI local/remote/dynamic forward, ports/status/reconnect и safety restrictions | План | План | SSH |
 | RDP-03 | P1 | RDP clipboard, multi-monitor, динамический DPI/resize, звук, drive/printer redirection, security profiles | План | План | Remote |
 | VNC-02 | P1 | VNC clipboard, encoding/compression, scaling, fullscreen и gateway | План | План | Remote |

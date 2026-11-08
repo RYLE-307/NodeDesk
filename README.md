@@ -1,8 +1,8 @@
 # NodeDesk
 
-> **Development: v0.8.0-alpha.0 — not a stable release.** SFTP multi-queue, pause, byte-verified resume, opt-in recovery and guarded remote POSIX permissions are in the development branch.
+> **Development: v0.8.0-alpha.0 — not a stable release.** SFTP multi-queue, pause/resume, guarded chmod, safe SSH config preview, transient one-hop console jump and redacted diagnostics are in the review branch.
 > Native Windows/Arch GUI acceptance is **deferred by request to v0.9–v1.0**. This candidate is CI-only, not production-ready.
-> See [v0.8 functional plan](docs/V0.8-PLAN.md), [v0.7 engineering gates](docs/V0.7-RELEASE.md), and the [deferred native QA checklist](docs/V0.7-ACCEPTANCE.md).
+> See [v0.8 development notes](docs/V0.8-RELEASE-NOTES.md), [v0.8 functional plan](docs/V0.8-PLAN.md), [v0.7 engineering gates](docs/V0.7-RELEASE.md), and the [deferred native QA checklist](docs/V0.7-ACCEPTANCE.md).
 
 [Русский](README.ru.md) · **EN**
 

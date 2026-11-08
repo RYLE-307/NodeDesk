@@ -28,6 +28,11 @@ test("development versions stay aligned across npm, Tauri, Cargo and lockfiles",
 test("candidate notes and third-party license notices exist for direct npm runtime deps",()=>{
   const notes=read("docs/RELEASE-NOTES-V0.7.0.md");
   const acceptance=read("docs/V0.7-ACCEPTANCE.md");
+  const v08=read("docs/V0.8-RELEASE-NOTES.md");
+  const qa=read("docs/V0.9-QA-PLAN.md");
+  assert.match(v08,/NOT a production release/);
+  assert.match(qa,/Windows/);
+  assert.match(qa,/Arch/);
   const notices=read("docs/THIRD-PARTY-NOTICES.md");
   assert.match(notes,/NOT a published|NOT yet released|NOT a published/);
   assert.match(acceptance,/Windows/);

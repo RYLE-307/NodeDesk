@@ -5,7 +5,7 @@
 > existing desktop/workspace slice. The long-tail parity matrix is not a
 > v0.7 checklist.
 
-> **Current development: v0.8.0-alpha.0 — guarded SFTP POSIX chmod and diagnostic result isolation atop v0.7.0-rc.1. Manual native GUI acceptance deliberately deferred to v0.9–v1.0.**
+> **Current development: v0.8.0-alpha.0 — guarded SFTP chmod, local SSH config preview, one-hop console ProxyJump, privacy-redacted transfer diagnostics and stale network result isolation. Native GUI acceptance deferred to v0.9–v1.0.**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 
@@ -126,9 +126,18 @@ result and never calls a shell/sudo or changes local ACLs.
 Automated Linux OpenSSH/SFTP fixture and Windows/Linux build/browser tests
 cover the feature; combined manual validation remains deferred to v0.9.
 The operation is not guaranteed atomic against a hostile SFTP server.
-Further v0.8 priorities: SSH config/gateway support with strict known_hosts,
-transfer UX and reliable network diagnostics, while keeping no unattended
-connections or credential persistence.
+Further v0.8 functionality: safe read-only preview of literal Host/HostName,
+User and Port in fixed local ~/.ssh/config; no Include, ProxyCommand,
+IdentityFile, aliases with wildcards or arbitrary config execution. One-hop
+OpenSSH ProxyJump is optional in SSH/SFTP **console tabs only** and is never
+persisted. The jump subprocess may consult the local gateway SSH config
+independently; operators must validate gateway fingerprints and directives.
+Files GUI and other protocols do NOT yet use this mechanism.
+SFTP provides redacted, manually downloaded transfer reports without names,
+paths, hosts, partial IDs or credentials; the UI shows only the expected
+partial path and never automatically deletes orphan files. Network results
+are invalidated after target changes without claiming backend cancellation.
+Nothing auto-connects or writes to remote files on page open.
 
 ## v0.6 priorities
 

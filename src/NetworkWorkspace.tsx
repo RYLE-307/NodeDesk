@@ -31,17 +31,38 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   const [scanBusy,setScanBusy]=useState(false);
   const [scanResult,setScanResult]=useState<PortScanResult|null>(null);
   const [scanError,setScanError]=useState("");
-  // Async backend diagnostics may finish after the operator changes the
-  // host/ports or closes the tool. Never present a stale result as belonging
-  // to the new target. This discards UI results; it is NOT process cancellation.
+  // Invalidate stale results and stop native diagnostic processes when the
+  // target changes or the workspace closes.
   const targetVersion=useRef(0);
   const mounted=useRef(true);
+  const pingId=useRef<string|null>(null);
+  const traceId=useRef<string|null>(null);
+  function cancelPing(showMessage:boolean){
+    const id=pingId.current;if(!id)return;
+    pingId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setPingBusy(false);setPingError(ru?"Ping отменён":"Ping cancelled");}
+  }
+  function cancelTrace(showMessage:boolean){
+    const id=traceId.current;if(!id)return;
+    traceId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setTraceBusy(false);setTraceError(ru?"Трассировка отменена":"Traceroute cancelled");}
+  }
   useEffect(()=>{
     mounted.current=true;
-    return ()=>{mounted.current=false;targetVersion.current++;};
+    return ()=>{
+      mounted.current=false;targetVersion.current++;
+      for(const id of [pingId.current,traceId.current]){
+        if(id)void invoke("network_cancel",{id}).catch(()=>{});
+      }
+      pingId.current=null;traceId.current=null;
+    };
   },[]);
   function changeTarget(){
     targetVersion.current++;
+    cancelPing(false);cancelTrace(false);
+    setPingBusy(false);setTraceBusy(false);
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
     setError("");setPingError("");setTraceError("");setScanError("");
   }
@@ -74,36 +95,38 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
     }
   }
   async function runPing(){
-    if(pingBusy)return;
+    if(pingId.current)return;
     setPingResult(null);setPingError("");
     if(!isTauri()){setPingError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();pingId.current=id;
     setPingBusy(true);
     try{
-      const received=await invoke<PingResult>("network_ping",{target:request});
-      if(mounted.current && version===targetVersion.current)setPingResult(received);
+      const received=await invoke<PingResult>("network_ping",{id,target:request});
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setPingError(String(e));
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingError(String(e));
     }finally{
-      if(mounted.current)setPingBusy(false);
+      if(pingId.current===id){pingId.current=null;if(mounted.current)setPingBusy(false);}
     }
   }
 
   async function runTrace(){
-    if(traceBusy)return;
+    if(traceId.current)return;
     setTraceResult(null);setTraceError("");
     if(!isTauri()){setTraceError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();traceId.current=id;
     setTraceBusy(true);
     try{
-      const received=await invoke<TraceResult>("network_trace",{target:request});
-      if(mounted.current && version===targetVersion.current)setTraceResult(received);
+      const received=await invoke<TraceResult>("network_trace",{id,target:request});
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setTraceError(String(e));
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceError(String(e));
     }finally{
-      if(mounted.current)setTraceBusy(false);
+      if(traceId.current===id){traceId.current=null;if(mounted.current)setTraceBusy(false);}
     }
   }
 
@@ -134,7 +157,9 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <label>{ru?"Порт":"Port"}<input type="number" min={1} max={65535} value={port} onChange={e=>{setPort(Number(e.target.value));changeTarget();}}/></label>
       <button type="button" disabled={busy||!host.trim()||!Number.isInteger(port)||port<1||port>65535} onClick={()=>void run()}>{busy?(ru?"Проверка…":"Checking…"):(ru?"Проверить TCP":"Check TCP")}</button>
       <button type="button" disabled={pingBusy||!host.trim()} onClick={()=>void runPing()}>{pingBusy?(ru?"Ping…":"Pinging…"):"Ping"}</button>
+      {pingBusy&&<button type="button" onClick={()=>cancelPing(true)}>{ru?"Отменить Ping":"Cancel ping"}</button>}
       <button type="button" disabled={traceBusy||!host.trim()} onClick={()=>void runTrace()}>{traceBusy?(ru?"Трассировка…":"Tracing…"):(ru?"Трассировка":"Traceroute")}</button>
+      {traceBusy&&<button type="button" onClick={()=>cancelTrace(true)}>{ru?"Отменить трассировку":"Cancel traceroute"}</button>}
     </div>
     <div className="network-fields">
       <label>{ru?"TCP-порты (через запятую)":"TCP ports (comma-separated)"}

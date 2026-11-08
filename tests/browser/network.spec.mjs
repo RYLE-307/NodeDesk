@@ -38,7 +38,7 @@ test("ICMP ping is explicit, bounded and does not use a port",async({page})=>{
   await expect(pane.getByRole("status",{name:"Ping result"})).toContainText("reply received");
   await expect(pane.locator(".network-ping-output")).toContainText("2 packets transmitted");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_ping",args:{target:{host:"localhost"}}}
+    {cmd:"network_ping",args:{id:expect.any(String),target:{host:"localhost"}}}
   ]);
 });
 
@@ -60,8 +60,32 @@ test("traceroute is manual and displays bounded route output",async({page})=>{
   await expect(pane.getByRole("status",{name:"Traceroute result"})).toContainText("Traceroute finished");
   await expect(pane.locator(".network-ping-output")).toContainText("127.0.0.1");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_trace",args:{target:{host:"localhost"}}}
+    {cmd:"network_trace",args:{id:expect.any(String),target:{host:"localhost"}}}
   ]);
+});
+
+test("running ping can be cancelled and its late result stays hidden",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      invoke(cmd,args){window.calls.push({cmd,args});
+        if(cmd==="network_ping")return new Promise(resolve=>{window.completePing=resolve;});
+        if(cmd==="network_cancel")return Promise.resolve();
+        throw Error("Unexpected command");}}
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByLabel("Host").fill("localhost");
+  await pane.getByRole("button",{name:"Ping",exact:true}).click();
+  await pane.getByRole("button",{name:"Cancel ping"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Ping cancelled");
+  await page.evaluate(()=>window.completePing({reachable:true,elapsedMs:1,output:"late"}));
+  await expect(pane.getByRole("status",{name:"Ping result"})).toHaveCount(0);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls[0]).toMatchObject({cmd:"network_ping",args:{target:{host:"localhost"}}});
+  expect(calls[1]).toEqual({cmd:"network_cancel",args:{id:calls[0].args.id}});
 });
 
 

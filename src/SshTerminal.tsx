@@ -26,6 +26,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUser,setJumpUser]=useState("");
   const [jumpPort,setJumpPort]=useState("22");
+  const [identity,setIdentity]=useState("");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
   const ru = language === "ru";
@@ -87,7 +88,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && !jumpEnabled && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
@@ -116,6 +117,12 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
     {!local && (kind==="ssh" || kind==="sftp") && <div className="ssh-jump-options">
+      {auth==="key" && !jumpEnabled && <label>{ru?"Путь к файлу SSH-ключа (необязательно)":"SSH identity file path (optional)"}
+        <input aria-label="SSH identity file path" value={identity} disabled={busy} maxLength={4096}
+          autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/></label>}
+      {auth==="key" && !jumpEnabled && <p className="ssh-help">{ru
+        ?"Укажите абсолютный путь к локальному приватному ключу. Путь не сохраняется; OpenSSH проверяет права файла и запрашивает passphrase в терминале."
+        :"Enter an absolute path to a local private key. The path is not saved; OpenSSH checks file permissions and prompts for its passphrase in the terminal."}</p>}
       <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
         onChange={e=>setJumpEnabled(e.target.checked)}/>
         {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}

@@ -237,6 +237,23 @@ fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
     }
     Ok(args)
 }
+fn with_identity(mut args: Vec<String>, identity: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(raw) = identity else { return Ok(args); };
+    if raw.is_empty() || raw.len() > 4096 || raw.contains(['\0', '\n', '\r']) {
+        return Err("Invalid SSH identity path".into());
+    }
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() { return Err("SSH identity path must be absolute".into()); }
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "SSH identity file unavailable")?;
+    if !meta.file_type().is_file() || meta.len() > 1024 * 1024 {
+        return Err("SSH identity must be a regular file no larger than 1 MiB".into());
+    }
+    // OpenSSH performs its own private-key permission and passphrase checks.
+    // A symlink is deliberately refused so the chosen file cannot silently change.
+    let index = args.len().checked_sub(1).ok_or("Missing SSH target")?;
+    args.splice(index..index, ["-oIdentitiesOnly=yes".into(), "-i".into(), raw.into()]);
+    Ok(args)
+}
 fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
     // Reuse the validated OpenSSH destination and security/authentication settings.
     // sftp accepts -P for the port, not ssh's -p; its login is one user@host argument.
@@ -277,19 +294,22 @@ fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
 }
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode,
-    kind: TerminalKind, jump: Option<JumpHost>, cols: u16, rows: u16, events: Channel<Event>,
+    kind: TerminalKind, jump: Option<JumpHost>, identity: Option<String>, cols: u16, rows: u16, events: Channel<Event>,
     app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
         return Err("Jump host is supported only in SSH/SFTP console tabs".into());
+    }
+    if identity.is_some() && (!matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp) || auth!=AuthMode::Key || jump.is_some()) {
+        return Err("Identity file requires direct key-only SSH/SFTP console".into());
     }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
-        TerminalKind::Ssh => ("ssh".into(),with_jump(arguments(&host,port,&username,auth)?,
-            jump.as_ref(),&host,port,&username)?),
-        TerminalKind::Sftp => ("sftp".into(),with_jump(sftp_arguments(&host,port,&username,auth)?,
-            jump.as_ref(),&host,port,&username)?),
+        TerminalKind::Ssh => ("ssh".into(),with_identity(with_jump(arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?, identity.as_deref())?),
+        TerminalKind::Sftp => ("sftp".into(),with_identity(with_jump(sftp_arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?, identity.as_deref())?),
         TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
         TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
@@ -358,6 +378,22 @@ pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHan
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identity_file_is_explicit_regular_file_and_never_changes_trust_policy() {
+        let path = std::env::temp_dir().join(format!("nodedesk-identity-test-{}", std::process::id()));
+        std::fs::write(&path, b"test key fixture").unwrap();
+        let raw = path.to_str().unwrap();
+        let args = with_identity(arguments("example.org", 22, "admin", AuthMode::Key).unwrap(), Some(raw)).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-i", raw]));
+        assert!(args.contains(&"-oIdentitiesOnly=yes".to_string()));
+        assert!(args.contains(&"-oStrictHostKeyChecking=ask".to_string()));
+        assert_eq!(args.last().unwrap(), "example.org");
+        assert!(with_identity(args.clone(), Some("relative-key")).is_err());
+        assert!(with_identity(args.clone(), Some("/no/such/nodedesk-key")).is_err());
+        assert!(with_identity(args.clone(), Some("/tmp/key\n-oStrictHostKeyChecking=no")).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(with_identity(args, Some(raw)).is_err());
+    }
     #[test]
     fn read_only_config_preview_never_evaluates_ssh_commands_or_secrets(){
         let entries=ssh_config_hosts(r#"

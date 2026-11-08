@@ -1108,15 +1108,15 @@ mod tests {
         let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
         let root=PathBuf::from(dir);
         let user=std::env::var("USER").unwrap();
-        let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        // All three listeners have different, disposable host keys.
+        let target_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let first_key=fs::read_to_string(root.join("host-22230.pub")).unwrap();
+        let second_key=fs::read_to_string(root.join("host-22231.pub")).unwrap();
         let known=root.join("twohop-known");
-        let mut lines=String::new();
-        for port in [22229u16,22230,22231] {
-            lines.push_str(&format!("[127.0.0.1]:{port} {host_key}"));
-        }
+        let lines=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}[127.0.0.1]:22231 {second_key}");
         fs::write(&known,lines).unwrap();
         let known_without_second=root.join("twohop-missing-second");
-        let partial=format!("[127.0.0.1]:22229 {host_key}[127.0.0.1]:22230 {host_key}");
+        let partial=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}");
         fs::write(&known_without_second,partial).unwrap();
         let make_config=|path:&std::path::Path,trust:&std::path::Path| {
             fs::write(path,format!(

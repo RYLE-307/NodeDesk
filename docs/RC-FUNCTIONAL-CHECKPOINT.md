@@ -203,3 +203,11 @@ The test injects a private ssh_config only into the disposable test command,
 never modifies real known_hosts, and preserves -F none in production.
 Real independent network hosts, MFA/agent failures and Windows/Arch operator
 acceptance remain NOT TESTED.
+
+
+## Independent keys for each disposable SSH hop (2026-11-08)
+The three loopback sshd listeners now use **three distinct, ephemeral host
+keys** rather than sharing one key. The two-hop integration test pins each
+literal host-and-port identity independently. Its negative case deliberately
+omits only the second jump's key while trusting the first jump and target.
+All trust files and keys remain inside the disposable fixture.

@@ -1,0 +1,21 @@
+# Installer preview gate
+
+The draft PR's desktop CI creates an unsigned per-user Windows NSIS installer
+and an Ubuntu DEB package after the Rust and disposable SSH/SFTP checks. Both
+are uploaded as CI artifacts with SHA256SUMS.txt. The existing unbundled Windows
+executable remains a portable preview. No artifact is published as a release.
+
+The Windows installer may require the OS WebView2 runtime and relies on
+separately installed OpenSSH, RDP and VNC clients for the corresponding external
+features. The DEB declares `openssh-client` because SSH and SFTP need it.
+Optional Linux ping, traceroute, desktop viewers and system VPN tooling remain
+separate OS dependencies; the UI reports unavailable tools instead of silently
+installing them.
+
+These CI packages do not establish Arch compatibility, install/uninstall
+correctness, signing trust, update policy, WebView2 availability, executable
+permissions, or native protocol acceptance. Before any release, install and
+remove the Windows installer and an Arch package on clean operator-controlled
+machines; verify dependencies, file locations, icons, shortcuts, OS prompts,
+permissions and actual SSH/SFTP/RDP/VNC/VPN workflows. Record SHA256 and the
+tested OS versions. Keep the PR draft until the integrated acceptance pass.

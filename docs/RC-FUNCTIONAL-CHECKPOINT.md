@@ -42,6 +42,9 @@ native acceptance result. Automated passes alone do not close a row.
   `spawn UNKNOWN` before any test body ran.
 - Fresh GitHub CI for this change: **not run** until this branch is pushed.
 - Native Windows/Arch GUI and live protocol acceptance: **not tested**.
+- Windows NSIS and Ubuntu DEB preview packaging is configured in CI, with
+  SHA256 manifests. Exact-head bundle results and native install/uninstall
+  remain pending; see [PACKAGE-PREVIEW.md](PACKAGE-PREVIEW.md).
 - GUI Files key selection uses one transient absolute regular-file path, the
   existing strict OpenSSH host-key policy and key-only SFTP transport. Encrypted
   keys must already be loaded into an SSH agent; Files cannot prompt for a key

@@ -143,3 +143,14 @@ topologies are still NOT TESTED.
   endpoints, routes or private keys. No automatic connect.
 - Pure Rust tests cover supported/unsupported plugin IDs. Actual route/DNS
   verification, profile import and native Arch acceptance are NOT TESTED.
+
+## P0 VPN observed-state confirmation (2026-11-08)
+- After an explicit connect/disconnect action, the backend polls the OS profile
+  list for at most five seconds. It reports success only if the same profile ID,
+  name and supported protocol still exist and the requested active state is
+  observed. A rejected, missing, changed or unconfirmed profile reports an
+  error; the user can refresh to inspect the OS state.
+- Pure Rust cases cover connected/disconnected, unchanged, disappeared and
+  changed disposable profile snapshots. No real VPN, route, DNS or credentials
+  were used. Native Windows/Arch behavior and isolated route/DNS verification
+  remain NOT TESTED; the VPN P0 row stays open.

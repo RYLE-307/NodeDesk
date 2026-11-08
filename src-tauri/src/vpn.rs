@@ -1,7 +1,7 @@
 //! System-owned VPN profiles. Never imports credentials, edits routes/DNS, or
 //! accepts arbitrary executables/scripts from WebView. Explicit user action only.
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, process::{Command, Stdio}};
+use std::{collections::HashSet, process::{Command, Stdio}, time::{Duration, Instant}};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +27,27 @@ fn safe_name(name:&str) -> bool {
 fn require_control_allowed(profile:&VpnProfile)->Result<(),String> {
     if profile.control_allowed {Ok(())}
     else {Err("Unsupported VPN protocol or encryption policy is read-only in NodeDesk".into())}
+}
+
+fn observed_state(before:&VpnProfile, profiles:&[VpnProfile], connect:bool)->Result<bool,String> {
+    let current=profiles.iter().find(|p|p.id.eq_ignore_ascii_case(&before.id))
+        .ok_or("System VPN profile disappeared after the action")?;
+    if current.name!=before.name || current.kind!=before.kind || !current.control_allowed {
+        return Err("System VPN profile changed during the action; refresh before retrying".into());
+    }
+    Ok(current.active==connect)
+}
+
+fn wait_for_state(before:&VpnProfile, connect:bool)->Result<Vec<VpnProfile>,String> {
+    let deadline=Instant::now()+Duration::from_secs(5);
+    loop {
+        let profiles=list_impl()?;
+        if observed_state(before,&profiles,connect)? {return Ok(profiles);}
+        if Instant::now()>=deadline {
+            return Err("System VPN manager accepted the request, but the profile did not reach the requested state; refresh its status".into());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Capture only specifically requested non-secret fields. Discard stderr and
@@ -175,9 +196,10 @@ pub async fn vpn_set(profile_id:String,connect:bool)->Result<Vec<VpnProfile>,Str
             .ok_or("System VPN profile is missing or unsupported")?;
         require_control_allowed(selected)?;
         if selected.active!=connect {execute_impl(selected,connect)?;}
-        // Always re-read OS status; success means OS tool accepted action,
-        // not that VPN traffic/routes have been independently audited.
-        list_impl()
+        // A successful OS command is not proof of a connected/disconnected
+        // profile. Poll the OS for a bounded time and reject stale identity.
+        // This still does not prove route, DNS or traffic correctness.
+        wait_for_state(selected,connect)
     }).await.map_err(|_|"VPN action worker failed".to_string())?
 }
 
@@ -202,6 +224,21 @@ mod tests {
         let serialized=serde_json::to_string(&profile).unwrap();
         assert!(!serialized.contains("sensitive"));
         assert!(!serialized.contains("password"));
+    }
+    #[test]
+    fn vpn_action_requires_observed_state_and_stable_profile() {
+        let before=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Disposable fixture".into(),kind:"WireGuard".into(),
+            active:false,control_allowed:true};
+        assert!(!observed_state(&before,&[before.clone()],true).unwrap());
+        let connected=VpnProfile{active:true,..before.clone()};
+        assert!(observed_state(&before,&[connected.clone()],true).unwrap());
+        assert!(!observed_state(&connected,&[connected.clone()],false).unwrap());
+        assert!(observed_state(&connected,&[before.clone()],false).unwrap());
+        assert!(observed_state(&before,&[],true).is_err());
+        assert!(observed_state(&before,&[VpnProfile{name:"Different".into(),..connected.clone()}],true).is_err());
+        assert!(observed_state(&before,&[VpnProfile{kind:"Other VPN (read-only)".into(),
+            control_allowed:false,..connected}],true).is_err());
     }
     #[cfg(windows)]
     #[test]

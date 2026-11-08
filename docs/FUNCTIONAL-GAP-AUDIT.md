@@ -43,3 +43,13 @@ confirmation warning about sshd GatewayPorts server policy. It rejects
 privileged remote ports and arbitrary local targets, and uses the existing
 key/agent and host-key trust model. Rust loopback integration and browser
 tests are added; CI and native Windows/Arch acceptance remain pending.
+
+
+### VPN NetworkManager plugin control gate (2026-11-08)
+Only WireGuard, OpenVPN and OpenConnect may be connected or disconnected from
+NodeDesk on Linux, after user confirmation. Other NetworkManager VPN plugins
+remain visible but read-only. The generic VPN type is no longer enough to
+authorize actions, preventing accidental use of unsupported legacy plugins.
+No credentials or service configuration are exported to the WebView.
+Native Windows/Arch acceptance, profile lifecycle and route/DNS evidence
+remain open.

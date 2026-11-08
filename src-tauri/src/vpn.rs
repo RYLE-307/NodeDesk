@@ -26,7 +26,7 @@ fn safe_name(name:&str) -> bool {
 }
 fn require_control_allowed(profile:&VpnProfile)->Result<(),String> {
     if profile.control_allowed {Ok(())}
-    else {Err("VPN profile encryption policy is read-only in NodeDesk".into())}
+    else {Err("Unsupported VPN protocol or encryption policy is read-only in NodeDesk".into())}
 }
 
 /// Capture only specifically requested non-secret fields. Discard stderr and
@@ -45,6 +45,17 @@ fn nmcli(args:&[&str])->Result<String,String> {
     cmd.args(args);
     output(cmd)
 }
+/// Unknown NetworkManager VPN plugins are displayed read-only.
+#[cfg(target_os="linux")]
+fn classify_nm_vpn(kind:&str,service:&str)->(&'static str,bool) {
+    match (kind,service.trim()) {
+        ("wireguard",_)=>("WireGuard",true),
+        ("vpn","org.freedesktop.NetworkManager.openvpn")=>("OpenVPN",true),
+        ("vpn","org.freedesktop.NetworkManager.openconnect")=>("OpenConnect",true),
+        ("vpn",_)=>("Other VPN (read-only)",false),
+        _=>("Unsupported",false)
+    }
+}
 #[cfg(target_os="linux")]
 fn list_impl()->Result<Vec<VpnProfile>,String> {
     // UUID/TYPE are safe for terse parsing; profile names may contain colon
@@ -61,9 +72,15 @@ fn list_impl()->Result<Vec<VpnProfile>,String> {
         let name=nmcli(&["-g","connection.id","connection","show","uuid",uuid])?;
         let name=name.trim_end_matches(['\r','\n']);
         if !safe_name(name) {continue;}
+        // Read only the plugin service type, never vpn.secrets or vpn.data.
+        // Unknown plugins are fail-closed, not allowed for NodeDesk actions.
+        let service=if kind=="vpn" {
+            nmcli(&["-g","vpn.service-type","connection","show","uuid",uuid]).unwrap_or_default()
+        } else {String::new()};
+        let (display_kind,control_allowed)=classify_nm_vpn(kind,&service);
         profiles.push(VpnProfile {
-            id:uuid.to_ascii_lowercase(),name:name.into(),kind:kind.into(),
-            active:active_ids.contains(uuid),control_allowed:true,
+            id:uuid.to_ascii_lowercase(),name:name.into(),kind:display_kind.into(),
+            active:active_ids.contains(uuid),control_allowed,
         });
     }
     profiles.sort_by(|a,b|a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -224,6 +241,21 @@ function Get-VpnConnection {
         assert!(parse_windows_profiles(r#"[{"id":"bad","name":"Work","kind":"L2tp","active":false}]"#).unwrap().is_empty());
         assert!(parse_windows_profiles(r#"[{"id":"123e4567-e89b-12d3-a456-426614174000","name":"Work","kind":"Pptp","active":false}]"#).unwrap().is_empty());
         assert!(parse_windows_profiles(r#"[{"id":"123e4567-e89b-12d3-a456-426614174000","name":"Bad\nName","kind":"L2tp","active":false}]"#).unwrap().is_empty());
+    }
+    #[cfg(target_os="linux")]
+    #[test] fn linux_control_allowlist_filters_unknown_vpn_plugins(){
+        assert_eq!(classify_nm_vpn("wireguard",""),("WireGuard",true));
+        assert_eq!(classify_nm_vpn("vpn","org.freedesktop.NetworkManager.openvpn"),("OpenVPN",true));
+        assert_eq!(classify_nm_vpn("vpn","org.freedesktop.NetworkManager.openconnect"),("OpenConnect",true));
+        for service in ["org.freedesktop.NetworkManager.pptp",
+            "org.freedesktop.NetworkManager.vpnc",
+            "org.freedesktop.NetworkManager.strongswan","unknown",""] {
+            assert_eq!(classify_nm_vpn("vpn",service),("Other VPN (read-only)",false));
+        }
+        let p=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Unknown plugin".into(),kind:"Other VPN (read-only)".into(),
+            active:false,control_allowed:false};
+        assert!(require_control_allowed(&p).is_err());
     }
     #[cfg(target_os="linux")]
     #[test]

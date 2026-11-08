@@ -133,3 +133,13 @@ topologies are still NOT TESTED.
 - No agent forwarding, credentials in WebView storage, automatic connections,
   arbitrary ProxyCommand or multi-hop chains. Backend Rust validation and
   browser IPC checks are included; native Windows/Arch acceptance is pending.
+
+
+## Linux VPN allowlist (2026-11-08)
+- NodeDesk now permits explicit control only for NetworkManager WireGuard,
+  OpenVPN and OpenConnect profiles. Unknown or legacy plugins (e.g. PPTP)
+  are displayed read-only. Unknown service types fail closed.
+- Only NetworkManager service type metadata is retrieved, never credentials,
+  endpoints, routes or private keys. No automatic connect.
+- Pure Rust tests cover supported/unsupported plugin IDs. Actual route/DNS
+  verification, profile import and native Arch acceptance are NOT TESTED.

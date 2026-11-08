@@ -88,12 +88,12 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
         <td>{p.controlAllowed ? <button type="button" disabled={loading||!!busy}
           onClick={()=>void toggle(p)}>{busy===p.id?(ru?"Выполняется…":"Working…"):
           p.active?(ru?"Отключить":"Disconnect"):(ru?"Подключить":"Connect")}</button> :
-          <span>{ru?"Только просмотр — проверьте шифрование в Windows":"Read only — review encryption in Windows"}</span>}</td>
+          <span>{ru?"Только просмотр — протокол или политика шифрования не поддерживается":"Read-only — protocol or encryption policy unsupported"}</span>}</td>
       </tr>)}</tbody>
     </table></div>}
     <p className="ssh-help">{ru
-      ? "Arch/Linux: NetworkManager (VPN и WireGuard). Windows: VPN-профили текущего пользователя — IKEv2/L2TP/SSTP. Профили с шифрованием Optional/Custom/NoEncryption доступны только для просмотра. Профили других программ не показываются."
-      : "Arch/Linux: NetworkManager VPN and WireGuard profiles. Windows: current-user IKEv2/L2TP/SSTP profiles. Optional/Custom/NoEncryption profiles are read only. Third-party VPN clients are not managed."}</p>
+      ? "Arch/Linux: NetworkManager WireGuard, OpenVPN и OpenConnect; другие VPN-плагины только для просмотра. Windows: VPN-профили текущего пользователя — IKEv2/L2TP/SSTP. Профили с шифрованием Optional/Custom/NoEncryption доступны только для просмотра. Профили других программ не показываются."
+      : "Arch/Linux: NetworkManager WireGuard, OpenVPN and OpenConnect; other VPN plugins are read-only. Windows: current-user IKEv2/L2TP/SSTP profiles. Optional/Custom/NoEncryption profiles are read only. Third-party VPN clients are not managed."}</p>
     <p className="ssh-help">{ru
       ? "Система должна уже иметь необходимые учётные данные или агент ввода пароля. Если авторизация не настроена, подключение может завершиться ошибкой. Нажмите «Обновить VPN», чтобы перечитать статус."
       : "The OS must already have the required credentials or a compatible secret agent. Authentication may fail otherwise. Refresh VPNs to reread system status."}</p>

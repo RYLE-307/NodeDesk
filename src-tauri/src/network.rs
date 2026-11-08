@@ -97,19 +97,24 @@ fn resolve(target:&ProbeTarget)->Result<Vec<SocketAddr>,String>{
     if addresses.is_empty(){return Err("DNS returned no addresses".into());}
     Ok(addresses)
 }
-fn probe(target:ProbeTarget)->Result<ProbeResult,String>{
+fn probe(target:ProbeTarget,op:&Diagnostic)->Result<ProbeResult,String>{
     let started=Instant::now();
+    op.check()?;
     let addresses=resolve(&target)?;
+    op.check()?;
     let mut reachable=false;
     for address in addresses.iter().take(4){
+        op.check()?;
         if TcpStream::connect_timeout(address,Duration::from_secs(2)).is_ok(){reachable=true;break;}
     }
+    op.check()?;
     Ok(ProbeResult{addresses:addresses.iter().map(|a|a.ip().to_string()).collect(),
         tcp_reachable:reachable,elapsed_ms:started.elapsed().as_millis()})
 }
 #[tauri::command]
-pub async fn network_probe(target:ProbeTarget)->Result<ProbeResult,String>{
-    tauri::async_runtime::spawn_blocking(move||probe(target)).await
+pub async fn network_probe(id:String,target:ProbeTarget,app:tauri::AppHandle)->Result<ProbeResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||probe(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
@@ -236,20 +241,27 @@ fn validate_port_list(target:&PortScanTarget)->Result<(),String>{
     }
     Ok(())
 }
-fn scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
+fn scan_ports(target:PortScanTarget,op:&Diagnostic)->Result<PortScanResult,String>{
     validate_port_list(&target)?;
     let started=Instant::now();
+    op.check()?;
     // Resolve once, then check only the specified ports; never scan ranges.
     let addresses=resolve(&ProbeTarget{host:target.host,port:1})?
         .into_iter().take(2).collect::<Vec<_>>();
-    let results=target.ports.into_iter().map(|port|{
-        let reachable=addresses.iter().any(|address|{
+    op.check()?;
+    let mut results=Vec::new();
+    for port in target.ports {
+        op.check()?;
+        let mut reachable=false;
+        for address in &addresses {
+            op.check()?;
             let mut endpoint=*address;
             endpoint.set_port(port);
-            TcpStream::connect_timeout(&endpoint,Duration::from_millis(400)).is_ok()
-        });
-        PortStatus{port,reachable}
-    }).collect();
+            if TcpStream::connect_timeout(&endpoint,Duration::from_millis(400)).is_ok(){reachable=true;break;}
+        }
+        results.push(PortStatus{port,reachable});
+    }
+    op.check()?;
     Ok(PortScanResult{
         addresses:addresses.iter().map(|address|address.ip().to_string()).collect(),
         results,
@@ -257,8 +269,9 @@ fn scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
     })
 }
 #[tauri::command]
-pub async fn network_scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
-    tauri::async_runtime::spawn_blocking(move||scan_ports(target)).await
+pub async fn network_scan_ports(id:String,target:PortScanTarget,app:tauri::AppHandle)->Result<PortScanResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||scan_ports(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
@@ -293,9 +306,17 @@ mod tests {
     fn loopback_probe_reports_an_open_port_without_external_network(){
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port=listener.local_addr().unwrap().port();
-        let result=probe(ProbeTarget{host:"127.0.0.1".into(),port}).unwrap();
+        let result=probe(ProbeTarget{host:"127.0.0.1".into(),port},&Diagnostic::default()).unwrap();
         assert!(result.tcp_reachable);
         assert_eq!(result.addresses,vec!["127.0.0.1".to_string()]);
+    }
+    #[test]
+    fn cancelled_tcp_checks_do_not_start_a_connection(){
+        let op=Diagnostic::default();op.cancel();
+        assert_eq!(probe(ProbeTarget{host:"127.0.0.1".into(),port:443},&op)
+            .err().unwrap(),"Diagnostic cancelled");
+        assert_eq!(scan_ports(PortScanTarget{host:"127.0.0.1".into(),ports:vec![443]},&op)
+            .err().unwrap(),"Diagnostic cancelled");
     }
     #[test]
     fn multiport_rejects_invalid_hosts_duplicates_empty_large_lists_and_zero(){
@@ -316,7 +337,7 @@ mod tests {
         let port=listener.local_addr().unwrap().port();
         let result=scan_ports(PortScanTarget{
             host:"127.0.0.1".into(),ports:vec![port]
-        }).unwrap();
+        },&Diagnostic::default()).unwrap();
         assert_eq!(result.results.len(),1);
         assert_eq!(result.results[0].port,port);
         assert!(result.results[0].reachable);

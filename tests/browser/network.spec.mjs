@@ -17,7 +17,7 @@ test("network diagnostics make no request until click and show bounded result",a
   await pane.getByRole("spinbutton",{name:"Port",exact:true}).fill("8080");
   await pane.getByRole("button",{name:"Check TCP"}).click();
   await expect(pane.getByRole("status")).toContainText("TCP port 8080: reachable");
-  expect(await page.evaluate(()=>window.calls)).toEqual([{cmd:"network_probe",args:{target:{host:"localhost",port:8080}}}]);
+  expect(await page.evaluate(()=>window.calls)).toEqual([{cmd:"network_probe",args:{id:expect.any(String),target:{host:"localhost",port:8080}}}]);
 });
 
 
@@ -115,7 +115,7 @@ test("explicit TCP port list runs only on click and rejects ranges and duplicate
   await expect(pane.getByRole("status",{name:"Port check result"})).toContainText("TCP 443: reachable");
   await expect(pane.getByRole("status",{name:"Port check result"})).toContainText("TCP 22: no response");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_scan_ports",args:{target:{host:"localhost",ports:[22,443]}}}
+    {cmd:"network_scan_ports",args:{id:expect.any(String),target:{host:"localhost",ports:[22,443]}}}
   ]);
 });
 
@@ -130,6 +130,7 @@ test("changing diagnostic target invalidates in-flight results and does not star
       transformCallback(){return 1;},unregisterCallback(){},
       invoke(cmd,args){
         window.calls.push({cmd,args});
+        if(cmd==="network_cancel")return Promise.resolve();
         if(cmd!=="network_probe")throw Error("Unexpected diagnostics command");
         return new Promise(resolve=>{window.completeOldProbe=resolve;});
       }
@@ -147,8 +148,9 @@ test("changing diagnostic target invalidates in-flight results and does not star
   }));
   await expect(pane.getByRole("button",{name:"Check TCP"})).toBeEnabled();
   await expect(pane.getByRole("status")).toHaveCount(0);
-  expect(await page.evaluate(()=>window.calls.map(x=>x.args.target.host)))
-    .toEqual(["test-old.local"]);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls[0]).toMatchObject({cmd:"network_probe",args:{target:{host:"test-old.local"}}});
+  expect(calls[1]).toEqual({cmd:"network_cancel",args:{id:calls[0].args.id}});
 });
 
 test("network report downloads only completed results for the current target",async({page})=>{

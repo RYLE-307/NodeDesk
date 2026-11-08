@@ -23,7 +23,7 @@ automated scenarios; it does not prove desktop, protocol or security parity.
 | SSH advanced | Direct identity-file selection and loopback-only dynamic SOCKS5 forwarding are implemented, pending CI/native acceptance. ProxyJump chains, remote tunnels and X11 forwarding need explicit trust boundaries; current single-hop console jump is limited. |
 | Other sessions | Telnet, serial, Mosh and X11/XDMCP with platform-specific capability/permission checks. Rlogin/Rsh need an explicit security decision. |
 | Workspace/terminal | Catalog migrations and MobaXterm import, terminal clipboard/link/log controls, background transfer lifecycle, accessibility and visual review. |
-| Network/infrastructure | Ping/traceroute process cancellation and manually downloaded result reports are implemented, pending CI/native acceptance. DNS/TCP and explicit port-check cancellation remain open. Proxmox, Zabbix and MikroTik need scoped API credentials, opt-in polling and disposable mocks. |
+| Network/infrastructure | Ping/traceroute process cancellation, cooperative TCP/port-check cancellation and manually downloaded result reports are implemented, pending CI/native acceptance. Blocking OS DNS and active TCP connect calls finish before cancellation takes effect. Proxmox, Zabbix and MikroTik need scoped API credentials, opt-in polling and disposable mocks. |
 | Monitoring | Local read-only CPU/RAM/disk/network sampling is in this branch, explicitly opt-in. Remote monitoring, alerting and native acceptance remain open. |
 
 ## Verification rule

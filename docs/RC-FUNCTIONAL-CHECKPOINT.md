@@ -30,9 +30,10 @@ native acceptance result. Automated passes alone do not close a row.
   decide whether insecure Rlogin/Rsh can be supported safely.
 - [ ] Catalog and terminal: migrations, MobaXterm import, backup/restore,
   clipboard/link/log controls, background transfers and accessibility review.
-- [ ] Network: Ping/traceroute process cancellation and manual JSON report export
-  implemented, pending CI/native acceptance. DNS/TCP probe and explicit port-check
-  cancellation remain open; Proxmox, Zabbix and MikroTik scoped API
+- [ ] Network: diagnostic cancellation and manual JSON report export implemented,
+  pending CI/native acceptance. DNS resolution and active TCP connect calls are
+  blocking OS operations; cancellation takes effect after they return. Proxmox,
+  Zabbix and MikroTik scoped API
   credentials, opt-in polling and isolated mock services.
 - [ ] Monitoring: remote sampling and alerting with opt-in lifecycle.
 

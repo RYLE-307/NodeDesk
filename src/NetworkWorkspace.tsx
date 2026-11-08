@@ -35,8 +35,16 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   // target changes or the workspace closes.
   const targetVersion=useRef(0);
   const mounted=useRef(true);
+  const probeId=useRef<string|null>(null);
   const pingId=useRef<string|null>(null);
   const traceId=useRef<string|null>(null);
+  const scanId=useRef<string|null>(null);
+  function cancelProbe(showMessage:boolean){
+    const id=probeId.current;if(!id)return;
+    probeId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setBusy(false);setError(ru?"Проверка TCP отменена":"TCP check cancelled");}
+  }
   function cancelPing(showMessage:boolean){
     const id=pingId.current;if(!id)return;
     pingId.current=null;
@@ -49,20 +57,26 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
     void invoke("network_cancel",{id}).catch(()=>{});
     if(showMessage){setTraceBusy(false);setTraceError(ru?"Трассировка отменена":"Traceroute cancelled");}
   }
+  function cancelScan(showMessage:boolean){
+    const id=scanId.current;if(!id)return;
+    scanId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setScanBusy(false);setScanError(ru?"Проверка портов отменена":"Port check cancelled");}
+  }
   useEffect(()=>{
     mounted.current=true;
     return ()=>{
       mounted.current=false;targetVersion.current++;
-      for(const id of [pingId.current,traceId.current]){
+      for(const id of [probeId.current,pingId.current,traceId.current,scanId.current]){
         if(id)void invoke("network_cancel",{id}).catch(()=>{});
       }
-      pingId.current=null;traceId.current=null;
+      probeId.current=null;pingId.current=null;traceId.current=null;scanId.current=null;
     };
   },[]);
   function changeTarget(){
     targetVersion.current++;
-    cancelPing(false);cancelTrace(false);
-    setPingBusy(false);setTraceBusy(false);
+    cancelProbe(false);cancelPing(false);cancelTrace(false);cancelScan(false);
+    setBusy(false);setPingBusy(false);setTraceBusy(false);setScanBusy(false);
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
     setError("");setPingError("");setTraceError("");setScanError("");
   }
@@ -79,19 +93,20 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   }
 
   async function run(){
-    if(busy)return;
+    if(probeId.current)return;
     setResult(null);setError("");
     if(!isTauri()){setError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),port};
+    const id=crypto.randomUUID();probeId.current=id;
     setBusy(true);
     try{
-      const received=await invoke<ProbeResult>("network_probe",{target:request});
-      if(mounted.current && version===targetVersion.current)setResult(received);
+      const received=await invoke<ProbeResult>("network_probe",{id,target:request});
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setError(String(e));
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setError(String(e));
     }finally{
-      if(mounted.current)setBusy(false);
+      if(probeId.current===id){probeId.current=null;if(mounted.current)setBusy(false);}
     }
   }
   async function runPing(){
@@ -131,21 +146,22 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   }
 
   async function runScan(){
-    if(scanBusy)return;
+    if(scanId.current)return;
     setScanResult(null);setScanError("");
     const ports=parseExplicitPorts(portsText);
     if(!ports){setScanError(ru?"Укажи от 1 до 12 уникальных TCP-портов через запятую без диапазонов":"Enter 1–12 distinct TCP ports separated by commas; no ranges");return;}
     if(!isTauri()){setScanError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),ports};
+    const id=crypto.randomUUID();scanId.current=id;
     setScanBusy(true);
     try{
-      const received=await invoke<PortScanResult>("network_scan_ports",{target:request});
-      if(mounted.current && version===targetVersion.current)setScanResult(received);
+      const received=await invoke<PortScanResult>("network_scan_ports",{id,target:request});
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setScanError(String(e));
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanError(String(e));
     }finally{
-      if(mounted.current)setScanBusy(false);
+      if(scanId.current===id){scanId.current=null;if(mounted.current)setScanBusy(false);}
     }
   }
 
@@ -156,6 +172,7 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <label>{ru?"Хост":"Host"}<input value={host} onChange={e=>{setHost(e.target.value);changeTarget();}} maxLength={253} autoComplete="off"/></label>
       <label>{ru?"Порт":"Port"}<input type="number" min={1} max={65535} value={port} onChange={e=>{setPort(Number(e.target.value));changeTarget();}}/></label>
       <button type="button" disabled={busy||!host.trim()||!Number.isInteger(port)||port<1||port>65535} onClick={()=>void run()}>{busy?(ru?"Проверка…":"Checking…"):(ru?"Проверить TCP":"Check TCP")}</button>
+      {busy&&<button type="button" onClick={()=>cancelProbe(true)}>{ru?"Отменить TCP":"Cancel TCP check"}</button>}
       <button type="button" disabled={pingBusy||!host.trim()} onClick={()=>void runPing()}>{pingBusy?(ru?"Ping…":"Pinging…"):"Ping"}</button>
       {pingBusy&&<button type="button" onClick={()=>cancelPing(true)}>{ru?"Отменить Ping":"Cancel ping"}</button>}
       <button type="button" disabled={traceBusy||!host.trim()} onClick={()=>void runTrace()}>{traceBusy?(ru?"Трассировка…":"Tracing…"):(ru?"Трассировка":"Traceroute")}</button>
@@ -169,6 +186,7 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <button type="button" disabled={scanBusy||!host.trim()} onClick={()=>void runScan()}>
         {scanBusy?(ru?"Проверка портов…":"Checking ports…"):(ru?"Проверить порты":"Check ports")}
       </button>
+      {scanBusy&&<button type="button" onClick={()=>cancelScan(true)}>{ru?"Отменить порты":"Cancel port check"}</button>}
     </div>
     <button type="button" disabled={!result&&!pingResult&&!traceResult&&!scanResult}
       onClick={downloadReport}>{ru?"Скачать отчёт":"Download report"}</button>

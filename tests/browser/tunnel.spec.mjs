@@ -55,7 +55,7 @@ test("remote SSH forwarding requires confirmation and requests remote loopback o
   const pane=page.getByRole("region",{name:"Local SSH tunnel"});
   await pane.getByRole("combobox",{name:"Tunnel mode"}).selectOption("remote");
   await expect(pane.getByLabel("Remote port")).toBeVisible();
-  await expect(pane.getByLabel("Local port")).toHaveCount(0);
+  await expect(pane.getByLabel("Local port",{exact:true})).toHaveCount(0);
   await expect(pane.getByLabel("Target host")).toHaveCount(0);
   await pane.getByLabel("Remote port").fill("18443");
   await pane.getByLabel("Local target port").fill("8080");

@@ -7,8 +7,8 @@ native acceptance result. Automated passes alone do not close a row.
 
 ## P0
 
-- [ ] SSH/SFTP: direct private-key selection (console implementation in this
-  branch; native and GUI Files coverage pending), safe multi-hop, authentication
+- [ ] SSH/SFTP: direct private-key selection (console and GUI Files implementation
+  in this branch; native Windows/Arch acceptance pending), safe multi-hop, authentication
   failure/cancellation, gateway GUI Files, Windows/Arch acceptance.
 - [ ] Desktop: decide supported direct versus gateway topology; verify RDP
   target certificate identity, clipboard, resize, reconnect and VNC auth/trust.
@@ -42,4 +42,9 @@ native acceptance result. Automated passes alone do not close a row.
   `spawn UNKNOWN` before any test body ran.
 - Fresh GitHub CI for this change: **not run** until this branch is pushed.
 - Native Windows/Arch GUI and live protocol acceptance: **not tested**.
+- GUI Files key selection uses one transient absolute regular-file path, the
+  existing strict OpenSSH host-key policy and key-only SFTP transport. Encrypted
+  keys must already be loaded into an SSH agent; Files cannot prompt for a key
+  passphrase. It cannot be combined with password/PAM login. Disposable Linux
+  fixture coverage and Windows/Linux CI for this increment are pending.
 - Production-stable release: prohibited while the above gates remain open.

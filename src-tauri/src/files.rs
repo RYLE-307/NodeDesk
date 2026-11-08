@@ -7,8 +7,11 @@ use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(default)] identity: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
 fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if d.identity.is_some() && d.auth_session.is_some() {
+        return Err("Identity file cannot be combined with interactive Files login".into());
+    }
     if let Some(id)=&d.auth_session {
         #[cfg(windows)] {d.native=Some(app.state::<crate::native_auth::Logins>().get(id,&d.host,d.port,&d.username)?);}
         #[cfg(not(windows))] {d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?);}
@@ -97,11 +100,14 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
     // Insert before destination/options end. First value wins in OpenSSH.
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
-    strict.extend(args); strict.push("sftp".into()); Ok(strict)
+    strict.extend(ssh::with_identity(args,d.identity.as_deref())?); strict.push("sftp".into()); Ok(strict)
 }
 type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
+    if d.identity.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Identity file requires direct key-only Files connection".into());
+    }
     if let Some(login)=&d.native {
         *op.native.lock().map_err(|_|"Operation lock failed")?=Some(login.clone());
         op.check()?;
@@ -857,7 +863,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
 }
 #[cfg(all(test,unix))]
 pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into()),native:None};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,control:Some(socket.into()),native:None};
     let op=Arc::new(Operation::default());
     let result=(|| -> Result<()> {
         // Exercise the production connect/list/copy functions, not a parallel
@@ -888,7 +894,7 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
 }
 #[cfg(test)]
 pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:None,native:Some(login)};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,control:None,native:Some(login)};
     let op=Arc::new(Operation::default());
     let mut c=connect(&d,&op).unwrap();
     let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
@@ -958,12 +964,30 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 mod tests {
     use super::*;
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None,native:None };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,control:None,native:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
         assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
+    }
+    #[test] fn direct_identity_is_explicit_and_preserves_strict_transport() {
+        let path=std::env::temp_dir().join(format!("nodedesk-files-key-{}",std::process::id()));
+        fs::write(&path,b"fixture key").unwrap();
+        let raw=path.to_str().unwrap().to_string();
+        let d=Destination {host:"localhost".into(),port:22,username:"user".into(),auth_session:None,
+            identity:Some(raw.clone()),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-i",raw.as_str()]));
+        for required in ["-oIdentitiesOnly=yes","-oBatchMode=yes","-oStrictHostKeyChecking=yes",
+            "-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert_eq!(args.last().unwrap(),"sftp");
+        assert!(transport_args(&Destination {identity:Some("relative-key".into()),..d.clone()}).is_err());
+        assert!(connect(&Destination {auth_session:Some("login".into()),..d.clone()},&Operation::default()).is_err());
+        fs::remove_file(path).unwrap();
+        assert!(transport_args(&d).is_err());
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
@@ -1041,10 +1065,11 @@ mod tests {
     #[test]
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
-        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None,native:None};
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,
+            identity:Some(format!("{dir}/client")),control:None,native:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
-            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into()]);
             cmd.args(transport_args(&d).unwrap()); spawn_transport(cmd,op)
         };
         for known in ["unknown-gui","changed","revoked"] {

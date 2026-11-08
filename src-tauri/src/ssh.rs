@@ -237,7 +237,7 @@ fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
     }
     Ok(args)
 }
-fn with_identity(mut args: Vec<String>, identity: Option<&str>) -> Result<Vec<String>, String> {
+pub(crate) fn with_identity(mut args: Vec<String>, identity: Option<&str>) -> Result<Vec<String>, String> {
     let Some(raw) = identity else { return Ok(args); };
     if raw.is_empty() || raw.len() > 4096 || raw.contains(['\0', '\n', '\r']) {
         return Err("Invalid SSH identity path".into());

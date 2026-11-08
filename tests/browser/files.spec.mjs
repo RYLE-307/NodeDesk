@@ -93,6 +93,28 @@ test('no automatic connections; local works before login; remote waits for authe
   await expect(files.getByRole('button',{name:'Upload → remote'})).toBeDisabled();
 });
 
+test('direct Files identity stays transient and is excluded from interactive login',async({page}) => {
+  const files=await open(page);
+  const interactive=files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'});
+  await interactive.uncheck();
+  const key=files.getByRole('textbox',{name:'Files SSH identity file path'});
+  await key.fill('/home/fixture/.ssh/id_ed25519');
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination));
+  expect(calls.at(-1).destination).toMatchObject({authSession:null,identity:'/home/fixture/.ssh/id_ed25519'});
+  expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain('id_ed25519');
+  await interactive.check();
+  await expect(key).toHaveCount(0);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  const after=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).at(-1).destination);
+  expect(after.authSession).toBeTruthy();
+  expect(after.identity).toBeNull();
+});
+
 test('collision is rejected before confirmation or transfer; closing tab disconnects login',async({page}) => {
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();

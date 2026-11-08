@@ -9,7 +9,7 @@ automated scenarios; it does not prove desktop, protocol or security parity.
 
 | Area | Current evidence | Remaining gate |
 | --- | --- | --- |
-| SSH/SFTP security and recovery | Strict host-key checks, password/PAM console, graphical SFTP, bounded transfer queues and partial recovery have automated fixtures. | Native Windows/Arch acceptance; GUI Files through a gateway; key-file choice, safe multi-hop and auth/error coverage. |
+| SSH/SFTP security and recovery | Strict host-key checks, password/PAM console, graphical SFTP, bounded transfer queues and partial recovery have automated fixtures. Direct key-file choice is implemented for console and GUI Files, pending CI and native acceptance. | Native Windows/Arch acceptance; GUI Files through a gateway; safe multi-hop and auth/error coverage. |
 | Desktop protocols | RDP uses an external client or separately deployed Guacamole gateway; VNC uses an external client or WSS gateway. | Embedded direct protocol/trust path or an explicit product decision to keep gateway dependency; clipboard/resize/reconnect and target certificate acceptance. |
 | Secrets and storage | Catalog strips unknown secret fields; credentials are transient. | Audited OS vault/master-password policy, lock/unlock, migration and backup policy. Never put credentials in WebView storage. |
 | System VPN | Existing OS-owned profiles can be listed and explicitly toggled. | WireGuard/OpenVPN/OpenConnect coverage per OS, profile lifecycle/status/errors and disposable route/DNS tests. No corporate profiles. |

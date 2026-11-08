@@ -1,13 +1,13 @@
 # NodeDesk
 
-> **Development: v0.8.0-alpha.0 — not a stable release.** SFTP multi-queue, pause/resume, guarded chmod, safe SSH config preview, transient one-hop console jump and redacted diagnostics are in the review branch.
+> **v0.9.0-alpha.0 — integrated native QA stage, NOT a stable release.** v0.7–v0.8 functional milestones are merged into main with automated CI green. Native Windows/Arch GUI acceptance is planned but NOT yet performed.
 > Native Windows/Arch GUI acceptance is **deferred by request to v0.9–v1.0**. This candidate is CI-only, not production-ready.
-> See [v0.8 development notes](docs/V0.8-RELEASE-NOTES.md), [v0.8 functional plan](docs/V0.8-PLAN.md), [v0.7 engineering gates](docs/V0.7-RELEASE.md), and the [deferred native QA checklist](docs/V0.7-ACCEPTANCE.md).
+> See the [single v0.9 Windows/Arch QA plan](docs/V0.9-QA-PLAN.md), [v0.8 feature notes](docs/V0.8-RELEASE-NOTES.md), and [v0.7 engineering gates](docs/V0.7-RELEASE.md).
 
 [Русский](README.ru.md) · **EN**
 
 Offline-first infrastructure workspace for Windows and Linux, built with Tauri 2,
-React, TypeScript and Rust. Development version: **0.8.0-alpha.0** (experimental; native GUI QA deferred).
+React, TypeScript and Rust. QA candidate version: **0.9.0-alpha.0** (experimental; manual native GUI acceptance pending).
 
 ## Available
 

@@ -5,7 +5,7 @@
 > existing desktop/workspace slice. The long-tail parity matrix is not a
 > v0.7 checklist.
 
-> **Current development: v0.8.0-alpha.0 — guarded SFTP chmod, local SSH config preview, one-hop console ProxyJump, privacy-redacted transfer diagnostics and stale network result isolation. Native GUI acceptance deferred to v0.9–v1.0.**
+> **Current stage: v0.9.0-alpha.0 — consolidated native Windows/Arch acceptance. v0.7 and v0.8 milestones merged into main with automated CI; manual testing is NOT yet done. Final bug fixes and design are v1.0.**
 > v0.5 graphical SSH/SFTP was merged into main with CI green; Arch manual smoke test confirmed login, browsing and upload.
 > First v0.6 RDP details: [V0.6-RDP](V0.6-RDP.md). Historical plans below describe past stages.
 

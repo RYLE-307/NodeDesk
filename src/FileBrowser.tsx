@@ -94,13 +94,16 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     return !(preview && editDraft!==preview.content) ||
       window.confirm(ru?"Несохранённые изменения исчезнут. Продолжить?":"Unsaved edits will be lost. Continue?");
   }
+  const endpointProfile = JSON.stringify([connection.host,connection.port,connection.username]);
   const profile = JSON.stringify([connection.host,connection.port,connection.username,
     jumpEnabled?jumpHost:"",jumpEnabled?jumpUsername:"",jumpEnabled?jumpPort:""]);
   const currentProfile=useRef(profile);
   currentProfile.current=profile;
   useEffect(()=>{
-    setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));
     setIdentity("");
+  },[endpointProfile]);
+  useEffect(()=>{
+    setSavedRecoveries(listRecoveries(window.localStorage,recoveryEndpoint));
     recoveryEnabled.current=false;setKeepRecovery(false);
   },[profile]);
   function discardCheckpoint(queueId?:string){

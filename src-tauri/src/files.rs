@@ -101,7 +101,7 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
     // Insert before destination/options end. First value wins in OpenSSH.
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
-    if d.jump.is_some() && (d.identity.is_some() || d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
         return Err("Gateway Files requires agent-only transport".into());
     }
     let args=ssh::with_jump(args,d.jump.as_ref(),&d.host,d.port,&d.username)?;
@@ -110,7 +110,7 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
 type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
-    if d.jump.is_some() && (d.identity.is_some() || d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
         return Err("Gateway Files requires agent-only transport".into());
     }
     if d.identity.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
@@ -997,7 +997,7 @@ mod tests {
         fs::remove_file(path).unwrap();
         assert!(transport_args(&d).is_err());
     }
-    #[test] fn agent_only_single_hop_files_gateway_validates_transport() {
+    #[test] fn single_hop_files_gateway_validates_key_agent_transport() {
         let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
             "host":"bastion.example.org","port":2201,"username":"operator"
         })).unwrap();
@@ -1013,7 +1013,17 @@ mod tests {
         }
         assert!(connect(&Destination{auth_session:Some("interactive".into()),..d.clone()},
             &Operation::default()).is_err());
-        assert!(transport_args(&Destination{identity:Some("/a/key".into()),..d.clone()}).is_err());
+        // Selected identity applies to the destination, never the separate
+        // OpenSSH -J child. The jump uses the SSH agent/default keys.
+        let key=std::env::temp_dir().join(format!("nodedesk-target-key-{}",std::process::id()));
+        fs::write(&key,b"fixture-only").unwrap();
+        let key_path=key.to_string_lossy().to_string();
+        let with_key=transport_args(&Destination{identity:Some(key_path.clone()),..d.clone()}).unwrap();
+        let pos=with_key.iter().position(|arg|arg=="-i").unwrap();
+        assert_eq!(with_key[pos+1],key_path);
+        assert!(with_key.contains(&"-oIdentitiesOnly=yes".into()));
+        fs::remove_file(&key).unwrap();
+        assert!(transport_args(&Destination{identity:Some(key_path),..d.clone()}).is_err());
         for invalid in ["bad;sh","-ProxyCommand=evil","a b","bad\nhost"] {
             let jump=serde_json::from_value(serde_json::json!({
                 "host":invalid,"port":2201,"username":"operator"

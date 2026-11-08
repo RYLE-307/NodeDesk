@@ -89,8 +89,10 @@ native acceptance result. Automated passes alone do not close a row.
 - Transient single OpenSSH ProxyJump host, user and port added to graphical
   Files, using agent-only key authentication. Binary SFTP operations, transfer
   cancellation, no-overwrite and strict target known-host checking remain.
-- Backend refuses mixing a gateway with interactive login, a manually selected
-  identity file, or a gateway identical to the target. Changes to the gateway
+- Backend refuses mixing a gateway with interactive login or an identical
+  gateway/target endpoint. An optional explicitly selected identity file is
+  validated and passed to the **target only**; the gateway independently uses
+  the SSH agent or default OpenSSH key files. Changes to the gateway
   discard loaded remote listings and cancel pending operations.
 - Local OpenSSH configuration may affect the gateway's own connection despite
   target -F none; audit gateway ssh_config separately. Both host keys must be

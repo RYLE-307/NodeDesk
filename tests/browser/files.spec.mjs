@@ -1085,12 +1085,14 @@ test('redacted SFTP transfer report exports statuses without filenames or connec
   }
 });
 
-test('Files single-hop gateway uses a transient agent-only destination',async({page})=>{
+test('Files single-hop gateway routes selected identity only to target',async({page})=>{
   const files=await open(page);
   await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).uncheck();
-  const gateway=files.getByRole('checkbox',{name:'Via one SSH gateway (agent)'});
+  const gateway=files.getByRole('checkbox',{name:'Via one SSH gateway (key/agent)'});
   await gateway.check();
-  await expect(files.getByRole('textbox',{name:'Files SSH identity file path'})).toHaveCount(0);
+  const identity=files.getByRole('textbox',{name:'Files SSH identity file path'});
+  await expect(identity).toBeVisible();
+  await identity.fill('/home/fixture/.ssh/target-key');
   await files.getByRole('textbox',{name:'Files gateway host'}).fill('bastion.example.org');
   await files.getByRole('textbox',{name:'Files gateway username'}).fill('operator');
   await files.getByRole('spinbutton',{name:'Files gateway port'}).fill('2201');
@@ -1099,12 +1101,13 @@ test('Files single-hop gateway uses a transient agent-only destination',async({p
   await expect(files.getByText('/remote',{exact:true})).toBeVisible();
   const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_list'&&x.destination));
   expect(calls.at(-1).destination).toMatchObject({
-    authSession:null,identity:null,
+    authSession:null,identity:'/home/fixture/.ssh/target-key',
     jump:{host:'bastion.example.org',username:'operator',port:2201}
   });
   const stored=await page.evaluate(()=>JSON.stringify(localStorage));
   expect(stored).not.toContain('bastion.example.org');
   expect(stored).not.toContain('operator');
+  expect(stored).not.toContain('target-key');
   await gateway.uncheck();
   await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
   await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).check();

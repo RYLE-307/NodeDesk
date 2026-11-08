@@ -194,7 +194,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   const destination = {host:connection.host,port:connection.port,username:connection.username,
     authSession:interactive ? authSession : null,
-    identity:!interactive && !jumpEnabled && identity.trim() ? identity.trim() : null,
+    identity:!interactive && identity.trim() ? identity.trim() : null,
     jump:!interactive && jumpEnabled ? {host:jumpHost.trim(),username:jumpUsername.trim(),port:Number(jumpPort)} : null};
   useEffect(() => {
     setAuthReady(false);
@@ -742,8 +742,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     <label><input type="checkbox" checked={interactive} disabled={busy || !capabilities?.interactiveLogin}
       onChange={e => setInteractive(e.target.checked)}/>{ru ? "Интерактивный вход для файлов (пароль/PAM)" : "Interactive Files login (password/PAM)"}</label>
     {!interactive && <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-      onChange={e=>{setJumpEnabled(e.target.checked);if(e.target.checked)setIdentity("");}}/>
-      {ru?"Через один SSH-шлюз (агент)":"Via one SSH gateway (agent)"}</label>}
+      onChange={e=>setJumpEnabled(e.target.checked)}/>
+      {ru?"Через один SSH-шлюз (ключ/агент)":"Via one SSH gateway (key/agent)"}</label>}
     {!interactive && jumpEnabled && <div className="files-gateway-options">
       <label>{ru?"Хост SSH-шлюза":"Gateway host"}
         <input aria-label="Files gateway host" maxLength={253} autoComplete="off" disabled={busy}
@@ -755,14 +755,14 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         <input aria-label="Files gateway port" type="number" min="1" max="65535" disabled={busy}
           value={jumpPort} onChange={e=>setJumpPort(e.target.value)}/></label>
       <p className="ssh-help">{ru
-        ?"Только один шлюз через OpenSSH ProxyJump. Ключи обоих серверов должны быть заранее проверены; требуется SSH-агент. Пароль/PAM и выбор файла ключа через шлюз не поддерживаются. Локальный ssh_config может влиять на подключение к шлюзу — проверьте его."
-        :"One OpenSSH ProxyJump gateway only. Both server keys must be trusted in advance; use an SSH agent. Password/PAM and per-file identity are unsupported through a gateway. Local ssh_config may affect the gateway connection; review it."}</p>
+        ?"Один OpenSSH-шлюз ProxyJump. Для шлюза используются стандартные SSH-ключи или агент; выбранный ниже файл ключа относится только к конечному серверу. Оба host key должны быть заранее проверены. Пароль/PAM и интерактивный вход не поддерживаются."
+        :"One OpenSSH ProxyJump gateway. The hop uses default SSH keys or your agent; the selected file below applies only to the target server. Both host keys must be trusted in advance. Password/PAM and interactive login are unsupported."}</p>
     </div>}
-    {!interactive && !jumpEnabled && <label>{ru ? "Путь к SSH-ключу для файлов (необязательно)" : "SSH identity file path for Files (optional)"}
+    {!interactive && <label>{ru ? "Путь к SSH-ключу для файлов (необязательно)" : "SSH identity file path for Files (optional)"}
       <input aria-label="Files SSH identity file path" value={identity} disabled={busy} maxLength={4096}
         autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/>
     </label>}
-    {!interactive && !jumpEnabled && <p className="ssh-help">{ru
+    {!interactive && <p className="ssh-help">{ru
       ? "Укажите абсолютный путь к локальному ключу. Путь действует только в этой вкладке и не сохраняется. Для зашифрованного ключа заранее загрузите его в SSH-агент: файловые операции не показывают запрос парольной фразы. Ключ сервера должен быть заранее подтверждён."
       : "Enter an absolute path to a local key. The path applies only to this tab and is not saved. Load encrypted keys into your SSH agent first: Files operations cannot prompt for a passphrase. The host key must already be trusted."}</p>}
     {capabilities && !capabilities.interactiveLogin && <p className="ssh-help" role="status">

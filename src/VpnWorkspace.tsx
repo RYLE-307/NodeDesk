@@ -48,7 +48,8 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
     if(!window.confirm(question))return;
     setBusy(profile.id);setError("");setMessage("");
     try {
-      const items=await invoke<VpnProfile[]>("vpn_set",{profileId:profile.id,connect});
+      const items=await invoke<VpnProfile[]>("vpn_set",{profileId:profile.id,
+        expectedName:profile.name,expectedKind:profile.kind,expectedActive:profile.active,connect});
       if(!alive.current)return;
       setProfiles(items);
       const current=items.find(item=>item.id===profile.id);

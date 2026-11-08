@@ -54,7 +54,8 @@ test("VPN tab only lists profiles, never connects automatically, requires user c
   await expect(pane.getByRole("status")).toContainText('OS reported the new state');
   await expect(pane.getByRole("button",{name:"Disconnect",exact:true})).toBeVisible();
   const calls=await page.evaluate(()=>window.fixture.calls.filter(v=>v.cmd==="vpn_set"));
-  expect(calls).toEqual([{cmd:"vpn_set",args:{profileId:UUID,connect:true}}]);
+  expect(calls).toEqual([{cmd:"vpn_set",args:{profileId:UUID,
+    expectedName:"Office VPN",expectedKind:"vpn",expectedActive:false,connect:true}}]);
   expect(JSON.stringify(calls)).not.toMatch(/password|secret|route/i);
   page.once("dialog",dialog=>dialog.accept());
   await pane.getByRole("button",{name:"Disconnect",exact:true}).click();
@@ -122,4 +123,23 @@ test("VPN activation locks UI until observed OS confirmation",async({page})=>{
   await page.evaluate(()=>window.pending.resolve());
   await expect(pane.getByRole("button",{name:"Disconnect",exact:true})).toBeEnabled();
   expect(await page.evaluate(()=>window.pending.calls.filter(x=>x.cmd==="vpn_set").length)).toBe(1);
+});
+
+test("VPN IPC carries displayed identity and state, never arbitrary commands",async({page})=>{
+  const pane=await open(page);
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Connect",exact:true}).click();
+  await expect(pane.getByRole("status")).toContainText("OS reported the new state");
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Disconnect",exact:true}).click();
+  await expect(pane.getByRole("button",{name:"Connect",exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==="vpn_set"));
+  expect(calls.map(x=>x.args)).toEqual([
+    {profileId:UUID,expectedName:"Office VPN",expectedKind:"vpn",expectedActive:false,connect:true},
+    {profileId:UUID,expectedName:"Office VPN",expectedKind:"vpn",expectedActive:true,connect:false}
+  ]);
+  for (const call of calls) {
+    expect(Object.keys(call.args).sort()).toEqual(
+      ["profileId","expectedName","expectedKind","expectedActive","connect"].sort());
+  }
 });

@@ -167,3 +167,14 @@ topologies are still NOT TESTED.
   Playwright fixture checks that UI controls remain disabled until the
   operation resolves. Actual VPN route/DNS and Windows/Arch native
   acceptance remain NOT TESTED. This does not close VPN P0.
+
+
+## P0 VPN action stale-profile rejection (2026-11-08)
+- The WebView supplies the displayed, non-secret name, protocol and active state
+  alongside the OS UUID. The native command re-enumerates the profile immediately
+  before any OS mutation, and rejects changed names, kinds or active states.
+- This prevents a stale list, profile reuse or an outside VPN manager's changes
+  from silently triggering actions on a different profile. Operator must refresh.
+- A pure Rust negative matrix covers changed/replaced snapshots and invalid
+  names, and browser tests verify exact bounded IPC arguments. These
+  confirmations are not evidence of VPN routing or DNS leak safety.

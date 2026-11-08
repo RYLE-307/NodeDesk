@@ -54,6 +54,20 @@ fn require_control_allowed(profile:&VpnProfile)->Result<(),String> {
     else {Err("Unsupported VPN protocol or encryption policy is read-only in NodeDesk".into())}
 }
 
+/// A click must only affect exactly the OS profile the operator was shown.
+/// A reused UUID, externally changed protocol, or changed active state must
+/// force a refresh instead of silently acting on a different/stale profile.
+fn verify_request_snapshot(
+    current:&VpnProfile, expected_name:&str, expected_kind:&str, expected_active:bool
+)->Result<(),String> {
+    if !safe_name(expected_name) || !safe_name(expected_kind)
+        || current.name!=expected_name || current.kind!=expected_kind
+        || current.active!=expected_active {
+        return Err("System VPN profile changed since it was displayed; refresh before retrying".into());
+    }
+    Ok(())
+}
+
 fn observed_state(before:&VpnProfile, profiles:&[VpnProfile], connect:bool)->Result<bool,String> {
     let current=profiles.iter().find(|p|p.id.eq_ignore_ascii_case(&before.id))
         .ok_or("System VPN profile disappeared after the action")?;
@@ -210,7 +224,7 @@ pub async fn vpn_list()->Result<Vec<VpnProfile>,String>{
         .map_err(|_|"VPN list worker failed".to_string())?
 }
 #[tauri::command]
-pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,connect:bool)->Result<Vec<VpnProfile>,String>{
+pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expected_name:String,expected_kind:String,expected_active:bool,connect:bool)->Result<Vec<VpnProfile>,String>{
     if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
     // The guard belongs to the spawned worker, not the IPC future.
     let guard=actions.acquire()?;
@@ -222,6 +236,7 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,conne
         let before=list_impl()?;
         let selected=before.iter().find(|p|p.id.eq_ignore_ascii_case(&profile_id))
             .ok_or("System VPN profile is missing or unsupported")?;
+        verify_request_snapshot(selected,&expected_name,&expected_kind,expected_active)?;
         require_control_allowed(selected)?;
         if selected.active!=connect {execute_impl(selected,connect)?;}
         // A successful OS command is not proof of a connected/disconnected
@@ -284,6 +299,23 @@ mod tests {
         let serialized=serde_json::to_string(&profile).unwrap();
         assert!(!serialized.contains("sensitive"));
         assert!(!serialized.contains("password"));
+    }
+    #[test]
+    fn vpn_request_rejects_stale_or_reused_profile_before_os_side_effects() {
+        let baseline=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Disposable fixture".into(),kind:"WireGuard".into(),
+            active:false,control_allowed:true};
+        assert!(verify_request_snapshot(&baseline,"Disposable fixture","WireGuard",false).is_ok());
+        assert!(verify_request_snapshot(&baseline,"Other name","WireGuard",false).is_err());
+        assert!(verify_request_snapshot(&baseline,"Disposable fixture","OpenVPN",false).is_err());
+        assert!(verify_request_snapshot(&baseline,"Disposable fixture","WireGuard",true).is_err());
+        assert!(verify_request_snapshot(&baseline,"bad\nname","WireGuard",false).is_err());
+        assert!(verify_request_snapshot(&baseline,"Disposable fixture","bad\rkind",false).is_err());
+        let changed=VpnProfile{name:"Replaced profile".into(),..baseline.clone()};
+        assert!(verify_request_snapshot(&changed,&baseline.name,&baseline.kind,baseline.active).is_err());
+        let replaced=VpnProfile{kind:"Other VPN (read-only)".into(),
+            control_allowed:false,..baseline.clone()};
+        assert!(verify_request_snapshot(&replaced,&baseline.name,&baseline.kind,baseline.active).is_err());
     }
     #[test]
     fn vpn_action_requires_observed_state_and_stable_profile() {

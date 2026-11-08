@@ -435,7 +435,7 @@ Host local
 "#);
         assert_eq!(entries.len(),2);
         assert_eq!(entries[0],ConfigHost{alias:"example-prod".into(),host:"192.0.2.7".into(),
-            port:2222,username:"deploy".into(),next:None});
+            port:2222,username:"deploy".into()});
         assert_eq!(entries[1].alias,"local");
         assert_eq!(entries[1].username,"tester");
         assert!(!format!("{entries:?}").contains("something-dangerous"));

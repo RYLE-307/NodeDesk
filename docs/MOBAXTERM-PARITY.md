@@ -219,3 +219,11 @@ still governs RDP target identity, NLA and server trust.
 The existing external FreeRDP/mstsc launcher remains unchanged.
 No real RDP screen or server-certificate identity has been manually accepted.
 [Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).
+
+
+### SSH/SFTP console target key through a jump host (2026-11-08)
+A single explicit ProxyJump session now permits a separately selected target
+identity file in the SSH and SFTP consoles. Gateway authentication remains
+separate (agent or default key files); the selected target key is not forwarded
+as an agent capability. No saved key paths, gateway chain, shell command or
+automatic login. Windows/Arch native acceptance remains open.

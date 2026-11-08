@@ -123,3 +123,13 @@ topologies are still NOT TESTED.
 - Rust validation and a real disposable SSH reverse-forward fixture exercise
   target-local bytes. Playwright verifies consent and exact restricted spec.
   Native Arch/Windows acceptance remains NOT TESTED.
+
+
+## Console ProxyJump target identity (2026-11-08)
+- SSH/SFTP consoles now allow the transient, explicitly chosen target SSH
+  identity path together with one validated ProxyJump hop. Target identity
+  insertion uses the existing regular-file/absolute-path checks and
+  OpenSSH's -i; the jump child independently uses the agent/default keys.
+- No agent forwarding, credentials in WebView storage, automatic connections,
+  arbitrary ProxyCommand or multi-hop chains. Backend Rust validation and
+  browser IPC checks are included; native Windows/Arch acceptance is pending.

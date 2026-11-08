@@ -299,8 +299,8 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
         return Err("Jump host is supported only in SSH/SFTP console tabs".into());
     }
-    if identity.is_some() && (!matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp) || auth!=AuthMode::Key || jump.is_some()) {
-        return Err("Identity file requires direct key-only SSH/SFTP console".into());
+    if identity.is_some() && (!matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp) || auth!=AuthMode::Key) {
+        return Err("Identity file requires key-only SSH/SFTP console".into());
     }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
@@ -441,6 +441,26 @@ Host local
         }
         let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into()};
         assert!(jump_destination(&same,"target.internal",22,"deploy").is_err());
+    }
+    #[test] fn selected_target_key_with_jump_is_not_forwarded_as_agent() {
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let path=std::env::temp_dir().join(format!("nodedesk-console-jump-key-{}",std::process::id()));
+        std::fs::write(&path,b"fixture key only").unwrap();
+        let selected=path.to_string_lossy().to_string();
+        for args in [
+            arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
+            sftp_arguments("target.internal",2223,"deploy",AuthMode::Key).unwrap()
+        ]{
+            let args=with_identity(with_jump(args,Some(&jump),"target.internal",22,"deploy").unwrap(),
+                Some(&selected)).unwrap();
+            let pos=args.iter().position(|v|v=="-i").unwrap();
+            assert_eq!(args[pos+1],selected);
+            assert!(args.contains(&"-oIdentitiesOnly=yes".into()));
+            assert!(args.contains(&"-oForwardAgent=no".into()));
+            assert!(args.contains(&"-J".into()));
+            assert_eq!(&args[..2],["-F","none"]);
+        }
+        std::fs::remove_file(path).unwrap();
     }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }

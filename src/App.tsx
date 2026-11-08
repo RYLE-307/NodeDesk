@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import {invoke,isTauri} from "@tauri-apps/api/core";
 import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
@@ -214,6 +215,9 @@ export default function App() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [sshConfigHosts,setSshConfigHosts]=useState<{alias:string;host:string;port:number;username:string}[]|null>(null);
+  const [sshConfigError,setSshConfigError]=useState("");
+  const [sshConfigBusy,setSshConfigBusy]=useState(false);
   const importInput=useRef<HTMLInputElement>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
@@ -369,8 +373,22 @@ export default function App() {
     }
   }
   function edit(value: Editor) {
-    setInvalid(false);
+    setInvalid(false);setSshConfigHosts(null);setSshConfigError("");
     setEditor(value);
+  }
+  async function previewSshConfig(){
+    if(!editor || editor.kind==="group" || sshConfigBusy)return;
+    setSshConfigHosts(null);setSshConfigError("");
+    if(!isTauri()){
+      setSshConfigError(data.language==="ru"?"Нужна настольная версия NodeDesk":
+        "NodeDesk desktop required");return;
+    }
+    setSshConfigBusy(true);
+    try{
+      const list=await invoke<{alias:string;host:string;port:number;username:string}[]>("ssh_config_preview");
+      setSshConfigHosts(list);
+    }catch(err){setSshConfigError(String(err));}
+    finally{setSshConfigBusy(false);}
   }
   function open(id: string) {
     setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
@@ -1008,6 +1026,33 @@ export default function App() {
                     }
                   />
                 </label>
+                {editor.value.protocol === "SSH" && <div className="ssh-config-preview">
+                  <button type="button" disabled={sshConfigBusy}
+                    onClick={()=>void previewSshConfig()}>
+                    {sshConfigBusy?(data.language==="ru"?"Чтение конфигурации…":"Reading config…"):
+                      (data.language==="ru"?"Показать SSH config":"Preview local SSH config")}
+                  </button>
+                  {sshConfigError&&<p role="alert" className="error">{sshConfigError}</p>}
+                  {sshConfigHosts&&<label>
+                    {data.language==="ru"?"Выбрать запись Host":"Select SSH Host entry"}
+                    <select aria-label="SSH config host" defaultValue="" onChange={e=>{
+                      const record=sshConfigHosts.find(h=>h.alias===e.target.value);
+                      if(record && editor.kind!=="group"){
+                        setEditor({...editor,value:{...editor.value,
+                          name:record.alias,host:record.host,port:record.port,username:record.username
+                        }} as Editor);
+                      }
+                    }}>
+                      <option value="">{data.language==="ru"?"Не выбран":"Not selected"}</option>
+                      {sshConfigHosts.map(h=><option key={h.alias} value={h.alias}>
+                        {h.alias} → {h.username?h.username+"@":""}{h.host}:{h.port}
+                      </option>)}
+                    </select>
+                  </label>}
+                  <p className="ssh-help">{data.language==="ru"
+                    ?"Читается только ~/.ssh/config. Подставляются Host, HostName, User и Port; Include, ProxyCommand, ключи и команды игнорируются. Соединение не начинается и конфигурация не исполняется."
+                    :"Reads only ~/.ssh/config. Extracts Host, HostName, User and Port; Include, ProxyCommand, keys and commands are ignored. No connection or config execution."}</p>
+                </div>}
                 {editor.value.protocol === "RDP" && <label>
                   {data.language === "ru" ? "SHA256 отпечаток сертификата (Linux FreeRDP, необязательно)" : "Certificate SHA256 fingerprint (Linux FreeRDP, optional)"}
                   <input aria-label="RDP SHA256 fingerprint" autoComplete="off" spellCheck={false}

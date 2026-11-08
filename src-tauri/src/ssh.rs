@@ -73,6 +73,102 @@ pub fn files_auth_ready(id: String, host: String, port: u16, username: String, s
     #[cfg(not(windows))]
     files_socket(&state,&id,&host,port,&username).is_ok()
 }
+
+/// Safe preview of the fixed per-user OpenSSH config. This deliberately does
+/// NOT evaluate Include, Match, ProxyCommand, ProxyJump, IdentityFile, %-
+/// substitutions, shell expansions or environment variables. NodeDesk's SSH
+/// connection still uses -F none; selecting a preview only fills form fields.
+#[derive(Clone,Serialize,Debug,PartialEq,Eq)]
+#[serde(rename_all="camelCase")]
+pub struct ConfigHost { alias:String, host:String, port:u16, username:String }
+fn ssh_name_ok(host:&str)->bool {
+    !host.is_empty() && host.len()<=253 && !host.starts_with('-') &&
+    host.chars().all(|c|c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+}
+fn ssh_user_ok(user:&str)->bool {
+    user.is_empty() || user.len()<=200 &&
+        !user.starts_with('-') &&
+        user.chars().all(|c|c.is_ascii_alphanumeric()||"._-".contains(c))
+}
+fn ssh_config_hosts(input:&str)->Vec<ConfigHost>{
+    let mut items:Vec<ConfigHost>=vec![];
+    let mut current:Option<ConfigHost>=None;
+    let flush=|value:Option<ConfigHost>, items:&mut Vec<ConfigHost>| {
+        if let Some(entry)=value {
+            if ssh_name_ok(&entry.alias)&&ssh_name_ok(&entry.host)&&ssh_user_ok(&entry.username) &&
+                entry.port!=0 && !items.iter().any(|x|x.alias.eq_ignore_ascii_case(&entry.alias)) &&
+                items.len()<40 {items.push(entry);}
+        }
+    };
+    for line in input.lines().take(1000) {
+        if line.len()>1024 {continue;}
+        let raw=line.trim_start();
+        if raw.starts_with('#')||raw.is_empty(){continue;}
+        // Quoted arguments and line-continuations are intentionally unsupported.
+        if raw.contains(['"', '\'', '\\']){continue;}
+        let (key,rest)=raw.split_once(|c:char|c.is_whitespace()||c=='=')
+            .unwrap_or((raw,""));
+        let val=rest.trim_start_matches(|c:char|c.is_whitespace()||c=='=')
+            .split('#').next().unwrap_or("").trim();
+        let one=val.split_whitespace().collect::<Vec<_>>();
+        match key.to_ascii_lowercase().as_str(){
+            "host"=>{
+                flush(current.take(),&mut items);
+                // Wildcards, exclusions and multiple aliases are not imported:
+                // evaluating their precedence requires a real OpenSSH parser.
+                if one.len()==1&&ssh_name_ok(one[0]) &&
+                    !one[0].contains(['*','?','!']) {
+                    current=Some(ConfigHost{alias:one[0].into(),host:one[0].into(),
+                        port:22,username:String::new()});
+                }
+            }
+            "match"=>{flush(current.take(),&mut items);}
+            "hostname" if one.len()==1 => {
+                if let Some(entry)=current.as_mut(){
+                    if entry.host==entry.alias && ssh_name_ok(one[0]){
+                        entry.host=one[0].into();
+                    }
+                }
+            }
+            "user" if one.len()==1=>{
+                if let Some(entry)=current.as_mut(){
+                    if entry.username.is_empty() && ssh_user_ok(one[0]){
+                        entry.username=one[0].into();
+                    }
+                }
+            }
+            "port" if one.len()==1=>{
+                if let Some(entry)=current.as_mut(){
+                    if entry.port==22{
+                        if let Ok(port)=one[0].parse::<u16>(){
+                            if port!=0{entry.port=port;}
+                        }
+                    }
+                }
+            }
+            _=>{} // Never import executable directives, include files or secrets.
+        }
+    }
+    flush(current,&mut items);
+    items
+}
+#[tauri::command]
+pub fn ssh_config_preview()->Result<Vec<ConfigHost>,String>{
+    #[cfg(windows)]
+    let home=std::env::var_os("USERPROFILE").ok_or("User profile directory unavailable")?;
+    #[cfg(not(windows))]
+    let home=std::env::var_os("HOME").ok_or("Home directory unavailable")?;
+    let path=std::path::PathBuf::from(home).join(".ssh").join("config");
+    let metadata=std::fs::symlink_metadata(&path)
+        .map_err(|_|"No local ~/.ssh/config found")?;
+    if !metadata.file_type().is_file()||metadata.len()>65536{
+        return Err("SSH config must be a regular file no larger than 64 KiB".into());
+    }
+    let content=std::fs::read_to_string(&path)
+        .map_err(|_|"Cannot read UTF-8 SSH configuration".to_string())?;
+    Ok(ssh_config_hosts(&content))
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum Event { Data(Vec<u8>), Exit(u32), Error(String) }
@@ -227,6 +323,37 @@ pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHan
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_config_preview_never_evaluates_ssh_commands_or_secrets(){
+        let entries=ssh_config_hosts(r#"
+Host example-prod
+  HostName 192.0.2.7
+  User deploy
+  Port 2222
+  ProxyCommand sh -c something-dangerous
+  IdentityFile ~/.ssh/id_prod
+  Include ~/.ssh/extra.conf
+Host *.internal
+  User catchall
+Host -oProxyCommand=bad
+  HostName other
+Match host *
+  User must_be_ignored
+Host local
+  HostName localhost
+  User tester
+"#);
+        assert_eq!(entries.len(),2);
+        assert_eq!(entries[0],ConfigHost{alias:"example-prod".into(),host:"192.0.2.7".into(),
+            port:2222,username:"deploy".into()});
+        assert_eq!(entries[1].alias,"local");
+        assert_eq!(entries[1].username,"tester");
+        assert!(!format!("{entries:?}").contains("something-dangerous"));
+        assert!(!format!("{entries:?}").contains("id_prod"));
+        assert!(ssh_config_hosts("Host *.com\n User bad\n").is_empty());
+        assert!(ssh_config_hosts("Host name\n HostName -oProxyCommand=evil\n").iter()
+            .all(|h|h.host=="name"));
+    }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }
     #[test]

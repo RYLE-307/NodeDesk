@@ -86,3 +86,40 @@ test("read-only Windows profile is visible but cannot be dialed",async({page})=>
   await expect(pane.getByRole("button",{name:"Connect",exact:true})).toHaveCount(0);
   expect(await page.evaluate(()=>window.fixture.calls.filter(v=>v.cmd==="vpn_set"))).toHaveLength(0);
 });
+
+test("VPN activation locks UI until observed OS confirmation",async({page})=>{
+  await page.addInitScript(({uuid})=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+      version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
+    }));
+    window.__TAURI__={};window.isTauri=true;
+    window.pending={calls:[],profiles:[{id:uuid,name:"Disposable VPN",
+      kind:"WireGuard",active:false,controlAllowed:true}],resolve:null};
+    let callbackId=0;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return ++callbackId;},unregisterCallback(){},
+      async invoke(cmd,args){
+        window.pending.calls.push({cmd,args});
+        if(cmd==="vpn_list")return window.pending.profiles;
+        if(cmd==="vpn_set")return new Promise(resolve=>{
+          window.pending.resolve=()=>{
+            window.pending.profiles=window.pending.profiles.map(p=>({...p,active:args.connect}));
+            resolve(window.pending.profiles);
+          };
+        });
+        throw Error("Unexpected native command: "+cmd);
+      }
+    };
+  },{uuid:UUID});
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"System VPN",exact:true}).click();
+  const pane=page.getByRole("region",{name:"System VPN"});
+  await expect(pane).toContainText("Disposable VPN");
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Connect",exact:true}).click();
+  await expect(pane.getByRole("button",{name:"Working…"})).toBeDisabled();
+  await expect.poll(()=>page.evaluate(()=>window.pending.calls.filter(x=>x.cmd==="vpn_set").length)).toBe(1);
+  await page.evaluate(()=>window.pending.resolve());
+  await expect(pane.getByRole("button",{name:"Disconnect",exact:true})).toBeEnabled();
+  expect(await page.evaluate(()=>window.pending.calls.filter(x=>x.cmd==="vpn_set").length)).toBe(1);
+});

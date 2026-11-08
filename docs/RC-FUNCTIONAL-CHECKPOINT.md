@@ -154,3 +154,16 @@ topologies are still NOT TESTED.
   changed disposable profile snapshots. No real VPN, route, DNS or credentials
   were used. Native Windows/Arch behavior and isolated route/DNS verification
   remain NOT TESTED; the VPN P0 row stays open.
+
+ 
+## P0 VPN process-wide single-flight guard (2026-11-08)
+- Native Rust backend permits only one connect/disconnect operation at a
+  time across all WebViews and IPC callers. Competing requests fail without
+  mutating OS profiles. Read-only list/refresh remains available.
+- The guard lives with the spawned blocking worker, so an abandoned IPC
+  request cannot release it before an OS command and five-second
+  state-verification poll finish. A worker error also releases the guard.
+- Rust isolated-thread tests cover exclusion and guard ownership; a
+  Playwright fixture checks that UI controls remain disabled until the
+  operation resolves. Actual VPN route/DNS and Windows/Arch native
+  acceptance remain NOT TESTED. This does not close VPN P0.

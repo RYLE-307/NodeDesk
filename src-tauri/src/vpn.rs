@@ -1,7 +1,12 @@
 //! System-owned VPN profiles. Never imports credentials, edits routes/DNS, or
 //! accepts arbitrary executables/scripts from WebView. Explicit user action only.
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, process::{Command, Stdio}, time::{Duration, Instant}};
+use std::{
+    collections::HashSet,
+    process::{Command, Stdio},
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    time::{Duration, Instant}
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +17,26 @@ pub struct VpnProfile {
     active: bool,
     #[serde(default)]
     control_allowed: bool, // unsupported encryption policies remain read-only
+}
+
+/// Process-wide guard for mutations of system-owned VPN profiles.
+/// The worker owns this guard: cancelling an IPC call cannot unlock it while
+/// a blocking OS command is still running.
+#[derive(Default)]
+pub struct VpnActions { busy:Arc<AtomicBool> }
+
+struct VpnActionGuard { busy:Arc<AtomicBool> }
+
+impl VpnActions {
+    fn acquire(&self)->Result<VpnActionGuard,String> {
+        self.busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire)
+            .map_err(|_| "Another system VPN action is already in progress".to_string())?;
+        Ok(VpnActionGuard{busy:Arc::clone(&self.busy)})
+    }
+}
+
+impl Drop for VpnActionGuard {
+    fn drop(&mut self) { self.busy.store(false,Ordering::Release); }
 }
 
 fn uuid_ok(id: &str) -> bool {
@@ -185,9 +210,12 @@ pub async fn vpn_list()->Result<Vec<VpnProfile>,String>{
         .map_err(|_|"VPN list worker failed".to_string())?
 }
 #[tauri::command]
-pub async fn vpn_set(profile_id:String,connect:bool)->Result<Vec<VpnProfile>,String>{
+pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,connect:bool)->Result<Vec<VpnProfile>,String>{
+    if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
+    // The guard belongs to the spawned worker, not the IPC future.
+    let guard=actions.acquire()?;
     tauri::async_runtime::spawn_blocking(move || {
-        if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
+        let _guard=guard;
         // Recheck the exact profile, its current kind and active state at the
         // time of the user-approved action. WebView cannot choose arbitrary
         // system connection names or execute shell/PowerShell text.
@@ -206,6 +234,38 @@ pub async fn vpn_set(profile_id:String,connect:bool)->Result<Vec<VpnProfile>,Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vpn_mutations_are_single_flight_and_release_after_completion() {
+        let actions=std::sync::Arc::new(VpnActions::default());
+        let worker_actions=std::sync::Arc::clone(&actions);
+        let held=actions.acquire().unwrap();
+        let contender=std::thread::spawn(move || worker_actions.acquire().is_err());
+        assert!(contender.join().unwrap(), "competing VPN action must fail closed");
+        drop(held);
+        let after=actions.acquire().unwrap();
+        assert!(actions.acquire().is_err());
+        drop(after);
+        assert!(actions.acquire().is_ok());
+    }
+
+    #[test]
+    fn vpn_mutation_guard_is_owned_by_the_worker() {
+        let actions=std::sync::Arc::new(VpnActions::default());
+        let held=actions.acquire().unwrap();
+        let (entered_tx,entered_rx)=std::sync::mpsc::channel();
+        let (finish_tx,finish_rx)=std::sync::mpsc::channel::<()>();
+        let worker=std::thread::spawn(move || {
+            let _guard=held;
+            entered_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+        });
+        entered_rx.recv().unwrap();
+        assert!(actions.acquire().is_err());
+        finish_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(actions.acquire().is_ok());
+    }
+
     #[test]
     fn profile_identifiers_are_strict_and_names_never_contain_control_chars() {
         for good in ["123e4567-e89b-12d3-a456-426614174000",

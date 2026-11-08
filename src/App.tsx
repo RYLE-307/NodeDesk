@@ -1037,7 +1037,7 @@ export default function App() {
                     {data.language==="ru"?"Выбрать запись Host":"Select SSH Host entry"}
                     <select aria-label="SSH config host" defaultValue="" onChange={e=>{
                       const record=sshConfigHosts.find(h=>h.alias===e.target.value);
-                      if(record && editor.kind!=="group"){
+                      if(record){
                         setEditor({...editor,value:{...editor.value,
                           name:record.alias,host:record.host,port:record.port,username:record.username
                         }} as Editor);

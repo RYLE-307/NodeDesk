@@ -1,9 +1,10 @@
 [Unit]
-Description=Repeat NodeDesk autonomous development cycles
+Description=Repeat NodeDesk development, including after a failed cycle
 
 [Timer]
 OnBootSec=2min
-OnUnitInactiveSec=5min
+OnCalendar=*:0/10
+Persistent=true
 AccuracySec=1min
 Unit=nodedesk-autodev.service
 

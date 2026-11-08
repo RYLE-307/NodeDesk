@@ -178,3 +178,17 @@ topologies are still NOT TESTED.
 - A pure Rust negative matrix covers changed/replaced snapshots and invalid
   names, and browser tests verify exact bounded IPC arguments. These
   confirmations are not evidence of VPN routing or DNS leak safety.
+
+
+## P0 bounded two-hop SSH/SFTP ProxyJump (2026-11-08)
+- SSH/SFTP consoles and graphical Files now accept one or two explicitly
+  configured, ordered SSH gateways (literal host, user, port). Each hop is
+  validated before constructing OpenSSH's single -J argument; no arbitrary
+  ProxyCommand, wildcard/alias, recursion, third hop or repeated endpoint.
+- OpenSSH performs host-key checks at each hop. The selected target identity
+  file is only used for the last endpoint. No connection is started
+  automatically; credentials and gateway fields are transient, not persisted.
+- Backend Rust argument and negative tests plus Playwright console/Files
+  destination checks are added. A separate real two-host or three-host
+  network fixture, cross-hop auth failures and native Windows/Arch
+  acceptance remain NOT TESTED. This is not a completed P0 row.

@@ -211,27 +211,46 @@ pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -
 }
 
 #[derive(Clone,Debug,Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct JumpHost {host:String,port:u16,username:String}
-fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,target_user:&str)->Result<String,String>{
-    // The jump is a single literal host, never a config alias, URI or chain.
-    // Reject all metacharacters before handing a single -J argument to OpenSSH.
-    arguments(&jump.host,jump.port,&jump.username,AuthMode::Key)?;
-    if jump.host==target_host && jump.port==target_port && jump.username==target_user{
-        return Err("A jump host must not be identical to the target".into());
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct JumpHop {host:String,port:u16,username:String}
+
+/// At most two explicit, validated OpenSSH -J hops. A separate non-recursive
+/// type for the second hop makes a third hop impossible to deserialize.
+#[derive(Clone,Debug,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct JumpHost {
+    host:String,port:u16,username:String,
+    #[serde(default)] next:Option<JumpHop>,
+}
+fn jump_part(host:&str,port:u16,username:&str,target_host:&str,target_port:u16)->Result<String,String>{
+    // No aliases, commas, URLs or OpenSSH options; each component is checked
+    // independently and passed as one -J argv value without a shell.
+    arguments(host,port,username,AuthMode::Key)?;
+    if host.eq_ignore_ascii_case(target_host) && port==target_port {
+        return Err("A jump endpoint must not be identical to the target".into());
     }
-    let host=if jump.host.contains(':')&&!jump.host.starts_with('['){
-        format!("[{}]",jump.host)
-    }else{jump.host.clone()};
-    Ok(format!("{}@{}:{}",jump.username,host,jump.port))
+    let address=if host.contains(':')&&!host.starts_with('[') {
+        format!("[{host}]")
+    }else{host.to_string()};
+    Ok(format!("{username}@{address}:{port}"))
+}
+fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,_target_user:&str)->Result<String,String>{
+    let first=jump_part(&jump.host,jump.port,&jump.username,target_host,target_port)?;
+    if let Some(second)=&jump.next {
+        if jump.host.eq_ignore_ascii_case(&second.host) && jump.port==second.port {
+            return Err("A jump chain cannot repeat an endpoint".into());
+        }
+        let second=jump_part(&second.host,second.port,&second.username,target_host,target_port)?;
+        Ok(format!("{first},{second}"))
+    }else{Ok(first)}
 }
 pub(crate) fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
     host:&str,port:u16,username:&str)->Result<Vec<String>,String>{
     if let Some(jump)=jump{
         let spec=jump_destination(jump,host,port,username)?;
-        // Options are passed as separate argv entries. No shell and no
-        // ProxyCommand string constructed by NodeDesk. OpenSSH itself
-        // handles -J; the jump's own ssh_config differs from the target.
+        // Options are passed as separate argv entries; no shell or arbitrary
+        // ProxyCommand. OpenSSH handles the one/two-hop -J chain, and each
+        // child may consult its own ssh_config/known_hosts.
         let index=args.len().checked_sub(1).ok_or("Missing SSH target")?;
         args.splice(index..index,["-J".to_string(),spec]);
     }
@@ -416,7 +435,7 @@ Host local
 "#);
         assert_eq!(entries.len(),2);
         assert_eq!(entries[0],ConfigHost{alias:"example-prod".into(),host:"192.0.2.7".into(),
-            port:2222,username:"deploy".into()});
+            port:2222,username:"deploy".into(),next:None});
         assert_eq!(entries[1].alias,"local");
         assert_eq!(entries[1].username,"tester");
         assert!(!format!("{entries:?}").contains("something-dangerous"));
@@ -427,7 +446,7 @@ Host local
     }
     #[test]
     fn jump_is_one_validated_literal_host_for_terminal_only(){
-        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into(),next:None};
         let ssh=with_jump(arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
             Some(&jump),"target.internal",22,"deploy").unwrap();
         assert_eq!(&ssh[ssh.len()-3..],["-J","gateway@bastion.example.org:2222","target.internal"]);
@@ -436,14 +455,46 @@ Host local
             Some(&jump),"target.internal",2223,"deploy").unwrap();
         assert_eq!(&sftp[sftp.len()-3..],["-J","gateway@bastion.example.org:2222","deploy@target.internal"]);
         for illegal in ["-oProxyCommand=bad","a,b","ssh://host","host;cmd","host example","host\nmal"]{
-            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into()};
+            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into(),next:None};
             assert!(jump_destination(&bad,"target.internal",22,"deploy").is_err(),"{illegal}");
         }
-        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into()};
+        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into(),next:None};
         assert!(jump_destination(&same,"target.internal",22,"deploy").is_err());
     }
+    #[test] fn two_explicit_hops_validate_every_endpoint_and_refuse_third() {
+        let chain:JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2"}
+        })).unwrap();
+        for base in [
+            arguments("target.example.org",22,"admin",AuthMode::Key).unwrap(),
+            sftp_arguments("target.example.org",22,"admin",AuthMode::Key).unwrap()
+        ] {
+            let args=with_jump(base,Some(&chain),"target.example.org",22,"admin").unwrap();
+            let at=args.iter().position(|arg|arg=="-J").unwrap();
+            assert_eq!(args[at+1],"jump1@bastion.example.org:2201,jump2@edge.example.org:2202");
+            assert!(args.contains(&"-oForwardAgent=no".into()));
+            assert_eq!(&args[..2],["-F","none"]);
+        }
+        for bad in [
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"bastion.example.org","port":2201,"username":"other"}}),
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"target.example.org","port":22,"username":"other"}}),
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"bad;sh","port":2202,"username":"jump2"}}),
+        ] {
+            let chain:JumpHost=serde_json::from_value(bad).unwrap();
+            assert!(jump_destination(&chain,"target.example.org",22,"admin").is_err());
+        }
+        assert!(serde_json::from_value::<JumpHost>(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2",
+                "next":{"host":"third.example.org","port":2203,"username":"jump3"}}
+        })).is_err());
+    }
     #[test] fn selected_target_key_with_jump_is_not_forwarded_as_agent() {
-        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into(),next:None};
         let path=std::env::temp_dir().join(format!("nodedesk-console-jump-key-{}",std::process::id()));
         std::fs::write(&path,b"fixture key only").unwrap();
         let selected=path.to_string_lossy().to_string();

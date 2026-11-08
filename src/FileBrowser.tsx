@@ -36,6 +36,10 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUsername,setJumpUsername]=useState("");
   const [jumpPort,setJumpPort]=useState("22");
+  const [secondHop,setSecondHop]=useState(false);
+  const [secondHost,setSecondHost]=useState("");
+  const [secondUsername,setSecondUsername]=useState("");
+  const [secondPort,setSecondPort]=useState("22");
   const [capabilities, setCapabilities] = useState<{interactiveLogin:boolean;keyAgent:boolean;nativeLogin?:boolean}|null>(null);
   useEffect(() => {
     let alive=true;
@@ -96,7 +100,9 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   }
   const endpointProfile = JSON.stringify([connection.host,connection.port,connection.username]);
   const profile = JSON.stringify([connection.host,connection.port,connection.username,
-    jumpEnabled?jumpHost:"",jumpEnabled?jumpUsername:"",jumpEnabled?jumpPort:""]);
+    jumpEnabled?jumpHost:"",jumpEnabled?jumpUsername:"",jumpEnabled?jumpPort:"",
+    jumpEnabled&&secondHop?secondHost:"",jumpEnabled&&secondHop?secondUsername:"",
+    jumpEnabled&&secondHop?secondPort:""]);
   const currentProfile=useRef(profile);
   currentProfile.current=profile;
   useEffect(()=>{
@@ -198,7 +204,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const destination = {host:connection.host,port:connection.port,username:connection.username,
     authSession:interactive ? authSession : null,
     identity:!interactive && identity.trim() ? identity.trim() : null,
-    jump:!interactive && jumpEnabled ? {host:jumpHost.trim(),username:jumpUsername.trim(),port:Number(jumpPort)} : null};
+    jump:!interactive && jumpEnabled ? {host:jumpHost.trim(),username:jumpUsername.trim(),port:Number(jumpPort),
+      ...(secondHop?{next:{host:secondHost.trim(),username:secondUsername.trim(),port:Number(secondPort)}}:{})} : null};
   useEffect(() => {
     setAuthReady(false);
     if (!authSession || !interactive) return;
@@ -245,7 +252,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     }
     const id = gate.current.id; if (id) void invoke("files_cancel",{id}).catch(() => {});
   }, [connection.host, connection.port, connection.username, authSession, interactive, identity,
-    jumpEnabled,jumpHost,jumpUsername,jumpPort]);
+    jumpEnabled,jumpHost,jumpUsername,jumpPort,secondHop,secondHost,secondUsername,secondPort]);
   async function run<T>(task: (id: string) => Promise<T>, success: (value:T) => void): Promise<boolean> {
     if (!isTauri()) { setError(ru ? "Файлы доступны в приложении Tauri." : "Files require the Tauri desktop app."); return false; }
     const id = crypto.randomUUID(); if (!gate.current.begin(id)) return false;
@@ -745,8 +752,8 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     <label><input type="checkbox" checked={interactive} disabled={busy || !capabilities?.interactiveLogin}
       onChange={e => setInteractive(e.target.checked)}/>{ru ? "Интерактивный вход для файлов (пароль/PAM)" : "Interactive Files login (password/PAM)"}</label>
     {!interactive && <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-      onChange={e=>setJumpEnabled(e.target.checked)}/>
-      {ru?"Через один SSH-шлюз (ключ/агент)":"Via one SSH gateway (key/agent)"}</label>}
+      onChange={e=>{setJumpEnabled(e.target.checked);if(!e.target.checked)setSecondHop(false);}}/>
+      {ru?"Через SSH-шлюз (ключ/агент)":"Via SSH gateway (key/agent)"}</label>}
     {!interactive && jumpEnabled && <div className="files-gateway-options">
       <label>{ru?"Хост SSH-шлюза":"Gateway host"}
         <input aria-label="Files gateway host" maxLength={253} autoComplete="off" disabled={busy}
@@ -757,9 +764,23 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
       <label>{ru?"Порт SSH-шлюза":"Gateway port"}
         <input aria-label="Files gateway port" type="number" min="1" max="65535" disabled={busy}
           value={jumpPort} onChange={e=>setJumpPort(e.target.value)}/></label>
+      <label><input type="checkbox" checked={secondHop} disabled={busy}
+        onChange={e=>setSecondHop(e.target.checked)}/>
+        {ru?"Добавить второй SSH-шлюз":"Add second Files gateway"}</label>
+      {secondHop && <>
+        <label>{ru?"Хост второго шлюза":"Second gateway host"}
+          <input aria-label="Second Files gateway host" value={secondHost} maxLength={253}
+            autoComplete="off" disabled={busy} onChange={e=>setSecondHost(e.target.value)}/></label>
+        <label>{ru?"Пользователь второго шлюза":"Second gateway username"}
+          <input aria-label="Second Files gateway username" value={secondUsername} maxLength={200}
+            autoComplete="off" disabled={busy} onChange={e=>setSecondUsername(e.target.value)}/></label>
+        <label>{ru?"Порт второго шлюза":"Second gateway port"}
+          <input aria-label="Second Files gateway port" type="number" min="1" max="65535"
+            disabled={busy} value={secondPort} onChange={e=>setSecondPort(e.target.value)}/></label>
+      </>}
       <p className="ssh-help">{ru
-        ?"Один OpenSSH-шлюз ProxyJump. Для шлюза используются стандартные SSH-ключи или агент; выбранный ниже файл ключа относится только к конечному серверу. Оба host key должны быть заранее проверены. Пароль/PAM и интерактивный вход не поддерживаются."
-        :"One OpenSSH ProxyJump gateway. The hop uses default SSH keys or your agent; the selected file below applies only to the target server. Both host keys must be trusted in advance. Password/PAM and interactive login are unsupported."}</p>
+        ?"До двух явных OpenSSH-шлюзов ProxyJump. Для шлюза используются стандартные SSH-ключи или агент; выбранный ниже файл ключа относится только к конечному серверу. Оба host key должны быть заранее проверены. Пароль/PAM и интерактивный вход не поддерживаются."
+        :"Up to two explicit OpenSSH ProxyJump gateways. The hop uses default SSH keys or your agent; the selected file below applies only to the target server. Both host keys must be trusted in advance. Password/PAM and interactive login are unsupported."}</p>
     </div>}
     {!interactive && <label>{ru ? "Путь к SSH-ключу для файлов (необязательно)" : "SSH identity file path for Files (optional)"}
       <input aria-label="Files SSH identity file path" value={identity} disabled={busy} maxLength={4096}

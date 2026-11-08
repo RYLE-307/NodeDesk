@@ -27,6 +27,10 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUser,setJumpUser]=useState("");
   const [jumpPort,setJumpPort]=useState("22");
+  const [secondHop,setSecondHop]=useState(false);
+  const [secondHost,setSecondHost]=useState("");
+  const [secondUser,setSecondUser]=useState("");
+  const [secondPort,setSecondPort]=useState("22");
   const [identity,setIdentity]=useState("");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
@@ -84,7 +88,8 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
     const jump = !local && (kind==="ssh"||kind==="sftp") && jumpEnabled
-      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort)} : null;
+      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort),
+          ...(secondHop?{next:{host:secondHost,username:secondUser,port:Number(secondPort)}}:{})} : null;
     const events = new Channel<Event>();
     events.onmessage = event => {
       if (session.current !== id) return;
@@ -141,7 +146,10 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       </label>}
       <button disabled={busy || (jumpEnabled && (kind==="ssh"||kind==="sftp") &&
           (!jumpHost || !jumpUser || !Number.isInteger(Number(jumpPort)) ||
-            Number(jumpPort)<1 || Number(jumpPort)>65535))}
+            Number(jumpPort)<1 || Number(jumpPort)>65535 ||
+            (secondHop && (!secondHost || !secondUser ||
+              !Number.isInteger(Number(secondPort)) || Number(secondPort)<1 ||
+              Number(secondPort)>65535))))}
         onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
@@ -153,7 +161,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         ?"Укажите абсолютный путь к локальному приватному ключу. Путь не сохраняется; OpenSSH проверяет права файла и запрашивает passphrase в терминале. При использовании шлюза этот файл применяется только к конечному серверу; шлюз использует собственный агент или стандартные ключи."
         :"Enter an absolute path to a local private key. The path is not saved; OpenSSH checks file permissions and prompts for its passphrase in the terminal. With a jump host, this file applies only to the target; the gateway uses its own agent or default keys."}</p>}
       <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-        onChange={e=>setJumpEnabled(e.target.checked)}/>
+        onChange={e=>{setJumpEnabled(e.target.checked);if(!e.target.checked)setSecondHop(false);}}/>
         {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}
       </label>
       {jumpEnabled && <>
@@ -166,9 +174,23 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         <label>{ru?"Порт шлюза":"Jump port"}<input type="number" min="1" max="65535"
           value={jumpPort} aria-label="Jump port" disabled={busy}
           onChange={e=>setJumpPort(e.target.value)}/></label>
+        <label><input type="checkbox" checked={secondHop} disabled={busy}
+          onChange={e=>setSecondHop(e.target.checked)}/>
+          {ru?"Добавить второй SSH-шлюз":"Add second SSH jump host"}</label>
+        {secondHop && <>
+          <label>{ru?"Хост второго шлюза":"Second jump host"}<input aria-label="Second jump host"
+            value={secondHost} maxLength={253} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondHost(e.target.value)}/></label>
+          <label>{ru?"Пользователь второго шлюза":"Second jump username"}<input aria-label="Second jump username"
+            value={secondUser} maxLength={200} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondUser(e.target.value)}/></label>
+          <label>{ru?"Порт второго шлюза":"Second jump port"}<input aria-label="Second jump port"
+            type="number" min="1" max="65535" value={secondPort} disabled={busy}
+            onChange={e=>setSecondPort(e.target.value)}/></label>
+        </>}
         <p className="ssh-help">{ru
-          ?"Только один явно заданный шлюз, только SSH/SFTP-консоль. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. Для GUI Files шлюз пока не поддерживается."
-          :"One explicit jump host, SSH/SFTP console only. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Not supported for Files GUI."}</p>
+          ?"Не более двух явно заданных SSH-шлюзов. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. GUI Files также поддерживает шлюзы."
+          :"At most two explicit SSH jump hosts. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Also available in GUI Files."}</p>
       </>}
     </div>}
     <div className="ssh-toolbar terminal-tools">

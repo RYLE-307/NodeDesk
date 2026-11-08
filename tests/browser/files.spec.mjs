@@ -1088,7 +1088,7 @@ test('redacted SFTP transfer report exports statuses without filenames or connec
 test('Files single-hop gateway routes selected identity only to target',async({page})=>{
   const files=await open(page);
   await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).uncheck();
-  const gateway=files.getByRole('checkbox',{name:'Via one SSH gateway (key/agent)'});
+  const gateway=files.getByRole('checkbox',{name:'Via SSH gateway (key/agent)'});
   await gateway.check();
   const identity=files.getByRole('textbox',{name:'Files SSH identity file path'});
   await expect(identity).toBeVisible();
@@ -1112,4 +1112,29 @@ test('Files single-hop gateway routes selected identity only to target',async({p
   await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
   await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).check();
   await expect(gateway).toHaveCount(0);
+});
+
+test("Files two-hop gateway preserves explicit target identity and invalidates the remote listing",async({page})=>{
+  const files=await open(page);
+  await files.getByRole("checkbox",{name:"Interactive Files login (password/PAM)"}).uncheck();
+  await files.getByRole("checkbox",{name:"Via SSH gateway (key/agent)"}).check();
+  await files.getByRole("textbox",{name:"Files gateway host"}).fill("bastion.example.org");
+  await files.getByRole("textbox",{name:"Files gateway username"}).fill("operator");
+  await files.getByRole("spinbutton",{name:"Files gateway port"}).fill("2201");
+  await files.getByRole("checkbox",{name:"Add second Files gateway"}).check();
+  await files.getByRole("textbox",{name:"Second Files gateway host"}).fill("edge.example.org");
+  await files.getByRole("textbox",{name:"Second Files gateway username"}).fill("edge");
+  await files.getByRole("spinbutton",{name:"Second Files gateway port"}).fill("2202");
+  await files.getByRole("textbox",{name:"Files SSH identity file path"}).fill("/home/fixture/target-key");
+  await files.getByRole("region",{name:"Remote filesystem",exact:true}).getByRole("button",{name:"Open / refresh"}).click();
+  await expect(files.getByText("/remote",{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==="files_list"&&x.destination));
+  expect(calls.at(-1).destination).toMatchObject({
+    identity:"/home/fixture/target-key",
+    jump:{host:"bastion.example.org",username:"operator",port:2201,
+      next:{host:"edge.example.org",username:"edge",port:2202}}
+  });
+  await files.getByRole("textbox",{name:"Second Files gateway host"}).fill("new-edge.example.org");
+  await expect(files.getByText("/remote",{exact:true})).toHaveCount(0);
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("edge.example.org");
 });

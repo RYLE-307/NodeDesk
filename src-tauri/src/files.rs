@@ -1035,6 +1035,21 @@ mod tests {
         })).unwrap();
         assert!(transport_args(&Destination{jump:Some(same),..d}).is_err());
     }
+    #[test] fn files_two_hop_gateway_uses_only_explicit_validated_ssh_arguments() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2"}
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let index=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[index+1],"jump1@bastion.example.org:2201,jump2@edge.example.org:2202");
+        for required in ["-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no"]{
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(transport_args(&Destination{auth_session:Some("login".into()),..d.clone()}).is_err());
+    }
     #[cfg(unix)]
     #[test] fn real_files_gateway_uses_disposable_sshd_and_rejects_untrusted_target() {
         use std::os::unix::fs::PermissionsExt;

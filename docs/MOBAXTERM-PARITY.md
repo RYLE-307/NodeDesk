@@ -227,3 +227,12 @@ identity file in the SSH and SFTP consoles. Gateway authentication remains
 separate (agent or default key files); the selected target key is not forwarded
 as an agent capability. No saved key paths, gateway chain, shell command or
 automatic login. Windows/Arch native acceptance remains open.
+
+
+### Bounded two-hop ProxyJump (2026-11-08 review increment)
+SSH/SFTP consoles and graphical Files now offer up to two explicit SSH hops,
+with per-hop host/user/port and the selected key applying only to the final
+target. Backends reject duplicate endpoints and any third hop. No arbitrary
+ProxyCommand, auto-connect, saved gateway routes or agent forwarding. Each
+hop must already have a trusted host key and working agent/default-key
+authentication. Real distinct-host and Windows/Arch GUI acceptance pending.

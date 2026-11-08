@@ -12,11 +12,16 @@ function Get-VerifiedAsset {
     [string] $ExpectedSha1,
     [string] $Output
   )
-  $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/$Tag"
+  # Authenticate public release-asset API reads to avoid shared-runner rate limits.
+  # GH_TOKEN is an ephemeral read-only Actions token, never an embedded secret.
+  $headers = @{ 'User-Agent' = 'NodeDesk-package-preview'; Accept = 'application/vnd.github+json' }
+  if ($env:GH_TOKEN) { $headers.Authorization = "Bearer $env:GH_TOKEN" }
+  $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/$Tag" -Headers $headers
   $asset = @($release.assets | Where-Object { $_.name -eq $Name })
   if ($asset.Count -ne 1) { throw "Expected one upstream asset: $Name" }
+  $headers.Accept = 'application/octet-stream'
   Invoke-WebRequest -Uri "https://api.github.com/repos/$Repository/releases/assets/$($asset[0].id)" `
-    -Headers @{ Accept = 'application/octet-stream' } -OutFile $Output
+    -Headers $headers -OutFile $Output
   $hash = (Get-FileHash -LiteralPath $Output -Algorithm SHA1).Hash
   if ($hash -ne $ExpectedSha1) { throw "Upstream asset checksum mismatch: $Name" }
 }

@@ -29,3 +29,12 @@ remove the Windows installer and an Arch package on clean operator-controlled
 machines; verify dependencies, file locations, icons, shortcuts, OS prompts,
 permissions and actual SSH/SFTP/RDP/VNC/VPN workflows. Record SHA256 and the
 tested OS versions. Keep the PR draft until the integrated acceptance pass.
+
+
+## Windows NSIS preparation: authenticated release asset metadata (2026-11-08)
+GitHub Actions passes an ephemeral, read-only workflow token only to the NSIS
+preparation step. Its upstream GitHub API queries now authenticate to avoid
+the shared runner's unauthenticated REST rate limit. Existing pinned SHA-1
+checks are unchanged and still fail closed if downloads differ. The token is
+not embedded in artifacts or used at application runtime. Manual unsigned
+Windows installer QA and signing remain outstanding.

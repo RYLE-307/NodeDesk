@@ -132,6 +132,8 @@ jobs:
       - name: Prepare verified NSIS tools
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./ops/packaging/prepare-nsis.ps1
       - name: Bundle Windows installer preview
         if: runner.os == 'Windows'

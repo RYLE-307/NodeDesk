@@ -1025,6 +1025,56 @@ mod tests {
         })).unwrap();
         assert!(transport_args(&Destination{jump:Some(same),..d}).is_err());
     }
+    #[cfg(unix)]
+    #[test] fn real_files_gateway_uses_disposable_sshd_and_rejects_untrusted_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let user=std::env::var("USER").unwrap();
+        let root=PathBuf::from(&dir);
+        // The wrapper applies fixture-only OpenSSH trust to ProxyJump's
+        // *separate* ssh process, which does not inherit the target's -F none.
+        // Never alter the test runner's real ~/.ssh/known_hosts.
+        let wrapper_dir=root.join("gateway-wrapper");
+        fs::create_dir_all(&wrapper_dir).unwrap();
+        let wrapper=wrapper_dir.join("ssh");
+        let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let known=root.join("gateway-known");
+        fs::write(&known,format!("[127.0.0.1]:22229 {host_key}[localhost]:22229 {host_key}")).unwrap();
+        let script=format!("#!/bin/sh\nexec /usr/bin/ssh -F none -oBatchMode=yes -oStrictHostKeyChecking=yes -oUserKnownHostsFile='{}' -oGlobalKnownHostsFile=/dev/null -i '{}' \"$@\"\n",
+            known.display(),root.join("client").display());
+        fs::write(&wrapper,script).unwrap();
+        fs::set_permissions(&wrapper,fs::Permissions::from_mode(0o700)).unwrap();
+        // One disposable sshd plays both roles, via different literal host
+        // names, to exercise two actual SSH handshakes and an SSH -W hop.
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22229,"username":user
+        })).unwrap();
+        let d=Destination{host:"localhost".into(),port:22229,username:user.clone(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|known_hosts:&std::path::Path| {
+            let mut cmd=Command::new("/usr/bin/ssh");
+            cmd.env("PATH",format!("{}:{}",wrapper_dir.display(),std::env::var("PATH").unwrap_or_default()));
+            cmd.arg(format!("-oUserKnownHostsFile={}",known_hosts.display()));
+            cmd.arg("-oGlobalKnownHostsFile=/dev/null");
+            cmd.args(transport_args(&d).unwrap());
+            cmd
+        };
+        let op=Operation::default();
+        let mut client=spawn_transport(make_command(&known),&op).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        let listing=client.list(&home).unwrap();
+        assert!(listing.len()<=wire::MAX_ENTRIES);
+        drop(client);
+        op.stop();
+        // The gateway remains trusted, but the target's key is deliberately
+        // unknown: strict target trust must fail without prompting.
+        let unknown=root.join("unknown-target");
+        fs::write(&unknown,"").unwrap();
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&unknown),&bad).is_err());
+        bad.stop();
+    }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
         assert!(decode_preview(b"binary\0data".to_vec()).is_err());

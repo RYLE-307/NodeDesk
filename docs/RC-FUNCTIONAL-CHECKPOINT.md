@@ -98,3 +98,13 @@ native acceptance result. Automated passes alone do not close a row.
 - Rust argument/negative tests and Playwright destination/route invalidation
   added. Real two-hop fixture, Windows/Arch manual acceptance and gateway
   host-key/agent failure cases remain NOT TESTED; P0 still open.
+
+
+## Disposable Files gateway fixture (2026-11-08)
+A Unix-only Rust integration test launches OpenSSH ProxyJump to the real
+disposable sshd fixture, authenticates both hops using the fixture key and
+reads a structured SFTP directory. It also checks unknown target host key
+rejection while gateway trust remains valid. A per-test wrapper configures
+only the disposable gateway SSH child; it does not alter the developer's
+known_hosts. Windows/Arch native acceptance and multi-host/corporate
+topologies are still NOT TESTED.

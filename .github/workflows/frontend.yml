@@ -6,6 +6,36 @@ on:
 permissions:
   contents: read
 jobs:
+  arch-preview:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arch build prerequisites
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel curl wget file openssl pkgconf rustup nodejs npm \
+            webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool
+          rustup default stable
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: npm run tauri build -- --no-bundle
+      - name: Pack Arch binary preview
+        run: |
+          tar -czf nodedesk-arch-portable-preview.tar.gz \
+            -C src-tauri/target/release nodedesk \
+            -C "$GITHUB_WORKSPACE" LICENSE README.md
+          sha256sum nodedesk-arch-portable-preview.tar.gz > SHA256SUMS-arch.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-arch-portable-preview
+          path: |
+            nodedesk-arch-portable-preview.tar.gz
+            SHA256SUMS-arch.txt
+          if-no-files-found: error
   browser:
     runs-on: ubuntu-latest
     steps:

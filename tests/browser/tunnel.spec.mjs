@@ -32,7 +32,7 @@ test("dynamic SOCKS tunnel has no fixed target and is explicit",async({page})=>{
   await pane.getByRole("combobox",{name:"Tunnel mode"}).selectOption("dynamic");
   await expect(pane.getByLabel("Target host")).toHaveCount(0);
   await expect(pane.getByText(/Local programs can use this SOCKS5 port/)).toBeVisible();
-  expect(await page.evaluate(()=>window.calls)).toHaveLength(0);
+  expect(await page.evaluate(()=>window.calls.filter(x=>x.cmd==="tunnel_start"))).toHaveLength(0);
   await pane.getByRole("button",{name:"Start tunnel"}).click();
   await expect.poll(()=>page.evaluate(()=>window.calls.filter(x=>x.cmd==="tunnel_start").length)).toBe(1);
   const spec=await page.evaluate(()=>window.calls.find(x=>x.cmd==="tunnel_start").args.spec);

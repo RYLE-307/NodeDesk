@@ -1,0 +1,10 @@
+[Unit]
+Description=NodeDesk autonomous Codex run
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/NodeDesk
+Environment=NODEDESK_AUTOPUSH=0
+ExecStart=%h/.local/bin/nodedesk-autodev-runner
+TimeoutStartSec=90min
+NoNewPrivileges=yes

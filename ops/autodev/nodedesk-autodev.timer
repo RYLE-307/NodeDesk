@@ -1,0 +1,11 @@
+[Unit]
+Description=Repeat NodeDesk autonomous development cycles
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=1min
+Unit=nodedesk-autodev.service
+
+[Install]
+WantedBy=timers.target

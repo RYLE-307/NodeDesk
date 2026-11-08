@@ -57,7 +57,7 @@ done
 # All three run in the same disposable CI fixture and use only loopback.
 for hop_port in 22230 22231; do
   ssh-keygen -q -t ed25519 -N '' -f "$fixture/host-$hop_port"
-  sed -e "s/^HostKey .*$/HostKey $fixture\/host-$hop_port/" \
+  sed -e "s#^HostKey .*#HostKey $fixture/host-$hop_port#" \
       -e "s/^Port 22229$/Port $hop_port/" \
       -e "s#^PidFile .*#PidFile $fixture/pid-$hop_port#" \
       "$fixture/sshd_config" > "$fixture/sshd_config-$hop_port"

@@ -1283,7 +1283,7 @@ mod tests {
         let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
         let chmod=ChangePermissions {
             destination:Destination{host:String::new(),port:0,username:String::new(),
-                auth_session:None,control:None,native:None},
+                auth_session:None,identity:None,control:None,native:None},
             directory:remote_path.to_string(),name:filename.to_string(),
             expected_kind:"file".into(),expected_permissions:original_mode,
             expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),

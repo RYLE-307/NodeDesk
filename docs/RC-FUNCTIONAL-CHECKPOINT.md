@@ -47,8 +47,8 @@ native acceptance result. Automated passes alone do not close a row.
 - Windows NSIS and Ubuntu DEB preview packaging is configured in CI, with
   SHA256 manifests. Exact-head bundle results and native install/uninstall
   remain pending; see [PACKAGE-PREVIEW.md](PACKAGE-PREVIEW.md).
-- Arch container build and portable binary archive are configured; exact-head
-  CI and native Arch execution remain pending.
+- Arch container build, portable binary archive and installable package are
+  configured; exact-head CI and native Arch install/execution remain pending.
 - GUI Files key selection uses one transient absolute regular-file path, the
   existing strict OpenSSH host-key policy and key-only SFTP transport. Encrypted
   keys must already be loaded into an SSH agent; Files cannot prompt for a key

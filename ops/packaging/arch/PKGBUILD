@@ -1,0 +1,23 @@
+pkgname=nodedesk-preview
+pkgver=0.9.0_alpha.0
+pkgrel=1
+pkgdesc='NodeDesk infrastructure workspace (unsigned development preview)'
+arch=('x86_64')
+url='https://github.com/RYLE-307/NodeDesk'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libappindicator-gtk3' 'openssh' 'hicolor-icon-theme')
+options=('!strip' '!debug')
+source=()
+sha256sums=()
+
+package() {
+  : "${NODEDESK_SOURCE_ROOT:?Set NODEDESK_SOURCE_ROOT to the checked-out source tree}"
+  install -Dm755 "${NODEDESK_SOURCE_ROOT}/src-tauri/target/release/nodedesk" \
+    "${pkgdir}/usr/bin/nodedesk"
+  install -Dm644 "${NODEDESK_SOURCE_ROOT}/ops/packaging/arch/nodedesk.desktop" \
+    "${pkgdir}/usr/share/applications/nodedesk.desktop"
+  install -Dm644 "${NODEDESK_SOURCE_ROOT}/src-tauri/icons/128x128.png" \
+    "${pkgdir}/usr/share/icons/hicolor/128x128/apps/nodedesk.png"
+  install -Dm644 "${NODEDESK_SOURCE_ROOT}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

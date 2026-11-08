@@ -4,10 +4,11 @@ The draft PR's desktop CI creates an unsigned per-user Windows NSIS installer
 and an Ubuntu DEB package after the Rust and disposable SSH/SFTP checks. Both
 are uploaded as CI artifacts with SHA256SUMS.txt. The existing unbundled Windows
 executable remains a portable preview. No artifact is published as a release.
-An Arch Linux container builds and tests the application and archives the
-unbundled executable with the license and README. That archive relies on
-system WebKit/GTK libraries; it is a preview for compatibility checks, not an
-installable Arch package.
+An Arch Linux container builds and tests the application, archives the
+unbundled executable, and creates an installable package with a desktop entry,
+icon, license and declared system dependencies. Both artifacts are unsigned
+development previews. Building a package in CI does not prove native desktop
+execution or install/uninstall behavior.
 
 The Windows installer may require the OS WebView2 runtime and relies on
 separately installed OpenSSH, RDP and VNC clients for the corresponding external

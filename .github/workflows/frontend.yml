@@ -16,7 +16,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel curl wget file openssl pkgconf rustup nodejs npm \
-            webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool
+            webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool \
+            openssh hicolor-icon-theme desktop-file-utils
           rustup default stable
       - run: npm ci
       - run: npm test
@@ -29,12 +30,26 @@ jobs:
             -C src-tauri/target/release nodedesk \
             -C "$GITHUB_WORKSPACE" LICENSE README.md
           sha256sum nodedesk-arch-portable-preview.tar.gz > SHA256SUMS-arch.txt
+      - name: Build Arch package preview
+        run: |
+          useradd -m nodedesk-builder
+          chown -R nodedesk-builder:nodedesk-builder ops/packaging/arch
+          runuser -u nodedesk-builder -- env NODEDESK_SOURCE_ROOT="$GITHUB_WORKSPACE" \
+            bash -c 'cd "$NODEDESK_SOURCE_ROOT/ops/packaging/arch" && makepkg --noconfirm'
+          sha256sum ops/packaging/arch/*.pkg.tar.zst > SHA256SUMS-arch-package.txt
       - uses: actions/upload-artifact@v4
         with:
           name: nodedesk-arch-portable-preview
           path: |
             nodedesk-arch-portable-preview.tar.gz
             SHA256SUMS-arch.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-arch-package-preview
+          path: |
+            ops/packaging/arch/*.pkg.tar.zst
+            SHA256SUMS-arch-package.txt
           if-no-files-found: error
   browser:
     runs-on: ubuntu-latest

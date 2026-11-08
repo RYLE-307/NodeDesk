@@ -131,6 +131,7 @@ fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
 }
 fn spawn_transport(mut command: Command, op: &Operation) -> Result<Sftp> {
     command.env("SSH_ASKPASS_REQUIRE","never").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(test)] if command.get_envs().any(|(key,value)| key==std::ffi::OsStr::new("NODEDESK_GATEWAY_DEBUG") && value.is_some()) { command.stderr(Stdio::inherit()); }
     #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
     let mut slot = op.child.lock().map_err(|_| "Process lock failed")?; op.check()?;
     let mut child = command.spawn().map_err(|_| "Cannot start OpenSSH".to_string())?;
@@ -1054,6 +1055,8 @@ mod tests {
         let make_command=|known_hosts:&std::path::Path| {
             let mut cmd=Command::new("/usr/bin/ssh");
             cmd.env("PATH",format!("{}:{}",wrapper_dir.display(),std::env::var("PATH").unwrap_or_default()));
+            cmd.env("NODEDESK_GATEWAY_DEBUG","1");
+            cmd.arg("-vvv");
             cmd.arg(format!("-oUserKnownHostsFile={}",known_hosts.display()));
             cmd.arg("-oGlobalKnownHostsFile=/dev/null");
             // Test-only outer identity: production GUI gateway requires an agent.

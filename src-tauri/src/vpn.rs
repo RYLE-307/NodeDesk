@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
+    io::Read,
     process::{Command, Stdio},
     sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant}
@@ -89,14 +90,60 @@ fn wait_for_state(before:&VpnProfile, connect:bool)->Result<Vec<VpnProfile>,Stri
     }
 }
 
-/// Capture only specifically requested non-secret fields. Discard stderr and
-/// never include stdout in UI errors (OS tools can echo configuration).
+/// Capture only bounded, non-secret fields. Neither stdout nor stderr may
+/// appear in UI errors: OS tools can echo profile configuration. A hung tool
+/// must not hold the process-wide mutation guard indefinitely.
 fn output(mut command:Command) -> Result<String,String> {
-    let child=command.stdin(Stdio::null()).output()
-        .map_err(|_|"System VPN manager not installed or unavailable".to_string())?;
-    if !child.status.success() { return Err("System VPN manager rejected the request".into()); }
-    if child.stdout.len()>256*1024 { return Err("Too many VPN profiles to display safely".into()); }
-    String::from_utf8(child.stdout).map_err(|_|"System VPN manager returned invalid UTF-8".into())
+    output_with_timeout(&mut command,Duration::from_secs(35))
+}
+fn output_with_timeout(command:&mut Command,timeout:Duration)->Result<String,String> {
+    const MAX_OUTPUT:u64=256*1024;
+    let mut child=command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|_|"System VPN manager not installed or unavailable".to_string())?;
+    let mut stdout=child.stdout.take().ok_or("System VPN manager output unavailable")?;
+    let (tx,rx)=std::sync::mpsc::channel();
+    let reader=std::thread::spawn(move || {
+        let mut bytes=Vec::new();
+        let result=stdout.take(MAX_OUTPUT+1).read_to_end(&mut bytes).map(|_|bytes);
+        let _=tx.send(result);
+    });
+    let deadline=Instant::now()+timeout;
+    let mut captured=None;
+    let status=loop {
+        if captured.is_none() {
+            if let Ok(result)=rx.try_recv() {
+                match result {
+                    Ok(bytes) if bytes.len() as u64>MAX_OUTPUT => {
+                        let _=child.kill(); let _=child.wait(); let _=reader.join();
+                        return Err("System VPN manager output exceeded the safe limit".into());
+                    }
+                    Ok(bytes)=>captured=Some(bytes),
+                    Err(_)=>{
+                        let _=child.kill(); let _=child.wait(); let _=reader.join();
+                        return Err("Cannot read system VPN manager output".into());
+                    }
+                }
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status))=>break status,
+            Ok(None) if Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(20)),
+            Ok(None)=>{
+                let _=child.kill(); let _=child.wait(); let _=reader.join();
+                return Err("System VPN manager timed out".into());
+            }
+            Err(_)=>{
+                let _=child.kill(); let _=child.wait(); let _=reader.join();
+                return Err("Cannot check system VPN manager status".into());
+            }
+        }
+    };
+    let _=reader.join();
+    let bytes=match captured {Some(bytes)=>bytes,None=>rx.recv().map_err(|_|"Cannot read system VPN manager output".to_string())?
+        .map_err(|_|"Cannot read system VPN manager output".to_string())?};
+    if bytes.len() as u64>MAX_OUTPUT {return Err("System VPN manager output exceeded the safe limit".into());}
+    if !status.success() { return Err("System VPN manager rejected the request".into()); }
+    String::from_utf8(bytes).map_err(|_|"System VPN manager returned invalid UTF-8".into())
 }
 
 #[cfg(target_os="linux")]
@@ -249,6 +296,36 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vpn_manager_timeout_releases_a_hung_process() {
+        #[cfg(windows)] let mut command={
+            let mut c=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"]).unwrap();
+            c.args(["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 5"]); c
+        };
+        #[cfg(not(windows))] let mut command=Command::new("sleep");
+        #[cfg(not(windows))] command.arg("5");
+        let start=Instant::now();
+        assert_eq!(output_with_timeout(&mut command,Duration::from_millis(100)).unwrap_err(),
+            "System VPN manager timed out");
+        assert!(start.elapsed()<Duration::from_secs(3));
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn vpn_manager_caps_streaming_output_and_never_exposes_it() {
+        let mut command=Command::new("yes"); command.arg("fixture-private-profile");
+        let error=output_with_timeout(&mut command,Duration::from_secs(3)).unwrap_err();
+        assert_eq!(error,"System VPN manager output exceeded the safe limit");
+        assert!(!error.contains("fixture-private-profile"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_vpn_manager_caps_streaming_output_and_never_exposes_it() {
+        let mut command=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"]).unwrap();
+        command.args(["-NoProfile","-NonInteractive","-Command","[Console]::Write('fixture-private-profile' * 15000)"]);
+        let error=output_with_timeout(&mut command,Duration::from_secs(10)).unwrap_err();
+        assert_eq!(error,"System VPN manager output exceeded the safe limit");
+        assert!(!error.contains("fixture-private-profile"));
+    }
     #[test]
     fn vpn_mutations_are_single_flight_and_release_after_completion() {
         let actions=std::sync::Arc::new(VpnActions::default());

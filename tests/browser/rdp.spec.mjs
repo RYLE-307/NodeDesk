@@ -20,7 +20,8 @@ async function open(page,language="en",launchError=false) {
       async invoke(cmd,args) {
         window.fixture.calls.push({cmd,args});
         if(cmd==="rdp_direct_connect"||cmd==="rdp_direct_disconnect"||
-            cmd==="rdp_direct_resize"||cmd==="rdp_direct_input")return;
+            cmd==="rdp_direct_resize"||cmd==="rdp_direct_input"||
+            cmd==="rdp_direct_release_input")return;
         if(cmd!=="rdp_launch") throw new Error("Unexpected command");
         if(launchError) throw new Error("RDP client unavailable");
         return {client:"sdl-freerdp3",externalWindow:true};
@@ -55,18 +56,34 @@ test("direct RDP requires explicit credentials, forwards only catalog endpoint a
   await expect(direct.getByLabel("RDP password for this session")).toHaveValue("");
   const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect")
     .map(c=>({cmd:c.cmd,target:c.args.target,password:c.args.password,
-      width:c.args.width,height:c.args.height})));
+      width:c.args.width,height:c.args.height,clipboard:c.args.clipboard})));
   expect(calls).toHaveLength(1);
   expect(calls[0].target).toEqual({id:"rdp-fixture",host:"rdp.example.test",
     port:3390,username:"LAB\\alice"});
   expect(calls[0].password).toBe("disposable-only-password");
   expect(calls[0].width).toBeGreaterThanOrEqual(320);
+  expect(calls[0].clipboard).toBe(false);
   expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
   expect(await page.evaluate(()=>JSON.stringify(localStorage)+JSON.stringify(sessionStorage)))
     .not.toContain("disposable-only-password");
   await direct.getByRole("button",{name:"Disconnect"}).click();
   expect(await page.evaluate(()=>window.fixture.calls.some(c=>
     c.cmd==="rdp_direct_disconnect"&&c.args.id==="rdp-fixture"))).toBe(true);
+});
+test("direct RDP OS clipboard requires explicit per-session opt-in",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  const consent=direct.getByRole("checkbox",{name:"Sync OS clipboard"});
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await direct.getByLabel("RDP password for this session").fill("fixture-only");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  await expect(consent).toBeDisabled();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.clipboard).toBe(true);
+  await direct.getByRole("button",{name:"Disconnect"}).click();
+  await expect(consent).toBeEnabled();
 });
 test("saved SHA256 pin reaches the launcher and invalid edits are refused",async({page})=>{
   const workspace=await open(page);

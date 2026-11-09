@@ -24,7 +24,7 @@ base64 = "0.22"
 zeroize = "1"
 keyring = { version = "=3.6.3", default-features = false, features = ["windows-native", "sync-secret-service"] }
 sysinfo = "=0.39.6"
-ironrdp-client = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", version = "0.1.0", default-features = false, features = ["rustls"] }
+ironrdp-client = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", version = "0.1.0", default-features = false, features = ["rustls", "clipboard"] }
 ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["input", "pdu"] }
 ironrdp-tls = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["rustls"] }
 tokio = { version = "1", features = ["sync", "time"] }

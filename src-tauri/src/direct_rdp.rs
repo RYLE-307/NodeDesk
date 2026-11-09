@@ -4,7 +4,7 @@ use base64::Engine as _;
 use ironrdp::input::{Database, MouseButton, MousePosition, Operation, Scancode};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_client::{
-    config::{ConfigBuilder, Destination, TransportKind},
+    config::{ClipboardType, ConfigBuilder, Destination, TransportKind},
     output_channel::output_channel,
     rdp::{AutoReconnectDecision, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent},
 };
@@ -78,6 +78,7 @@ fn config(
     password: String,
     width: u16,
     height: u16,
+    clipboard: bool,
 ) -> Result<ironrdp_client::config::Config, String> {
     if !valid_target(target)
         || password.is_empty()
@@ -113,6 +114,11 @@ fn config(
         .with_credssp(true)
         .with_tls(false)
         .with_certificate_validation(CertificateValidation::Strict)
+        .with_clipboard(if clipboard {
+            ClipboardType::Enable
+        } else {
+            ClipboardType::Disable
+        })
         .with_pointer_software_rendering(true)
         .build()
         .map_err(|_| "Cannot configure direct RDP".into())
@@ -152,12 +158,13 @@ pub async fn rdp_direct_connect(
     password: String,
     width: u16,
     height: u16,
+    clipboard: bool,
     events: Channel<Event>,
 ) -> Result<(), String> {
     // Config owns the transient password after IPC; no catalog, WebView storage,
     // command line, URL, file or log contains it. The pinned IronRDP revision
     // stores it as a String, so memory wiping remains an open security gate.
-    let settings = config(&target, password, width, height)?;
+    let settings = config(&target, password, width, height, clipboard)?;
     let (output, mut receiver) = output_channel(8);
     let client = RdpClient::new(settings, output).with_auto_reconnect(3);
     let session = Arc::new(Session {
@@ -325,6 +332,8 @@ fn key_scancode(code: &str) -> Option<Scancode> {
         "Digit8" => (false, 0x09),
         "Digit9" => (false, 0x0a),
         "Digit0" => (false, 0x0b),
+        "Minus" => (false, 0x0c),
+        "Equal" => (false, 0x0d),
         "Backspace" => (false, 0x0e),
         "Tab" => (false, 0x0f),
         "KeyQ" => (false, 0x10),
@@ -337,6 +346,8 @@ fn key_scancode(code: &str) -> Option<Scancode> {
         "KeyI" => (false, 0x17),
         "KeyO" => (false, 0x18),
         "KeyP" => (false, 0x19),
+        "BracketLeft" => (false, 0x1a),
+        "BracketRight" => (false, 0x1b),
         "Enter" => (false, 0x1c),
         "ControlLeft" => (false, 0x1d),
         "KeyA" => (false, 0x1e),
@@ -348,7 +359,11 @@ fn key_scancode(code: &str) -> Option<Scancode> {
         "KeyJ" => (false, 0x24),
         "KeyK" => (false, 0x25),
         "KeyL" => (false, 0x26),
+        "Semicolon" => (false, 0x27),
+        "Quote" => (false, 0x28),
+        "Backquote" => (false, 0x29),
         "ShiftLeft" => (false, 0x2a),
+        "Backslash" => (false, 0x2b),
         "KeyZ" => (false, 0x2c),
         "KeyX" => (false, 0x2d),
         "KeyC" => (false, 0x2e),
@@ -356,13 +371,34 @@ fn key_scancode(code: &str) -> Option<Scancode> {
         "KeyB" => (false, 0x30),
         "KeyN" => (false, 0x31),
         "KeyM" => (false, 0x32),
+        "Comma" => (false, 0x33),
+        "Period" => (false, 0x34),
+        "Slash" => (false, 0x35),
         "ShiftRight" => (false, 0x36),
         "AltLeft" => (false, 0x38),
         "Space" => (false, 0x39),
+        "CapsLock" => (false, 0x3a),
+        "F1" => (false, 0x3b),
+        "F2" => (false, 0x3c),
+        "F3" => (false, 0x3d),
+        "F4" => (false, 0x3e),
+        "F5" => (false, 0x3f),
+        "F6" => (false, 0x40),
+        "F7" => (false, 0x41),
+        "F8" => (false, 0x42),
+        "F9" => (false, 0x43),
+        "F10" => (false, 0x44),
+        "F11" => (false, 0x57),
+        "F12" => (false, 0x58),
+        "Home" => (true, 0x47),
         "ArrowUp" => (true, 0x48),
+        "PageUp" => (true, 0x49),
         "ArrowLeft" => (true, 0x4b),
         "ArrowRight" => (true, 0x4d),
+        "End" => (true, 0x4f),
         "ArrowDown" => (true, 0x50),
+        "PageDown" => (true, 0x51),
+        "Insert" => (true, 0x52),
         "Delete" => (true, 0x53),
         "ControlRight" => (true, 0x1d),
         "AltRight" => (true, 0x38),
@@ -388,13 +424,13 @@ pub fn rdp_direct_input(
         .sender
         .try_reserve()
         .map_err(|_| "RDP input busy or closed")?;
-    let operation = match input {
+    let operations = match input {
         Input::Key { code, down } => {
             let key = key_scancode(&code).ok_or("Unsupported RDP key")?;
             if down {
-                Operation::KeyPressed(key)
+                vec![Operation::KeyPressed(key)]
             } else {
-                Operation::KeyReleased(key)
+                vec![Operation::KeyReleased(key)]
             }
         }
         Input::Mouse { x, y, button, down } => {
@@ -402,7 +438,7 @@ pub fn rdp_direct_input(
                 return Err("Invalid RDP pointer".into());
             }
             match (button, down) {
-                (None, None) => Operation::MouseMove(MousePosition { x, y }),
+                (None, None) => vec![Operation::MouseMove(MousePosition { x, y })],
                 (Some(b), Some(pressed)) => {
                     let button = match b {
                         0 => MouseButton::Left,
@@ -411,9 +447,15 @@ pub fn rdp_direct_input(
                         _ => return Err("Invalid RDP button".into()),
                     };
                     if pressed {
-                        Operation::MouseButtonPressed(button)
+                        vec![
+                            Operation::MouseMove(MousePosition { x, y }),
+                            Operation::MouseButtonPressed(button),
+                        ]
                     } else {
-                        Operation::MouseButtonReleased(button)
+                        vec![
+                            Operation::MouseMove(MousePosition { x, y }),
+                            Operation::MouseButtonReleased(button),
+                        ]
                     }
                 }
                 _ => return Err("Invalid RDP pointer event".into()),
@@ -424,7 +466,7 @@ pub fn rdp_direct_input(
         .input
         .lock()
         .map_err(|_| "RDP input state unavailable")?;
-    let events = db.apply([operation]);
+    let events = db.apply(operations);
     if !events.is_empty() {
         permit.send(RdpInputEvent::FastPath(events));
     }
@@ -464,11 +506,14 @@ mod tests {
             port: 3389,
             username: "fixture".into(),
         };
-        let settings = config(&target, "fixture-only".into(), 800, 600).unwrap();
+        let settings = config(&target, "fixture-only".into(), 800, 600, false).unwrap();
         assert_eq!(
             settings.certificate_validation(),
             CertificateValidation::Strict
         );
+        assert_eq!(settings.properties().redirect_clipboard(), Some(false));
+        let with_clipboard = config(&target, "fixture-only".into(), 800, 600, true).unwrap();
+        assert_eq!(with_clipboard.properties().redirect_clipboard(), Some(true));
         assert!(config(
             &Target {
                 host: "bad/host".into(),
@@ -476,12 +521,13 @@ mod tests {
             },
             "fixture".into(),
             800,
-            600
+            600,
+            false
         )
         .is_err());
-        assert!(config(&target, "".into(), 800, 600).is_err());
-        assert!(config(&target, "x".repeat(1025), 800, 600).is_err());
-        assert!(config(&target, "fixture".into(), 8000, 600).is_err());
+        assert!(config(&target, "".into(), 800, 600, false).is_err());
+        assert!(config(&target, "x".repeat(1025), 800, 600, false).is_err());
+        assert!(config(&target, "fixture".into(), 8000, 600, false).is_err());
     }
     #[test]
     fn frame_encoder_refuses_wrong_size_and_preserves_color() {
@@ -492,7 +538,16 @@ mod tests {
 
     #[test]
     fn input_allowlist_rejects_unknown_browser_codes() {
-        for code in ["KeyA", "Digit0", "ArrowLeft", "ControlRight", "MetaLeft"] {
+        for code in [
+            "KeyA",
+            "Digit0",
+            "ArrowLeft",
+            "ControlRight",
+            "MetaLeft",
+            "F12",
+            "Slash",
+            "PageDown",
+        ] {
             assert!(key_scancode(code).is_some());
         }
         for code in ["", "BrowserBack", "OSLaunchApplication1", "KeyA\n", "F24"] {

@@ -12,6 +12,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
   const [phase,setPhase]=useState<Phase>("idle");
   const [error,setError]=useState("");
   const [viewOnly,setViewOnly]=useState(false);
+  const [clipboard,setClipboard]=useState(false);
   const password=useRef<HTMLInputElement>(null);
   const surface=useRef<HTMLDivElement>(null);
   const canvas=useRef<HTMLCanvasElement>(null);
@@ -80,6 +81,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
       if(event.type==="frame")void draw(event,token);
       else if(event.type==="error"){
         setError(ru?"RDP-соединение или авторизация не удались.":event.message);
+        if(started.current)void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
         connected.current=false;started.current=false;setPhase("idle");generation.current++;
       }else if(event.phase==="connected"){
         connected.current=true;setPhase("connected");
@@ -93,7 +95,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
       const width=Math.max(320,Math.min(1920,Math.round(surface.current?.clientWidth||1280)));
       const height=Math.max(240,Math.min(1080,Math.round(surface.current?.clientHeight||720)));
       await invoke("rdp_direct_connect",{target:{id,host:connection.host,
-        port:connection.port,username:connection.username},password:secret,width,height,events});
+        port:connection.port,username:connection.username},password:secret,width,height,clipboard,events});
     }catch{
       if(token===generation.current){setPhase("idle");
         started.current=false;
@@ -124,6 +126,8 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     <div className="rdp-embedded-controls">
       <button type="button" onClick={()=>void open()} disabled={phase!=="idle"}>{ru?"Подключить напрямую":"Connect directly"}</button>
       <button type="button" onClick={close} disabled={phase==="idle"}>{ru?"Отключить":"Disconnect"}</button>
+      <label className="check"><input type="checkbox" checked={clipboard} disabled={phase!=="idle"}
+        onChange={e=>setClipboard(e.target.checked)}/>{ru?"Синхронизировать clipboard ОС":"Sync OS clipboard"}</label>
       <label className="check"><input type="checkbox" checked={viewOnly}
         onChange={e=>{if(e.target.checked)releaseInput();setViewOnly(e.target.checked);}}/>{ru?"Только просмотр":"View only"}</label>
       <button type="button" disabled={phase!=="connected"} onClick={()=>void surface.current?.requestFullscreen()}>
@@ -143,7 +147,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
         onMouseDown={e=>{e.currentTarget.focus();pointer(e,e.button,true);}}
         onMouseUp={e=>pointer(e,e.button,false)}/>
     </div>
-    <p className="ssh-help">{ru?"Прямой режим пока не передаёт clipboard. Пароль не сохраняется; при закрытии вкладки сеанс завершается.":
-      "Direct mode does not yet redirect clipboard. The password is not saved; closing the tab ends the session."}</p>
+    <p className="ssh-help">{ru?"При включении clipboard удалённый компьютер может читать и изменять clipboard ОС. По умолчанию выключено. Пароль не сохраняется; при закрытии вкладки сеанс завершается.":
+      "When OS clipboard sync is enabled, the remote computer can read and change your clipboard. It is off by default. The password is not saved; closing the tab ends the session."}</p>
   </section>;
 }

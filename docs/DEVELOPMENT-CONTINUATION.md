@@ -33,9 +33,22 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   tests (52) and production build passed; Rust formatting completed, but local
   Rust compilation is blocked by absent MSVC `link.exe`. Do not call this path
   verified until Windows, Ubuntu, Arch and browser CI pass.
+- Repair commit `f57753425b67bc44e22858da9b57a5ef5c0c2d79` is pushed;
+  [CI 42613611254](https://github.com/RYLE-307/NodeDesk/actions/runs/42613611254)
+  has passed browser, both frontend jobs and Ubuntu desktop; Arch and Windows
+  desktop were still running at the time of this checkpoint update.
+- Current uncommitted follow-up adds common physical keys, exact pointer
+  coordinates on mouse button events and an explicit per-session opt-in for
+  IronRDP's native OS clipboard backend. Clipboard stays disabled by default;
+  enabling it permits the remote machine to read/change the OS clipboard.
+  Browser fixture checks default off and opt-in, and Rust config test checks
+  the redirection property. Real clipboard exchange on Windows/Arch remains
+  **NOT TESTED**. The pinned IronRDP revision stores the password in a regular
+  String and does not promise memory wiping; this remains an open security
+  gate, even though it never enters persistent WebView storage.
   Native RDP against a disposable Windows server, clipboard, certificate
   error UX and Windows/Arch GUI acceptance remain **NOT TESTED** or incomplete.
-- Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and clipboard,
+- Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and native clipboard acceptance,
   then direct VNC, vault binding and remaining P0/P1. Never use real servers.
 
 ### 2026-11-09 VPN route/DNS presence increment (CI pending)

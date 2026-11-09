@@ -19,7 +19,7 @@ async function open(page,language="en",launchError=false) {
       unregisterCallback(){},
       async invoke(cmd,args) {
         window.fixture.calls.push({cmd,args});
-        if(cmd==="rdp_direct_connect"||cmd==="rdp_direct_disconnect"||
+        if(cmd==="rdp_direct_connect"||cmd==="rdp_direct_connect_saved"||cmd==="rdp_direct_disconnect"||
             cmd==="rdp_direct_resize"||cmd==="rdp_direct_input"||
             cmd==="rdp_direct_release_input")return;
         if(cmd!=="rdp_launch") throw new Error("Unexpected command");
@@ -69,6 +69,19 @@ test("direct RDP requires explicit credentials, forwards only catalog endpoint a
   await direct.getByRole("button",{name:"Disconnect"}).click();
   expect(await page.evaluate(()=>window.fixture.calls.some(c=>
     c.cmd==="rdp_direct_disconnect"&&c.args.id==="rdp-fixture"))).toBe(true);
+});
+test("saved RDP credential is requested only by identity and never enters WebView storage",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await direct.getByRole("checkbox",{name:"Use credential from unlocked OS vault"}).check();
+  await expect(direct.getByLabel("RDP password for this session")).toHaveCount(0);
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect_saved"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.target).toEqual({id:"rdp-fixture",host:"rdp.example.test",
+    port:3390,username:"LAB\\alice"});
+  expect(calls[0].args).not.toHaveProperty("password");
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("password");
 });
 test("direct RDP OS clipboard requires explicit per-session opt-in",async({page})=>{
   const workspace=await open(page);

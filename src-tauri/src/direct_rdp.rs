@@ -169,6 +169,45 @@ fn encode_frame(buffer: Vec<u32>, width: u16, height: u16) -> Result<String, Str
 }
 
 #[tauri::command]
+pub async fn rdp_direct_connect_saved(
+    sessions: State<'_, Sessions>,
+    vault: State<'_, crate::vault::Vault>,
+    target: Target,
+    width: u16,
+    height: u16,
+    clipboard: bool,
+    events: Channel<Event>,
+) -> Result<(), String> {
+    if !valid_target(&target) {
+        return Err("Invalid direct RDP target".into());
+    }
+    let store = vault.inner().clone();
+    let identity = target.clone();
+    let secret = tauri::async_runtime::spawn_blocking(move || {
+        store.read_connection(
+            identity.id,
+            "RDP",
+            identity.host,
+            identity.port,
+            identity.username,
+        )
+    })
+    .await
+    .map_err(|_| "Vault worker failed".to_string())??
+    .ok_or("Saved RDP credential not found")?;
+    rdp_direct_connect(
+        sessions,
+        target,
+        secret.to_string(),
+        width,
+        height,
+        clipboard,
+        events,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn rdp_direct_connect(
     sessions: State<'_, Sessions>,
     target: Target,

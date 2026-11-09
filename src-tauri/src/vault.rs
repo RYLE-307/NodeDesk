@@ -84,6 +84,10 @@ impl Default for Vault {
     fn default()->Self {Self {gate:Arc::new(Mutex::new(false)),store:Arc::new(OsStore)}}
 }
 impl Vault {
+    pub(crate) fn read_connection(&self,id:String,protocol:&str,host:String,port:u16,username:String)
+        ->Result<Option<Zeroizing<String>>,String> {
+        self.read(&Target{id,protocol:protocol.into(),host,port,username})
+    }
     fn locked(&self)->bool { !self.gate.lock().map(|open|*open).unwrap_or(false) }
     fn unlock(&self)->Result<(),String> {
         let mut open=self.gate.lock().map_err(|_|"Vault lock unavailable")?;
@@ -185,6 +189,23 @@ mod tests {
         let target=Target{id:"123e4567-e89b-12d3-a456-426614174000".into(),
             protocol:"SSH".into(),host:"127.0.0.1".into(),port:22229,username:"fixture".into()};
         (vault,target)
+    }
+    #[test]
+    fn direct_session_reads_only_matching_unlocked_identity() {
+        let (vault,mut target)=fixture();
+        target.protocol="RDP".into();
+        let read=||vault.read_connection(target.id.clone(),"RDP",target.host.clone(),
+            target.port,target.username.clone());
+        assert!(read().is_err());
+        vault.unlock().unwrap();
+        vault.put(&target,Zeroizing::new("fixture-only".into())).unwrap();
+        assert_eq!(read().unwrap().unwrap().as_str(),"fixture-only");
+        assert!(vault.read_connection(target.id.clone(),"RDP","other.example".into(),
+            target.port,target.username.clone()).is_err());
+        assert!(vault.read_connection(target.id.clone(),"VNC",target.host.clone(),
+            target.port,target.username.clone()).unwrap().is_none());
+        vault.lock();
+        assert!(read().is_err());
     }
     #[test] fn locked_by_default_and_no_secret_in_errors() {
         let (vault,target)=fixture();

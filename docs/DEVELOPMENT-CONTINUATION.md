@@ -6,6 +6,32 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 Vault to direct RDP native handoff (verification pending)
+
+- Working branch `feat/post-v0.9-roadmap`; last pushed HEAD before this block
+  `99c379bcc8555d68d608ded2ce4b761c845253a5`, with
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42680015865).
+  Its disposable CredSSP/framebuffer/mouse test passed on Windows, Ubuntu and
+  Arch. Windows/Arch release packaging was still running at this update.
+- Added opt-in saved credential path from unlocked OS vault directly into the
+  native IronRDP connector, bound to exact connection id, protocol, host,
+  port and user. The saved secret is never returned to WebView for this path.
+  Missing, changed or locked credentials fail before connection. Added Rust
+  identity/lock test and browser UI contract test.
+- Local frontend unit tests (52) and production build passed. Rust formatting
+  passed; local Rust compilation remains unavailable without MSVC `link.exe`.
+  This change requires exact-head Windows/Ubuntu/Arch and browser CI.
+- Direct RDP still requires native GUI acceptance and memory zeroization in
+  IronRDP; certificate pin and clipboard round-trip are not complete.
+- Direct VNC remains next. The inspected DeskVNC `vnc-core` at
+  `e80c515d94c5d91ec16f3bdb4439ed83c949437f` can negotiate cleartext
+  VeNCrypt Plain and its TOFU path reports an unknown certificate after
+  authentication. It must be restricted to certificate-verified X509 modes
+  before use; do not integrate it unchanged. No real VNC host was contacted.
+- Resume: inspect exact-head CI after commit; fix failures; implement direct
+  VNC only with identity verification before password; then finish RDP/VNC
+  acceptance, VPN and remaining P0/P1. Keep PR #13 Draft.
+
 ### 2026-11-09 disposable direct RDP framebuffer and input verification
 
 - Working branch: `feat/post-v0.9-roadmap`. Last pushed HEAD before this block:

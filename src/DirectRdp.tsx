@@ -13,6 +13,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
   const [error,setError]=useState("");
   const [viewOnly,setViewOnly]=useState(false);
   const [clipboard,setClipboard]=useState(false);
+  const [saved,setSaved]=useState(false);
   const password=useRef<HTMLInputElement>(null);
   const surface=useRef<HTMLDivElement>(null);
   const canvas=useRef<HTMLCanvasElement>(null);
@@ -71,7 +72,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     }
     const secret=password.current?.value??"";
     if(password.current)password.current.value="";
-    if(!secret){setError(ru?"Введите пароль RDP.":"Enter the RDP password.");return;}
+    if(!secret&&!saved){setError(ru?"Введите пароль RDP.":"Enter the RDP password.");return;}
     setError("");setPhase("connecting");connected.current=false;
     started.current=true;
     const token=++generation.current;
@@ -94,8 +95,9 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     try{
       const width=Math.max(320,Math.min(1920,Math.round(surface.current?.clientWidth||1280)));
       const height=Math.max(240,Math.min(1080,Math.round(surface.current?.clientHeight||720)));
-      await invoke("rdp_direct_connect",{target:{id,host:connection.host,
-        port:connection.port,username:connection.username},password:secret,width,height,clipboard,events});
+      await invoke(saved?"rdp_direct_connect_saved":"rdp_direct_connect",{
+        target:{id,host:connection.host,port:connection.port,username:connection.username},
+        ...(saved?{}:{password:secret}),width,height,clipboard,events});
     }catch{
       if(token===generation.current){setPhase("idle");
         started.current=false;
@@ -121,8 +123,11 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     <h3>{ru?"Прямой RDP (IronRDP)":"Direct RDP (IronRDP)"}</h3>
     <p className="ssh-help">{ru?"Соединение напрямую с сохранённым хостом. Требуются доверенный TLS-сертификат с именем хоста и CredSSP. Самоподписанный или неверный сертификат отклоняется.":
       "Connect directly to the saved host. A trusted TLS certificate matching the host and CredSSP are required. Untrusted or mismatched certificates are rejected."}</p>
-    <label>{ru?"Пароль RDP для этого сеанса":"RDP password for this session"}
-      <input ref={password} type="password" autoComplete="off" disabled={phase!=="idle"}/></label>
+    <label className="check"><input type="checkbox" checked={saved} disabled={phase!=="idle"}
+      onChange={e=>{if(password.current)password.current.value="";setSaved(e.target.checked);}}/>
+      {ru?"Использовать секрет из разблокированного хранилища ОС":"Use credential from unlocked OS vault"}</label>
+    {!saved&&<label>{ru?"Пароль RDP для этого сеанса":"RDP password for this session"}
+      <input ref={password} type="password" autoComplete="off" disabled={phase!=="idle"}/></label>}
     <div className="rdp-embedded-controls">
       <button type="button" onClick={()=>void open()} disabled={phase!=="idle"}>{ru?"Подключить напрямую":"Connect directly"}</button>
       <button type="button" onClick={close} disabled={phase==="idle"}>{ru?"Отключить":"Disconnect"}</button>
@@ -147,7 +152,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
         onMouseDown={e=>{e.currentTarget.focus();pointer(e,e.button,true);}}
         onMouseUp={e=>pointer(e,e.button,false)}/>
     </div>
-    <p className="ssh-help">{ru?"При включении clipboard удалённый компьютер может читать и изменять clipboard ОС. По умолчанию выключено. Пароль не сохраняется; при закрытии вкладки сеанс завершается.":
-      "When OS clipboard sync is enabled, the remote computer can read and change your clipboard. It is off by default. The password is not saved; closing the tab ends the session."}</p>
+    <p className="ssh-help">{ru?"При включении clipboard удалённый компьютер может читать и изменять clipboard ОС. По умолчанию выключено. Сохранённый секрет передаётся из хранилища прямо в RDP-клиент, минуя WebView; при закрытии вкладки сеанс завершается.":
+      "When OS clipboard sync is enabled, the remote computer can read and change your clipboard. It is off by default. A saved credential goes from the vault directly to the RDP client without entering the WebView; closing the tab ends the session."}</p>
   </section>;
 }

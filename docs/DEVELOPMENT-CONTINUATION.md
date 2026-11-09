@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 disposable direct RDP framebuffer and input verification
+
+- Working branch: `feat/post-v0.9-roadmap`. Last pushed HEAD before this block:
+  `34e0825672a95f80044837c2c34cb983c1b123bb`. Its
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42676930307)
+  has passed Rust tests on Windows, Ubuntu and Arch, browser tests, and
+  frontend jobs; Windows release packaging was still running at this update.
+- The local-only IronRDP hybrid fixture now sends a 2×2 bitmap and records a
+  client mouse event. Its test requires CredSSP connection, a decodable
+  framebuffer and server-observed input before success. No real host is used.
+- Verification for this new test: Rust formatting passed; local Rust compile
+  remains unavailable because MSVC `link.exe` is absent. Exact-head CI after
+  commit is required. Windows/Arch native GUI acceptance remains NOT TESTED.
+- Next: repair any CI failure, then implement direct VNC with server identity
+  checked before password; keep direct RDP memory wiping, certificate pinning,
+  clipboard round-trip and reconnect acceptance open until independently tested.
+- Resume: `git status --short --branch`; inspect the newest exact-head Actions
+  run; `npm test`; `npm run build`; `cargo test --locked --manifest-path
+  src-tauri/Cargo.toml` on CI; keep PR #13 Draft.
+
 ### 2026-11-09 direct RDP implementation in progress (CI repair)
 
 - Branch `feat/post-v0.9-roadmap`; last verified pushed HEAD before this work

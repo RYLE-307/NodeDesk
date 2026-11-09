@@ -623,15 +623,25 @@ mod tests {
     }
 
     #[test]
-    fn disposable_hybrid_server_establishes_credssp_session() {
+    fn disposable_hybrid_server_delivers_frame_and_input_after_credssp() {
         use ironrdp::connector::DesktopSize;
         use ironrdp::server::{
-            Credentials, DisplayContext, DisplayUpdate, RdpServer, RdpServerDisplay,
-            RdpServerDisplayUpdates, ServerResult, TlsIdentityCtx,
+            BitmapUpdate, Credentials, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent,
+            PixelFormat, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates,
+            RdpServerInputHandler, ServerResult, TlsIdentityCtx,
         };
+        use std::num::{NonZeroU16, NonZeroUsize};
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         struct FixtureDisplay;
-        struct FixtureUpdates;
+        struct FixtureUpdates(bool);
+        struct FixtureInput(Arc<AtomicBool>);
+        impl RdpServerInputHandler for FixtureInput {
+            fn keyboard(&mut self, _: KeyboardEvent) {}
+            fn mouse(&mut self, _: MouseEvent) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
         #[async_trait::async_trait]
         impl RdpServerDisplay for FixtureDisplay {
             async fn size(&mut self) -> DesktopSize {
@@ -644,14 +654,29 @@ mod tests {
                 &mut self,
                 _: DisplayContext,
             ) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
-                Ok(Box::new(FixtureUpdates))
+                Ok(Box::new(FixtureUpdates(false)))
             }
         }
         #[async_trait::async_trait]
         impl RdpServerDisplayUpdates for FixtureUpdates {
             async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                Ok(None)
+                if self.0 {
+                    return Ok(None);
+                }
+                self.0 = true;
+                Ok(Some(DisplayUpdate::Bitmap(BitmapUpdate {
+                    x: 0,
+                    y: 0,
+                    width: NonZeroU16::new(2).unwrap(),
+                    height: NonZeroU16::new(2).unwrap(),
+                    format: PixelFormat::BgrA32,
+                    data: vec![
+                        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+                    ]
+                    .into(),
+                    stride: NonZeroUsize::new(8).unwrap(),
+                })))
             }
         }
 
@@ -674,10 +699,11 @@ mod tests {
             .unwrap();
         let local = tokio::task::LocalSet::new();
         runtime.block_on(local.run_until(async move {
+            let received_mouse = Arc::new(AtomicBool::new(false));
             let mut server = RdpServer::builder()
                 .with_addr(address)
                 .with_hybrid(acceptor, identity.pub_key)
-                .with_no_input()
+                .with_input_handler(FixtureInput(Arc::clone(&received_mouse)))
                 .with_display_handler(FixtureDisplay)
                 .build();
             server.set_credentials(Some(Credentials {
@@ -716,9 +742,26 @@ mod tests {
             let input = client.input_sender();
             let client_task = tokio::task::spawn_local(client.run());
             let connection = tokio::time::timeout(Duration::from_secs(15), async {
+                let mut connected = false;
+                let mut frame = false;
                 while let Some(event) = events.recv().await {
                     match event {
-                        RdpOutputEvent::Connected => return Ok(()),
+                        RdpOutputEvent::Connected => {
+                            connected = true;
+                            let mut db = Database::new();
+                            let mouse =
+                                db.apply(vec![Operation::MouseMove(MousePosition { x: 1, y: 1 })]);
+                            input.try_send(RdpInputEvent::FastPath(mouse)).unwrap();
+                        }
+                        RdpOutputEvent::Image {
+                            buffer,
+                            width,
+                            height,
+                        } => {
+                            assert_eq!((width.get(), height.get()), (800, 600));
+                            assert!(encode_frame(buffer, width.get(), height.get()).is_ok());
+                            frame = true;
+                        }
                         RdpOutputEvent::ConnectionFailure(error) => {
                             return Err(format!("connection: {error:?}"))
                         }
@@ -726,6 +769,9 @@ mod tests {
                             return Err(format!("terminated: {result:?}"))
                         }
                         _ => {}
+                    }
+                    if connected && frame && received_mouse.load(Ordering::SeqCst) {
+                        return Ok(());
                     }
                 }
                 Err("event stream closed".into())
@@ -737,7 +783,7 @@ mod tests {
             server_task.abort();
             assert!(
                 connection.is_ok(),
-                "disposable hybrid RDP authentication failed: {connection:?}"
+                "disposable hybrid RDP framebuffer/input failed: {connection:?}"
             );
         }));
     }

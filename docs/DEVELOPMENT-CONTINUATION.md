@@ -63,6 +63,13 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   exact-certificate callback solely inside the test. Production config has
   no callback and continues to require platform trust. The fixture checks
   authentication/connection, not a native GUI or full clipboard exchange.
+- Disposable server fixture commit `86fa1dc05348434b5783b351b781cc8d1c509226`
+  is pushed. [CI 42673727810](https://github.com/RYLE-307/NodeDesk/actions/runs/42673727810)
+  failed the new CredSSP integration assertion on Ubuntu and Arch (82 other
+  Rust tests passed). The local follow-up now records sanitized fixture-only
+  connection/termination diagnostics and checks that the server task stayed
+  alive before connect. Do not treat this integration as passed; fix the
+  specific handshake/fixture defect and rerun exact-head CI.
 - VNC library review: `madeye/rv` accepts anonymous TLS subtypes; DeskVNC's
   `vnc-core` rejects them but its trust-on-first-use flow can authenticate
   before showing an unknown-certificate prompt. Do not bind NodeDesk secrets

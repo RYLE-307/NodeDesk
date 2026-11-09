@@ -658,6 +658,10 @@ mod tests {
             }));
             let server_task = tokio::task::spawn_local(async move { server.run().await });
             tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                !server_task.is_finished(),
+                "disposable RDP server stopped before connect"
+            );
 
             let target = Target {
                 id: "123e4567-e89b-12d3-a456-426614174001".into(),
@@ -682,24 +686,30 @@ mod tests {
             let client = RdpClient::new(settings, output);
             let input = client.input_sender();
             let client_task = tokio::task::spawn_local(client.run());
-            let connected = tokio::time::timeout(Duration::from_secs(15), async {
+            let connection = tokio::time::timeout(Duration::from_secs(15), async {
                 while let Some(event) = events.recv().await {
                     match event {
-                        RdpOutputEvent::Connected => return true,
-                        RdpOutputEvent::ConnectionFailure(_) | RdpOutputEvent::Terminated(_) => {
-                            return false
+                        RdpOutputEvent::Connected => return Ok(()),
+                        RdpOutputEvent::ConnectionFailure(error) => {
+                            return Err(format!("connection: {error:?}"))
+                        }
+                        RdpOutputEvent::Terminated(result) => {
+                            return Err(format!("terminated: {result:?}"))
                         }
                         _ => {}
                     }
                 }
-                false
+                Err("event stream closed".into())
             })
             .await
             .expect("disposable CredSSP handshake timed out");
             input.request_close();
             client_task.abort();
             server_task.abort();
-            assert!(connected, "disposable hybrid RDP authentication failed");
+            assert!(
+                connection.is_ok(),
+                "disposable hybrid RDP authentication failed: {connection:?}"
+            );
         }));
     }
 }

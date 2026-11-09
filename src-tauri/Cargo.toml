@@ -34,3 +34,5 @@ png = "0.18"
 serde_json = "1"
 rcgen = "0.14"
 tokio-rustls = "0.26"
+ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["server", "connector"] }
+tempfile = "3"

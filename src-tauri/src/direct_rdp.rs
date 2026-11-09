@@ -80,6 +80,17 @@ fn config(
     height: u16,
     clipboard: bool,
 ) -> Result<ironrdp_client::config::Config, String> {
+    config_inner(target, password, width, height, clipboard, None)
+}
+
+fn config_inner(
+    target: &Target,
+    password: String,
+    width: u16,
+    height: u16,
+    clipboard: bool,
+    certificate_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+) -> Result<ironrdp_client::config::Config, String> {
     if !valid_target(target)
         || password.is_empty()
         || password.len() > 1024
@@ -100,7 +111,7 @@ fn config(
     } else {
         MajorPlatformType::UNIX
     };
-    ConfigBuilder::new()
+    let builder = ConfigBuilder::new()
         .with_destination(destination)
         .with_username(target.username.clone())
         .with_password(password)
@@ -119,7 +130,13 @@ fn config(
         } else {
             ClipboardType::Disable
         })
-        .with_pointer_software_rendering(true)
+        .with_pointer_software_rendering(true);
+    let builder = if let Some(callback) = certificate_callback {
+        builder.with_certificate_validation_callback(callback)
+    } else {
+        builder
+    };
+    builder
         .build()
         .map_err(|_| "Cannot configure direct RDP".into())
 }
@@ -603,5 +620,86 @@ mod tests {
             );
             peer.await.unwrap();
         });
+    }
+
+    #[test]
+    fn disposable_hybrid_server_establishes_credssp_session() {
+        use ironrdp::server::{Credentials, RdpServer, TlsIdentityCtx};
+
+        let fixture = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate = directory.path().join("fixture.crt");
+        let key = directory.path().join("fixture.key");
+        std::fs::write(&certificate, fixture.cert.pem()).unwrap();
+        std::fs::write(&key, fixture.signing_key.serialize_pem()).unwrap();
+        let expected_certificate = fixture.cert.der().to_vec();
+        let identity = TlsIdentityCtx::init_from_paths(&certificate, &key).unwrap();
+        let acceptor = identity.make_acceptor().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async move {
+            let mut server = RdpServer::builder()
+                .with_addr(address)
+                .with_hybrid(acceptor, identity.pub_key)
+                .with_no_input()
+                .with_no_display()
+                .build();
+            server.set_credentials(Some(Credentials {
+                username: "fixture".into(),
+                password: "fixture-only".into(),
+                domain: None,
+            }));
+            let server_task = tokio::task::spawn_local(async move { server.run().await });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let target = Target {
+                id: "123e4567-e89b-12d3-a456-426614174001".into(),
+                host: "localhost".into(),
+                port: address.port(),
+                username: "fixture".into(),
+            };
+            // Only this fixture cert is accepted by the test callback. Production
+            // passes None and requires the platform trust store instead.
+            let callback: ironrdp_tls::CertificateValidationCallback =
+                Arc::new(move |presented, _, _| presented == expected_certificate);
+            let settings = config_inner(
+                &target,
+                "fixture-only".into(),
+                800,
+                600,
+                false,
+                Some(callback),
+            )
+            .unwrap();
+            let (output, mut events) = output_channel(8);
+            let client = RdpClient::new(settings, output);
+            let input = client.input_sender();
+            let client_task = tokio::task::spawn_local(client.run());
+            let connected = tokio::time::timeout(Duration::from_secs(15), async {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        RdpOutputEvent::Connected => return true,
+                        RdpOutputEvent::ConnectionFailure(_) | RdpOutputEvent::Terminated(_) => {
+                            return false
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            })
+            .await
+            .expect("disposable CredSSP handshake timed out");
+            input.request_close();
+            client_task.abort();
+            server_task.abort();
+            assert!(connected, "disposable hybrid RDP authentication failed");
+        }));
     }
 }

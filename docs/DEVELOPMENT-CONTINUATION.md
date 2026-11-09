@@ -55,10 +55,14 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   is pushed. [CI 42615689103](https://github.com/RYLE-307/NodeDesk/actions/runs/42615689103)
   passed **6/6**: browser, both frontend jobs, Ubuntu and Windows desktop,
   and Arch preview including the Windows release build and package checks.
-- Current uncommitted test adds a disposable loopback TLS peer with a generated
-  self-signed certificate and verifies IronRDP's strict verifier refuses it.
-  It does not test full RDP protocol or native GUI acceptance. This test needs
-  Windows/Ubuntu/Arch CI before it can count as passing.
+- Commit `2d5e59f66fce86f53341a79076243e89e6deed0a` adds a disposable
+  loopback TLS peer with a generated self-signed certificate and verifies
+  IronRDP's strict verifier refuses it. Its [CI 42672251014](https://github.com/RYLE-307/NodeDesk/actions/runs/42672251014)
+  is still running. The current uncommitted follow-up uses IronRDP's own
+  server API as a disposable loopback **CredSSP hybrid** fixture, with an
+  exact-certificate callback solely inside the test. Production config has
+  no callback and continues to require platform trust. The fixture checks
+  authentication/connection, not a native GUI or full clipboard exchange.
 - VNC library review: `madeye/rv` accepts anonymous TLS subtypes; DeskVNC's
   `vnc-core` rejects them but its trust-on-first-use flow can authenticate
   before showing an unknown-certificate prompt. Do not bind NodeDesk secrets

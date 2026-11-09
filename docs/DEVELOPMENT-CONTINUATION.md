@@ -51,6 +51,18 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   found a Rust **test-only** method resolution error in the clipboard property
   assertion on Ubuntu. The follow-up uses `PropertySet::get` directly and
   requires a new exact-head CI. Browser and both frontend jobs passed.
+- Test repair commit `e79f6de66828a4483809763744b6a09fced9e238`
+  is pushed. [CI 42615689103](https://github.com/RYLE-307/NodeDesk/actions/runs/42615689103)
+  passed **6/6**: browser, both frontend jobs, Ubuntu and Windows desktop,
+  and Arch preview including the Windows release build and package checks.
+- Current uncommitted test adds a disposable loopback TLS peer with a generated
+  self-signed certificate and verifies IronRDP's strict verifier refuses it.
+  It does not test full RDP protocol or native GUI acceptance. This test needs
+  Windows/Ubuntu/Arch CI before it can count as passing.
+- VNC library review: `madeye/rv` accepts anonymous TLS subtypes; DeskVNC's
+  `vnc-core` rejects them but its trust-on-first-use flow can authenticate
+  before showing an unknown-certificate prompt. Do not bind NodeDesk secrets
+  to that flow without a strict CA-or-pin gate before VNC authentication.
   Native RDP against a disposable Windows server, clipboard, certificate
   error UX and Windows/Arch GUI acceptance remain **NOT TESTED** or incomplete.
 - Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and native clipboard acceptance,

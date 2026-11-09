@@ -560,4 +560,48 @@ mod tests {
             assert!(key_scancode(code).is_none());
         }
     }
+
+    #[test]
+    fn strict_tls_rejects_disposable_untrusted_certificate() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fixture = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            let server = tokio_rustls::rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![fixture.cert.der().clone()],
+                    tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
+                        fixture.signing_key.serialize_der().into(),
+                    ),
+                )
+                .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let _ = tokio_rustls::TlsAcceptor::from(Arc::new(server))
+                    .accept(stream)
+                    .await;
+            });
+            let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                ironrdp_tls::upgrade_with_certificate_validation(
+                    stream,
+                    "localhost",
+                    CertificateValidation::Strict,
+                ),
+            )
+            .await
+            .expect("TLS handshake timed out");
+            assert!(
+                result.is_err(),
+                "untrusted fixture certificate was accepted"
+            );
+            peer.await.unwrap();
+        });
+    }
 }

@@ -6,7 +6,7 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
-### 2026-11-09 direct RDP implementation in progress (CI pending)
+### 2026-11-09 direct RDP implementation in progress (CI repair)
 
 - Branch `feat/post-v0.9-roadmap`; last verified pushed HEAD before this work
   is `c938076`. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42581103542)
@@ -24,10 +24,15 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   storage. Saved SHA256 pins fail closed because the new path does not yet
   enforce an additional pin. The existing Guacamole and external modes stay
   available.
-- This code has **not yet passed Rust CI**. Current frontend unit tests (52)
-  and production build passed; Rust formatting completed, but local Rust
-  compilation is blocked by absent MSVC `link.exe`. Run exact-head Windows,
-  Ubuntu and Arch CI and repair all failures before calling this path usable.
+- Initial direct-client commit `92bdfc6` is pushed. Its [CI run](https://github.com/RYLE-307/NodeDesk/actions/runs/42612441172)
+  found a React StrictMode test failure and a Rust compile failure: IronRDP's
+  `run()` future is not `Send`, and a test local shadowed the config function.
+  The current change fixes the mount cleanup, runs IronRDP on a dedicated
+  current-thread Tokio `LocalSet`, releases input on blur/view-only, and adds
+  Arch `cmake` prerequisite. Its exact-head CI is pending. Local frontend unit
+  tests (52) and production build passed; Rust formatting completed, but local
+  Rust compilation is blocked by absent MSVC `link.exe`. Do not call this path
+  verified until Windows, Ubuntu, Arch and browser CI pass.
   Native RDP against a disposable Windows server, clipboard, certificate
   error UX and Windows/Arch GUI acceptance remain **NOT TESTED** or incomplete.
 - Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and clipboard,
@@ -180,11 +185,10 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Next action
 
-1. Inspect exact-head PR #13 workflow for this checkpoint commit. Fix any failed jobs and
-   repeat checks before calling this block verified.
-2. Continue P0 with two-hop SSH cancellation and native auth/error coverage,
-   then select the next concrete product gap. Keep all native checks
-   as NOT TESTED until an operator performs them on Windows and Arch.
+1. Verify the exact-head direct RDP workflow; fix all compiler and browser
+   failures and repeat CI. Then add direct clipboard and disposable protocol
+   coverage; native Windows/Arch RDP remains NOT TESTED.
+2. Continue P0 direct VNC, vault binding and VPN lifecycle in that order.
 
 ## Commands
 

@@ -15,7 +15,7 @@ jobs:
       - name: Arch build prerequisites
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel curl wget file openssl pkgconf rustup nodejs npm dbus \
+            base-devel cmake curl wget file openssl pkgconf rustup nodejs npm dbus \
             webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool \
             openssh hicolor-icon-theme desktop-file-utils
           rustup default stable

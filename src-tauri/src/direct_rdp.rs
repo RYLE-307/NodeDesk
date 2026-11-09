@@ -67,13 +67,7 @@ fn valid_target(target: &Target) -> bool {
                 b.is_ascii_hexdigit()
             }
         })
-        && !target.host.is_empty()
-        && target.host.len() <= 253
-        && !target
-            .host
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || "/@?#\\".contains(c))
-        && target.port != 0
+        && crate::rdp::endpoint(&target.host, target.port).is_ok()
         && !target.username.is_empty()
         && target.username.len() <= 200
         && !target.username.chars().any(char::is_control)
@@ -94,8 +88,12 @@ fn config(
     {
         return Err("Invalid direct RDP parameters".into());
     }
-    let destination = Destination::new(format!("{}:{}", target.host, target.port))
-        .map_err(|_| "Invalid RDP destination".to_string())?;
+    if std::env::var_os("SSLKEYLOGFILE").is_some() {
+        return Err("Disable TLS key logging before direct RDP".into());
+    }
+    let endpoint = crate::rdp::endpoint(&target.host, target.port)?;
+    let destination =
+        Destination::new(endpoint).map_err(|_| "Invalid RDP destination".to_string())?;
     let platform = if cfg!(windows) {
         MajorPlatformType::WINDOWS
     } else {
@@ -157,7 +155,8 @@ pub async fn rdp_direct_connect(
     events: Channel<Event>,
 ) -> Result<(), String> {
     // Config owns the transient password after IPC; no catalog, WebView storage,
-    // command line, URL, file or log contains it. IronRDP clears it at teardown.
+    // command line, URL, file or log contains it. The pinned IronRDP revision
+    // stores it as a String, so memory wiping remains an open security gate.
     let settings = config(&target, password, width, height)?;
     let (output, mut receiver) = output_channel(8);
     let client = RdpClient::new(settings, output).with_auto_reconnect(3);
@@ -177,67 +176,87 @@ pub async fn rdp_direct_connect(
     }
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
-    tauri::async_runtime::spawn(async move {
-        let worker = tauri::async_runtime::spawn(client.run());
-        let _ = events.send(Event::Status {
-            phase: "connecting",
-        });
-        let mut last_frame = Instant::now() - Duration::from_secs(1);
-        while let Some(event) = receiver.recv().await {
-            let result = match event {
-                RdpOutputEvent::Connected | RdpOutputEvent::AutoReconnected => {
-                    events.send(Event::Status { phase: "connected" })
-                }
-                RdpOutputEvent::AutoReconnecting { response, .. } => {
-                    let _ = response.send(AutoReconnectDecision::Continue);
-                    events.send(Event::Status {
-                        phase: "reconnecting",
-                    })
-                }
-                RdpOutputEvent::Image {
-                    buffer,
-                    width,
-                    height,
-                } => {
-                    if last_frame.elapsed() < Duration::from_millis(80) {
-                        continue;
+    std::thread::Builder::new()
+        .name("nodedesk-rdp".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    let _ = events.send(Event::Error {
+                        message: "RDP runtime unavailable",
+                    });
+                    if let Ok(mut all) = registry.lock() {
+                        all.remove(&id);
                     }
-                    last_frame = Instant::now();
-                    match encode_frame(buffer, width.get(), height.get()) {
-                        Ok(png) => events.send(Event::Frame {
-                            width: width.get(),
-                            height: height.get(),
-                            png,
-                        }),
-                        Err(_) => {
-                            session.sender.request_close();
-                            events.send(Event::Error {
-                                message: "Invalid RDP framebuffer",
+                    return;
+                }
+            };
+            let local = tokio::task::LocalSet::new();
+            runtime.block_on(local.run_until(async move {
+                tokio::task::spawn_local(client.run());
+                let _ = events.send(Event::Status {
+                    phase: "connecting",
+                });
+                let mut last_frame = Instant::now() - Duration::from_secs(1);
+                while let Some(event) = receiver.recv().await {
+                    let result = match event {
+                        RdpOutputEvent::Connected | RdpOutputEvent::AutoReconnected => {
+                            events.send(Event::Status { phase: "connected" })
+                        }
+                        RdpOutputEvent::AutoReconnecting { response, .. } => {
+                            let _ = response.send(AutoReconnectDecision::Continue);
+                            events.send(Event::Status {
+                                phase: "reconnecting",
                             })
                         }
+                        RdpOutputEvent::Image {
+                            buffer,
+                            width,
+                            height,
+                        } => {
+                            if last_frame.elapsed() < Duration::from_millis(80) {
+                                continue;
+                            }
+                            last_frame = Instant::now();
+                            match encode_frame(buffer, width.get(), height.get()) {
+                                Ok(png) => events.send(Event::Frame {
+                                    width: width.get(),
+                                    height: height.get(),
+                                    png,
+                                }),
+                                Err(_) => {
+                                    session.sender.request_close();
+                                    events.send(Event::Error {
+                                        message: "Invalid RDP framebuffer",
+                                    })
+                                }
+                            }
+                        }
+                        RdpOutputEvent::ConnectionFailure(_)
+                        | RdpOutputEvent::Terminated(Err(_)) => events.send(Event::Error {
+                            message: "RDP connection or authentication failed",
+                        }),
+                        RdpOutputEvent::Terminated(Ok(_)) => {
+                            let _ = events.send(Event::Status { phase: "closed" });
+                            break;
+                        }
+                        _ => continue,
+                    };
+                    if result.is_err() {
+                        session.sender.request_close();
+                        break;
                     }
                 }
-                RdpOutputEvent::ConnectionFailure(_) | RdpOutputEvent::Terminated(Err(_)) => events
-                    .send(Event::Error {
-                        message: "RDP connection or authentication failed",
-                    }),
-                RdpOutputEvent::Terminated(Ok(_)) => {
-                    let _ = events.send(Event::Status { phase: "closed" });
-                    break;
-                }
-                _ => continue,
-            };
-            if result.is_err() {
                 session.sender.request_close();
-                break;
-            }
-        }
-        session.sender.request_close();
-        let _ = worker.await;
-        if let Ok(mut all) = registry.lock() {
-            all.remove(&id);
-        }
-    });
+                if let Ok(mut all) = registry.lock() {
+                    all.remove(&id);
+                }
+            }));
+        })
+        .map_err(|_| "Cannot start RDP worker".to_string())?;
     Ok(())
 }
 
@@ -412,6 +431,28 @@ pub fn rdp_direct_input(
     Ok(())
 }
 
+#[tauri::command]
+pub fn rdp_direct_release_input(sessions: State<'_, Sessions>, id: String) -> Result<(), String> {
+    let all = sessions
+        .0
+        .lock()
+        .map_err(|_| "RDP session state unavailable")?;
+    let session = all.get(&id).ok_or("RDP session closed")?;
+    let permit = session
+        .sender
+        .try_reserve()
+        .map_err(|_| "RDP input busy or closed")?;
+    let mut db = session
+        .input
+        .lock()
+        .map_err(|_| "RDP input state unavailable")?;
+    let events = db.release_all();
+    if !events.is_empty() {
+        permit.send(RdpInputEvent::FastPath(events));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,9 +464,9 @@ mod tests {
             port: 3389,
             username: "fixture".into(),
         };
-        let config = config(&target, "fixture-only".into(), 800, 600).unwrap();
+        let settings = config(&target, "fixture-only".into(), 800, 600).unwrap();
         assert_eq!(
-            config.certificate_validation(),
+            settings.certificate_validation(),
             CertificateValidation::Strict
         );
         assert!(config(
@@ -447,5 +488,15 @@ mod tests {
         assert!(encode_frame(vec![], 1, 1).is_err());
         let png = encode_frame(vec![0x00112233], 1, 1).unwrap();
         assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn input_allowlist_rejects_unknown_browser_codes() {
+        for code in ["KeyA", "Digit0", "ArrowLeft", "ControlRight", "MetaLeft"] {
+            assert!(key_scancode(code).is_some());
+        }
+        for code in ["", "BrowserBack", "OSLaunchApplication1", "KeyA\n", "F24"] {
+            assert!(key_scancode(code).is_none());
+        }
     }
 }

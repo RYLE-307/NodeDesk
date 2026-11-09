@@ -18,6 +18,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
   const generation=useRef(0);
   const lastMouse=useRef(0);
   const connected=useRef(false);
+  const started=useRef(false);
   const id=connection.id;
 
   async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number){
@@ -39,10 +40,12 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     connected.current=false;
     setPhase("idle");
     if(password.current)password.current.value="";
-    if(isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
+    if(started.current&&isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
+    started.current=false;
   }
   useEffect(()=>()=>{generation.current++;connected.current=false;
-    if(isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});},[id]);
+    if(started.current&&isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
+    started.current=false;},[id]);
   useEffect(()=>{
     if(phase!=="connected"||!surface.current)return;
     let timer:ReturnType<typeof setTimeout>|undefined;
@@ -69,6 +72,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     if(password.current)password.current.value="";
     if(!secret){setError(ru?"Введите пароль RDP.":"Enter the RDP password.");return;}
     setError("");setPhase("connecting");connected.current=false;
+    started.current=true;
     const token=++generation.current;
     const events=new Channel<NativeEvent>();
     events.onmessage=event=>{
@@ -76,13 +80,13 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
       if(event.type==="frame")void draw(event,token);
       else if(event.type==="error"){
         setError(ru?"RDP-соединение или авторизация не удались.":event.message);
-        connected.current=false;setPhase("idle");generation.current++;
+        connected.current=false;started.current=false;setPhase("idle");generation.current++;
       }else if(event.phase==="connected"){
         connected.current=true;setPhase("connected");
       }else if(event.phase==="reconnecting"){
         connected.current=false;setPhase("reconnecting");
       }else if(event.phase==="closed"){
-        connected.current=false;setPhase("idle");generation.current++;
+        connected.current=false;started.current=false;setPhase("idle");generation.current++;
       }
     };
     try{
@@ -92,12 +96,16 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
         port:connection.port,username:connection.username},password:secret,width,height,events});
     }catch{
       if(token===generation.current){setPhase("idle");
+        started.current=false;
         setError(ru?"Не удалось открыть прямой RDP-сеанс.":"Could not start direct RDP session.");}
     }
   }
   function input(data:Record<string,unknown>){
     if(!connected.current||viewOnly)return;
     void invoke("rdp_direct_input",{id,input:data}).catch(()=>{});
+  }
+  function releaseInput(){
+    if(connected.current)void invoke("rdp_direct_release_input",{id}).catch(()=>{});
   }
   function pointer(event:MouseEvent<HTMLCanvasElement>,button?:number,down?:boolean){
     const element=canvas.current;if(!element)return;
@@ -117,7 +125,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
       <button type="button" onClick={()=>void open()} disabled={phase!=="idle"}>{ru?"Подключить напрямую":"Connect directly"}</button>
       <button type="button" onClick={close} disabled={phase==="idle"}>{ru?"Отключить":"Disconnect"}</button>
       <label className="check"><input type="checkbox" checked={viewOnly}
-        onChange={e=>setViewOnly(e.target.checked)}/>{ru?"Только просмотр":"View only"}</label>
+        onChange={e=>{if(e.target.checked)releaseInput();setViewOnly(e.target.checked);}}/>{ru?"Только просмотр":"View only"}</label>
       <button type="button" disabled={phase!=="connected"} onClick={()=>void surface.current?.requestFullscreen()}>
         {ru?"Во весь экран":"Fullscreen"}</button>
     </div>
@@ -130,6 +138,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
         onContextMenu={e=>e.preventDefault()}
         onKeyDown={e=>{if(connected.current&&!viewOnly){e.preventDefault();input({type:"key",code:e.code,down:true});}}}
         onKeyUp={e=>{if(connected.current&&!viewOnly){e.preventDefault();input({type:"key",code:e.code,down:false});}}}
+        onBlur={releaseInput}
         onMouseMove={e=>{if(Date.now()-lastMouse.current>=30){lastMouse.current=Date.now();pointer(e);}}}
         onMouseDown={e=>{e.currentTarget.focus();pointer(e,e.button,true);}}
         onMouseUp={e=>pointer(e,e.button,false)}/>

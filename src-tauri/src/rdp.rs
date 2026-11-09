@@ -19,7 +19,7 @@ pub struct LaunchInfo { pub client: &'static str, pub external_window: bool }
 enum Platform { Windows, Linux }
 
 /// Enforce exactly one endpoint without a URL, route, port suffix or CLI option.
-fn endpoint(host: &str, port: u16) -> Result<String, String> {
+pub(crate) fn endpoint(host: &str, port: u16) -> Result<String, String> {
     if port == 0 || host.is_empty() || host.len() > 253 || host.trim() != host {
         return Err("Invalid RDP host or port".into());
     }

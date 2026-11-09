@@ -70,6 +70,13 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   connection/termination diagnostics and checks that the server task stayed
   alive before connect. Do not treat this integration as passed; fix the
   specific handshake/fixture defect and rerun exact-head CI.
+- Diagnostic commit `6bfe3ab1c543a5bd190835bf01b97f33528919df`
+  is pushed. [CI 42674925257](https://github.com/RYLE-307/NodeDesk/actions/runs/42674925257)
+  identified the actual fixture defect: IronRDP's `NoopDisplay` advertises
+  0×0, which the client correctly rejects after CredSSP during capability
+  exchange. The local fix supplies an 800×600 disposable display handler;
+  rerun the fixture on Windows, Ubuntu and Arch. This failure does not show a
+  production RDP regression.
 - VNC library review: `madeye/rv` accepts anonymous TLS subtypes; DeskVNC's
   `vnc-core` rejects them but its trust-on-first-use flow can authenticate
   before showing an unknown-certificate prompt. Do not bind NodeDesk secrets

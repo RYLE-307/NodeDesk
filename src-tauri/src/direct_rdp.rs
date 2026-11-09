@@ -624,7 +624,36 @@ mod tests {
 
     #[test]
     fn disposable_hybrid_server_establishes_credssp_session() {
-        use ironrdp::server::{Credentials, RdpServer, TlsIdentityCtx};
+        use ironrdp::connector::DesktopSize;
+        use ironrdp::server::{
+            Credentials, DisplayContext, DisplayUpdate, RdpServer, RdpServerDisplay,
+            RdpServerDisplayUpdates, ServerResult, TlsIdentityCtx,
+        };
+
+        struct FixtureDisplay;
+        struct FixtureUpdates;
+        #[async_trait::async_trait]
+        impl RdpServerDisplay for FixtureDisplay {
+            async fn size(&mut self) -> DesktopSize {
+                DesktopSize {
+                    width: 800,
+                    height: 600,
+                }
+            }
+            async fn updates(
+                &mut self,
+                _: DisplayContext,
+            ) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+                Ok(Box::new(FixtureUpdates))
+            }
+        }
+        #[async_trait::async_trait]
+        impl RdpServerDisplayUpdates for FixtureUpdates {
+            async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(None)
+            }
+        }
 
         let fixture = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -649,7 +678,7 @@ mod tests {
                 .with_addr(address)
                 .with_hybrid(acceptor, identity.pub_key)
                 .with_no_input()
-                .with_no_display()
+                .with_display_handler(FixtureDisplay)
                 .build();
             server.set_credentials(Some(Credentials {
                 username: "fixture".into(),

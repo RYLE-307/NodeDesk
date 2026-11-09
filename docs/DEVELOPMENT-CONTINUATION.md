@@ -6,13 +6,16 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
-- Code HEAD: `18ab58c` (`fix-vpn-bound-enumeration-and-state-poll`), pending
+- Code HEAD: `faa02eb` (`test-ssh-reject-two-hop-wrong-identity`), pending
   push with this checkpoint update. The exact HEAD of this document's commit
   is its own commit.
 - Baseline `420ff01` passed [CI 42512592259](https://github.com/RYLE-307/NodeDesk/actions/runs/42512592259)
-  6/6. The `8923456` workflow for the first VPN change is
-  [in progress](https://github.com/RYLE-307/NodeDesk/actions/runs/42574389066);
-  the new exact-head workflow is pending verification.
+  6/6. The `8923456` workflow for the first VPN change
+  [passed 6/6](https://github.com/RYLE-307/NodeDesk/actions/runs/42574389066).
+  The `3d6a2d8` workflow for the whole VPN fix is
+  [in progress](https://github.com/RYLE-307/NodeDesk/actions/runs/42574795865)
+  with five jobs passed and Arch packaging underway. The new exact-head
+  workflow for the SSH fixture is pending verification.
 - Implemented in this block: a 35-second wall-clock deadline for system VPN
   manager commands, a 256 KiB streaming stdout cap, process termination on
   timeout or overflow, and generic errors that do not echo profile output.
@@ -24,6 +27,9 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   enumeration, including per-profile `nmcli` metadata. The five-second
   post-action state check now passes its remaining deadline to the OS query.
   An expired-deadline test runs without touching an OS VPN profile.
+- `faa02eb` adds a disposable three-listener SFTP negative case: all host
+  keys are trusted, but a wrong fixture identity is rejected before SFTP.
+  No user key, saved profile or production host is involved.
 - Local `git diff --check` passed. Local Rust tests: NOT RUN (`cargo` absent).
   Local frontend unit/build/browser tests: NOT RUN (`npm` absent). CI must
   establish automated results; native Windows/Arch GUI, VPN route/DNS,
@@ -50,8 +56,8 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 1. Inspect exact-head PR #13 workflow for this checkpoint commit. Fix any failed jobs and
    repeat checks before calling this block verified.
-2. Continue P0 with disposable two-hop SSH authentication failure and cancel
-   coverage, then select the next concrete product gap. Keep all native checks
+2. Continue P0 with two-hop SSH cancellation and native auth/error coverage,
+   then select the next concrete product gap. Keep all native checks
    as NOT TESTED until an operator performs them on Windows and Arch.
 
 ## Commands

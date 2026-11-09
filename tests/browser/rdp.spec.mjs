@@ -180,3 +180,59 @@ test("explicit RDP connection uses only a server-authorized Guacamole profile",a
   expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
   await expect(embedded).not.toContainText("opaque-qa-token");
 });
+
+test("RDP clipboard is opt-in, bounded, and cleared on disconnect",async({page})=>{
+  await page.addInitScript(()=>{
+    const NativeWebSocket=window.WebSocket;
+    window.fixtureGuac={sent:[],sockets:[],encode:(...parts)=>parts.map(
+      part=>`${part.length}.${part}`).join(",")+";"};
+    window.WebSocket=function(url,protocol){
+      if(!String(url).startsWith("wss://guacamole.example.org/"))
+        return new NativeWebSocket(url,protocol);
+      const socket={readyState:1,send(data){window.fixtureGuac.sent.push(data);},
+        close(){this.readyState=3;}};
+      window.fixtureGuac.sockets.push(socket);
+      setTimeout(()=>{
+        socket.onopen?.({});
+        socket.onmessage?.({data:window.fixtureGuac.encode("","fixture-tunnel")+
+          window.fixtureGuac.encode("sync","1")});
+      },0);
+      return socket;
+    };
+  });
+  await mockGuac(page);
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  await embedded.getByRole("textbox",{name:"Guacamole HTTPS URL"}).fill(
+    "https://guacamole.example.org/guacamole/");
+  await embedded.getByRole("textbox",{name:"Guacamole username"}).fill("qa");
+  await embedded.getByRole("textbox",{name:"Guacamole password"}).fill("fixture-only");
+  await embedded.getByRole("checkbox").check();
+  await embedded.getByRole("button",{name:"Sign in to Guacamole"}).click();
+  await embedded.getByRole("button",{name:"Connect embedded"}).click();
+  const optIn=embedded.getByRole("checkbox",{name:"Clipboard in this session"});
+  await expect(optIn).toBeVisible();
+  await expect(optIn).not.toBeChecked();
+  const copy=embedded.getByRole("button",{name:"Copy remote text"});
+  await expect(copy).toBeDisabled();
+  const deliver=async value=>page.evaluate(value=>{
+    const fixture=window.fixtureGuac,socket=fixture.sockets.at(-1);
+    const data=btoa(unescape(encodeURIComponent(value)));
+    socket.onmessage({data:fixture.encode("clipboard","7","text/plain")+
+      fixture.encode("blob","7",data)+fixture.encode("end","7")});
+  },value);
+  await deliver("private fixture");
+  await expect(copy).toBeDisabled();
+  await optIn.check();
+  await deliver("private fixture");
+  await expect(copy).toBeEnabled();
+  await optIn.uncheck();
+  await expect(copy).toBeDisabled();
+  await optIn.check();
+  await deliver("x".repeat(65537));
+  await expect(copy).toBeDisabled();
+  await expect(embedded.getByRole("alert")).toContainText("too large");
+  await embedded.getByRole("button",{name:"Disconnect"}).click();
+  await expect(optIn).toHaveCount(0);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
+});

@@ -6,6 +6,28 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 RDP gateway clipboard increment (verification pending)
+
+- Current branch: `feat/post-v0.9-roadmap`; prior HEAD `9136c0a` is pushed.
+  Its [CI run](https://github.com/RYLE-307/NodeDesk/actions/runs/42579427080)
+  passed browser, Windows/Ubuntu frontend, Ubuntu desktop and Windows Rust,
+  but Windows packaging failed because `prepare-nsis.ps1` found an already
+  populated Tauri NSIS directory. The current increment removes that exact
+  checked workspace cache and fetches checksum-verified NSIS tools anew.
+- The existing Guacamole RDP viewer now offers per-session opt-in text
+  clipboard. Remote text requires an explicit copy; sending local text
+  requires a separate confirmation. UTF-8 is bounded to 64 KiB and control
+  characters are refused. Clipboard data is cleared on disconnect. A mock
+  Guacamole protocol browser test covers opt-in, oversized text and teardown.
+- Local frontend: 52 unit tests and production build passed. Browser test
+  web server has not started in this local environment; CI must run it.
+- **RDP-01 remains open:** this still requires a separately deployed
+  Guacamole gateway. Direct embedded RDP, target certificate trust, NLA,
+  native input/clipboard/resize/fullscreen/reconnect acceptance on Windows
+  and Arch remain NOT TESTED or NOT IMPLEMENTED as appropriate.
+- Next: push this increment, require exact-head CI, then implement a native
+  IronRDP client path. Do not call the gateway viewer direct RDP.
+
 ### 2026-11-09 OS vault implementation (automated verification passed)
 
 - Branch: `feat/post-v0.9-roadmap`. Vault code commit `790ba7c` and test fix

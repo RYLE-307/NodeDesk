@@ -29,7 +29,14 @@ function Get-VerifiedAsset {
 $tools = Join-Path $PWD 'src-tauri/target/.tauri'
 $nsis = Join-Path $tools 'NSIS'
 if (-not $TempRoot) { throw 'Temporary directory unavailable' }
-if (Test-Path -LiteralPath $nsis) { throw 'Expected a fresh NSIS tool directory' }
+$workspace = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([IO.Path]::DirectorySeparatorChar)
+$expected = [IO.Path]::GetFullPath((Join-Path $workspace 'src-tauri/target/.tauri/NSIS'))
+if ([IO.Path]::GetFullPath($nsis) -ne $expected -or
+    -not $expected.StartsWith($workspace + [IO.Path]::DirectorySeparatorChar,
+      [StringComparison]::OrdinalIgnoreCase)) { throw 'NSIS tool path escaped workspace' }
+# Tauri's unbundled build can populate this cache before the preview step.
+# Remove only this checked workspace path and fetch checksum-verified tools again.
+if (Test-Path -LiteralPath $expected) { Remove-Item -LiteralPath $expected -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $tools | Out-Null
 $zip = Join-Path $TempRoot 'nsis-3.13.zip'
 $dll = Join-Path $TempRoot 'nsis_tauri_utils.dll'

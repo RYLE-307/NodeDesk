@@ -5,7 +5,9 @@ desktop Secret Service implementation through the `keyring` crate. It never
 falls back to plaintext. On Arch, a running and unlocked Secret Service provider
 is required; `gnome-keyring` is one option. Automated CI compiles the backend
 and tests a disposable in-memory store, but does not prove either desktop's
-native keyring behavior. Native Windows/Arch QA remains **NOT TESTED**.
+native keyring behavior. Windows CI also writes and removes one disposable
+Credential Manager record under its throwaway runner account. Native Windows
+GUI and Arch Secret Service QA remain **NOT TESTED**.
 
 ## Boundary and lifecycle
 

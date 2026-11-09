@@ -29,7 +29,7 @@ test("OS vault locks by default, stores no WebView secret and binds the saved ta
   await page.locator(".catalog-tools").getByRole("button",{name:"Credential vault"}).click();
   const vault=page.getByRole("region",{name:"Credential vault"});
   await expect(vault).toBeVisible();
-  await expect(vault.getByRole("button",{name:"Lock"})).toBeDisabled();
+  await expect(vault.getByRole("button",{name:"Lock",exact:true})).toBeDisabled();
   await vault.getByRole("button",{name:"Unlock"}).click();
   await vault.getByRole("combobox",{name:"Credential connection"}).selectOption(ID);
   await expect(vault).toContainText("No saved credential");

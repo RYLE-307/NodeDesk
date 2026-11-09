@@ -216,4 +216,16 @@ mod tests {
         assert!(vault.put(&target,Zeroizing::new("x".repeat(LIMIT+1))).is_err());
         assert!(vault.read(&target).unwrap().is_none());
     }
+    #[cfg(windows)]
+    #[test] fn windows_ci_credential_manager_roundtrip_uses_disposable_record() {
+        // CI's throwaway Windows user only. Never touch a developer's store.
+        if std::env::var("CI").ok().as_deref()!=Some("true") {return;}
+        let store=OsStore;
+        let key=format!("ci-disposable-{}",std::process::id());
+        let _=store.remove(&key);
+        store.write(&key,"fixture-only-secret").unwrap();
+        assert_eq!(store.read(&key).unwrap().as_deref(),Some("fixture-only-secret"));
+        store.remove(&key).unwrap();
+        assert!(store.read(&key).unwrap().is_none());
+    }
 }

@@ -6,6 +6,32 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 OS vault implementation (in verification)
+
+- Branch: `feat/post-v0.9-roadmap`. Vault code commit `790ba7c` has been
+  pushed; the follow-up test fix and this checkpoint will have their own HEAD.
+- Native backend uses Windows Credential Manager or Linux Secret Service via
+  keyring 3.6.3. It starts locked, exposes explicit unlock/lock, bounded
+  put/has/get/delete, binds each record to exact catalog target fields, and
+  refuses plaintext fallback. App/window close locks the application gate.
+- Vault UI has uncontrolled password inputs, explicit temporary reveal,
+  deletion and no WebView storage writes. Catalog export remains secret-free.
+  See `SECURE-VAULT.md` for migration and threat boundaries.
+- Local frontend: 51 unit tests passed; production build passed. Playwright
+  discovered the browser test but could not start its local WebServer here.
+  Local Rust check cannot link build scripts because MSVC `link.exe` is absent.
+- [First vault CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42578000205):
+  Windows/Ubuntu frontend and Rust passed; browser failed on an ambiguous
+  **test selector**, fixed in the next commit. Arch packaging was still
+  running at this checkpoint. The follow-up exact-head CI is required.
+- A disposable Windows CI Credential Manager roundtrip test has been added;
+  Linux unit tests use an in-memory store. Native Windows GUI and Arch Secret
+  Service save/restart/delete remain **NOT TESTED**. Automatic use of saved
+  credentials by SSH/RDP/VNC is not yet implemented; SEC-01 remains open.
+- Next priority: verify vault exact-head CI, fix failures, then implement
+  direct embedded RDP with certificate identity and disposable server coverage.
+  Do not claim a functional RC from the vault slice alone.
+
 - Code HEAD: `a867a7f` (checkpoint including
   `faa02eb` `test-ssh-reject-two-hop-wrong-identity`), pushed. The exact HEAD of this document's commit
   is its own commit.

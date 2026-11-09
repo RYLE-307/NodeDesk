@@ -81,13 +81,18 @@ fn observed_state(before:&VpnProfile, profiles:&[VpnProfile], connect:bool)->Res
 fn wait_for_state(before:&VpnProfile, connect:bool)->Result<Vec<VpnProfile>,String> {
     let deadline=Instant::now()+Duration::from_secs(5);
     loop {
-        let profiles=list_impl()?;
+        let profiles=list_impl_until(deadline)?;
         if observed_state(before,&profiles,connect)? {return Ok(profiles);}
         if Instant::now()>=deadline {
             return Err("System VPN manager accepted the request, but the profile did not reach the requested state; refresh its status".into());
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+fn remaining(deadline:Instant)->Result<Duration,String> {
+    let left=deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {Err("System VPN manager timed out".into())} else {Ok(left)}
 }
 
 /// Capture only bounded, non-secret fields. Neither stdout nor stderr may
@@ -152,6 +157,12 @@ fn nmcli(args:&[&str])->Result<String,String> {
     cmd.args(args);
     output(cmd)
 }
+#[cfg(target_os="linux")]
+fn nmcli_until(args:&[&str],deadline:Instant)->Result<String,String> {
+    let mut cmd=Command::new("/usr/bin/nmcli");
+    cmd.args(args);
+    output_with_timeout(&mut cmd,remaining(deadline)?)
+}
 /// Unknown NetworkManager VPN plugins are displayed read-only.
 #[cfg(target_os="linux")]
 fn classify_nm_vpn(kind:&str,service:&str)->(&'static str,bool) {
@@ -165,10 +176,14 @@ fn classify_nm_vpn(kind:&str,service:&str)->(&'static str,bool) {
 }
 #[cfg(target_os="linux")]
 fn list_impl()->Result<Vec<VpnProfile>,String> {
+    list_impl_until(Instant::now()+Duration::from_secs(35))
+}
+#[cfg(target_os="linux")]
+fn list_impl_until(deadline:Instant)->Result<Vec<VpnProfile>,String> {
     // UUID/TYPE are safe for terse parsing; profile names may contain colon
     // and are retrieved separately by exact OS UUID, with no --show-secrets.
-    let configured=nmcli(&["-t","-f","UUID,TYPE","connection","show"])?;
-    let active=nmcli(&["-t","-f","UUID","connection","show","--active"])?;
+    let configured=nmcli_until(&["-t","-f","UUID,TYPE","connection","show"],deadline)?;
+    let active=nmcli_until(&["-t","-f","UUID","connection","show","--active"],deadline)?;
     let active_ids:HashSet<&str>=active.lines().filter(|s|uuid_ok(s)).collect();
     let mut profiles=Vec::new();
     let mut seen=HashSet::new();
@@ -176,13 +191,16 @@ fn list_impl()->Result<Vec<VpnProfile>,String> {
         let Some((uuid,kind))=line.split_once(':') else {continue};
         if !uuid_ok(uuid)|| !matches!(kind,"vpn"|"wireguard") || !seen.insert(uuid) {continue}
         if profiles.len()>=100 {return Err("Too many VPN profiles".into());}
-        let name=nmcli(&["-g","connection.id","connection","show","uuid",uuid])?;
+        let name=nmcli_until(&["-g","connection.id","connection","show","uuid",uuid],deadline)?;
         let name=name.trim_end_matches(['\r','\n']);
         if !safe_name(name) {continue;}
         // Read only the plugin service type, never vpn.secrets or vpn.data.
         // Unknown plugins are fail-closed, not allowed for NodeDesk actions.
         let service=if kind=="vpn" {
-            nmcli(&["-g","vpn.service-type","connection","show","uuid",uuid]).unwrap_or_default()
+            match nmcli_until(&["-g","vpn.service-type","connection","show","uuid",uuid],deadline) {
+                Ok(service)=>service,
+                Err(_)=>{remaining(deadline)?; String::new()} // unknown service stays read-only
+            }
         } else {String::new()};
         let (display_kind,control_allowed)=classify_nm_vpn(kind,&service);
         profiles.push(VpnProfile {
@@ -237,12 +255,16 @@ fn parse_windows_profiles(raw:&str)->Result<Vec<VpnProfile>,String> {
 }
 #[cfg(windows)]
 fn list_impl()->Result<Vec<VpnProfile>,String> {
+    list_impl_until(Instant::now()+Duration::from_secs(35))
+}
+#[cfg(windows)]
+fn list_impl_until(deadline:Instant)->Result<Vec<VpnProfile>,String> {
     // The script is static and reads user-scope Windows built-in phonebook
     // profiles only. Never reads/returns EAP XML, PSK, credentials, server URLs
     // or routes. VPN types known to be insecure/ambiguous are excluded.
     let mut cmd=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"])?;
     cmd.args(["-NoProfile","-NonInteractive","-Command",WINDOWS_QUERY]);
-    let raw=output(cmd)?;
+    let raw=output_with_timeout(&mut cmd,remaining(deadline)?)?;
     parse_windows_profiles(&raw)
 }
 #[cfg(windows)]
@@ -260,6 +282,8 @@ fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
 }
 #[cfg(not(any(windows,target_os="linux")))]
 fn list_impl()->Result<Vec<VpnProfile>,String>{Err("VPN manager is supported only on Windows and Linux".into())}
+#[cfg(not(any(windows,target_os="linux")))]
+fn list_impl_until(_deadline:Instant)->Result<Vec<VpnProfile>,String>{list_impl()}
 #[cfg(not(any(windows,target_os="linux")))]
 fn execute_impl(_profile:&VpnProfile,_connect:bool)->Result<(),String>{
     Err("VPN manager is supported only on Windows and Linux".into())
@@ -296,6 +320,13 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vpn_enumeration_rejects_an_expired_total_deadline() {
+        let expired=Instant::now()-Duration::from_millis(1);
+        assert_eq!(remaining(expired).unwrap_err(),"System VPN manager timed out");
+        #[cfg(any(windows,target_os="linux"))]
+        assert_eq!(list_impl_until(expired).unwrap_err(),"System VPN manager timed out");
+    }
     #[test]
     fn vpn_manager_timeout_releases_a_hung_process() {
         #[cfg(windows)] let mut command={

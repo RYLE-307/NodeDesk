@@ -6,10 +6,13 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
-- Code HEAD: `1138d47` (`fix-vpn-bound-manager-execution`), pushed to the
-  working branch. The exact HEAD of this document's commit is its own commit.
+- Code HEAD: `18ab58c` (`fix-vpn-bound-enumeration-and-state-poll`), pending
+  push with this checkpoint update. The exact HEAD of this document's commit
+  is its own commit.
 - Baseline `420ff01` passed [CI 42512592259](https://github.com/RYLE-307/NodeDesk/actions/runs/42512592259)
-  6/6. The `1138d47` workflow is pending verification.
+  6/6. The `8923456` workflow for the first VPN change is
+  [in progress](https://github.com/RYLE-307/NodeDesk/actions/runs/42574389066);
+  the new exact-head workflow is pending verification.
 - Implemented in this block: a 35-second wall-clock deadline for system VPN
   manager commands, a 256 KiB streaming stdout cap, process termination on
   timeout or overflow, and generic errors that do not echo profile output.
@@ -17,6 +20,10 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 - Added Rust tests using only local disposable processes for timeout and
   oversized output on both platforms. No real VPN profile was read or changed
   during this work.
+- `18ab58c` makes the 35-second listing limit apply to the *whole* profile
+  enumeration, including per-profile `nmcli` metadata. The five-second
+  post-action state check now passes its remaining deadline to the OS query.
+  An expired-deadline test runs without touching an OS VPN profile.
 - Local `git diff --check` passed. Local Rust tests: NOT RUN (`cargo` absent).
   Local frontend unit/build/browser tests: NOT RUN (`npm` absent). CI must
   establish automated results; native Windows/Arch GUI, VPN route/DNS,
@@ -41,7 +48,7 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Next action
 
-1. Inspect exact-head PR #13 workflow for `1138d47`. Fix any failed jobs and
+1. Inspect exact-head PR #13 workflow for this checkpoint commit. Fix any failed jobs and
    repeat checks before calling this block verified.
 2. Continue P0 with disposable two-hop SSH authentication failure and cancel
    coverage, then select the next concrete product gap. Keep all native checks

@@ -4,6 +4,7 @@ import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
+import { VaultWorkspace } from "./VaultWorkspace";
 import { NetworkWorkspace } from "./NetworkWorkspace";
 import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
@@ -175,6 +176,7 @@ function readSidebarWidth(): number {
   } catch { return 310; }
 }
 const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
+const VAULT_TAB = "__nodedesk_vault__";
 const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
 const NETWORK_TAB = "__nodedesk_network__";
 type Editor =
@@ -564,12 +566,14 @@ export default function App() {
   }
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      id === VAULT_TAB ? (data.language === "ru" ? "Защищённое хранилище" : "Credential vault") :
       id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
       id === NETWORK_TAB ? (data.language === "ru" ? "Диагностика сети" : "Network diagnostics") :
       (data.connections.find((c) => c.id === id)?.name ?? quickConnections[id]?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
+    if (id === VAULT_TAB) return <VaultWorkspace connections={data.connections} language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
     if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
@@ -696,6 +700,11 @@ export default function App() {
                 className={active === SYSTEM_VPN_TAB ? "selected" : ""}
                 onClick={() => open(SYSTEM_VPN_TAB)}>
                 <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
+                className={active === VAULT_TAB ? "selected" : ""}
+                onClick={() => open(VAULT_TAB)}>
+                {data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
               </button>
               <button type="button" aria-label={data.language === "ru" ? "Локальный терминал" : "Local terminal"}
                 className={active === LOCAL_SHELL_TAB ? "selected" : ""}

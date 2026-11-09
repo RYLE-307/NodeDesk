@@ -15,7 +15,7 @@ jobs:
       - name: Arch build prerequisites
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel curl wget file openssl pkgconf rustup nodejs npm \
+            base-devel curl wget file openssl pkgconf rustup nodejs npm dbus \
             webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool \
             openssh hicolor-icon-theme desktop-file-utils
           rustup default stable
@@ -110,7 +110,7 @@ jobs:
             fi
           done
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf openssh-server
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev patchelf openssh-server
       - run: npm ci
       - name: Rust tests (Windows)
         if: runner.os == 'Windows'

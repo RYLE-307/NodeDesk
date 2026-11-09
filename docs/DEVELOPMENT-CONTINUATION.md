@@ -77,6 +77,11 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   exchange. The local fix supplies an 800×600 disposable display handler;
   rerun the fixture on Windows, Ubuntu and Arch. This failure does not show a
   production RDP regression.
+- Display fixture fix `7bb58adca91a0f8dd9ce01de702133b70c4fb7e2`
+  is pushed. [CI 42676326639](https://github.com/RYLE-307/NodeDesk/actions/runs/42676326639)
+  stopped before Rust tests because the newly direct `async-trait` dev
+  dependency had not been reflected in Cargo.lock. The follow-up updates only
+  the lockfile; run exact-head CI before assessing the display fixture.
 - VNC library review: `madeye/rv` accepts anonymous TLS subtypes; DeskVNC's
   `vnc-core` rejects them but its trust-on-first-use flow can authenticate
   before showing an unknown-certificate prompt. Do not bind NodeDesk secrets

@@ -6,16 +6,17 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
-- Code HEAD: `faa02eb` (`test-ssh-reject-two-hop-wrong-identity`), pending
-  push with this checkpoint update. The exact HEAD of this document's commit
+- Code HEAD: `a867a7f` (checkpoint including
+  `faa02eb` `test-ssh-reject-two-hop-wrong-identity`), pushed. The exact HEAD of this document's commit
   is its own commit.
 - Baseline `420ff01` passed [CI 42512592259](https://github.com/RYLE-307/NodeDesk/actions/runs/42512592259)
   6/6. The `8923456` workflow for the first VPN change
   [passed 6/6](https://github.com/RYLE-307/NodeDesk/actions/runs/42574389066).
-  The `3d6a2d8` workflow for the whole VPN fix is
-  [in progress](https://github.com/RYLE-307/NodeDesk/actions/runs/42574795865)
-  with five jobs passed and Arch packaging underway. The new exact-head
-  workflow for the SSH fixture is pending verification.
+  The `3d6a2d8` workflow for the whole VPN fix
+  [passed 6/6](https://github.com/RYLE-307/NodeDesk/actions/runs/42574795865).
+  The `a867a7f` exact-head workflow, including the SSH negative fixture,
+  [passed 6/6](https://github.com/RYLE-307/NodeDesk/actions/runs/42575299283):
+  Windows/Ubuntu frontend and desktop, browser, Arch Rust/build/package.
 - Implemented in this block: a 35-second wall-clock deadline for system VPN
   manager commands, a 256 KiB streaming stdout cap, process termination on
   timeout or overflow, and generic errors that do not echo profile output.
@@ -31,8 +32,8 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   keys are trusted, but a wrong fixture identity is rejected before SFTP.
   No user key, saved profile or production host is involved.
 - Local `git diff --check` passed. Local Rust tests: NOT RUN (`cargo` absent).
-  Local frontend unit/build/browser tests: NOT RUN (`npm` absent). CI must
-  establish automated results; native Windows/Arch GUI, VPN route/DNS,
+  Local frontend unit/build/browser tests: NOT RUN (`npm` absent). Exact-head
+  CI passed the automated checks; native Windows/Arch GUI, VPN route/DNS,
   installation and protocol acceptance remain **NOT TESTED**.
 
 ## Open release gates

@@ -6,10 +6,10 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
-### 2026-11-09 OS vault implementation (in verification)
+### 2026-11-09 OS vault implementation (automated verification passed)
 
-- Branch: `feat/post-v0.9-roadmap`. Vault code commit `790ba7c` has been
-  pushed; the follow-up test fix and this checkpoint will have their own HEAD.
+- Branch: `feat/post-v0.9-roadmap`. Vault code commit `790ba7c` and test fix
+  `4094943` are pushed; this checkpoint has its own later documentation HEAD.
 - Native backend uses Windows Credential Manager or Linux Secret Service via
   keyring 3.6.3. It starts locked, exposes explicit unlock/lock, bounded
   put/has/get/delete, binds each record to exact catalog target fields, and
@@ -21,15 +21,24 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   discovered the browser test but could not start its local WebServer here.
   Local Rust check cannot link build scripts because MSVC `link.exe` is absent.
 - [First vault CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42578000205):
-  Windows/Ubuntu frontend and Rust passed; browser failed on an ambiguous
-  **test selector**, fixed in the next commit. Arch packaging was still
-  running at this checkpoint. The follow-up exact-head CI is required.
+  browser failed on an ambiguous **test selector**, fixed by `4094943`.
+  [Exact-head CI at `4094943`](https://github.com/RYLE-307/NodeDesk/actions/runs/42578381253)
+  passed 6/6: Windows/Ubuntu/Arch Rust and desktop builds, browser, Windows
+  disposable Credential Manager roundtrip and preview packages.
 - A disposable Windows CI Credential Manager roundtrip test has been added;
   Linux unit tests use an in-memory store. Native Windows GUI and Arch Secret
   Service save/restart/delete remain **NOT TESTED**. Automatic use of saved
   credentials by SSH/RDP/VNC is not yet implemented; SEC-01 remains open.
+- Catalog import does not contain secrets, but an imported record with the
+  same UUID and exact endpoint can match an existing OS credential after
+  unlock. The import confirmation now warns about this. The final commit also
+  checks `sessionStorage` in the browser test and records keyring in notices;
+  its exact-head CI must be checked after push.
 - Next priority: verify vault exact-head CI, fix failures, then implement
   direct embedded RDP with certificate identity and disposable server coverage.
+  IronRDP's web client requires an RDCleanPath-aware gateway, so a plain
+  WebSocket-to-TCP bridge does not meet the direct-client requirement. Prefer
+  native `ironrdp-client` with strict TLS/CredSSP before framebuffer/input IPC.
   Do not claim a functional RC from the vault slice alone.
 
 - Code HEAD: `a867a7f` (checkpoint including

@@ -25,6 +25,9 @@ not relicense NodeDesk's own MIT sources.
 
 This development branch also directly uses `sysinfo` 0.39.6 for local metrics
 (MIT license). Its transitive licenses still require a release audit.
+The OS credential vault directly uses `keyring` 3.6.3 (MIT OR Apache-2.0),
+with Windows Credential Manager and Linux Secret Service backends. Its
+transitive and native DBus dependencies require the same release audit.
 
 Upstream resources:
 - [noVNC license / source](https://github.com/novnc/noVNC)
@@ -32,6 +35,7 @@ Upstream resources:
 - [Tauri](https://github.com/tauri-apps/tauri)
 - [xterm.js](https://github.com/xtermjs/xterm.js)
 - [React](https://github.com/facebook/react)
+- [keyring-rs](https://github.com/open-source-cooperative/keyring-rs)
 
 The built executable has not yet been manually accepted on native Windows
 and Arch. No release archives or third-party binaries are claimed here.

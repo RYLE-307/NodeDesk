@@ -37,12 +37,14 @@ test("OS vault locks by default, stores no WebView secret and binds the saved ta
   await vault.getByRole("button",{name:"Save in OS store"}).click();
   await expect(vault).toContainText("Credential saved");
   expect(await page.evaluate(()=>Object.values(localStorage).join(" "))).not.toContain("fixture-private-password");
+  expect(await page.evaluate(()=>Object.values(sessionStorage).join(" "))).not.toContain("fixture-private-password");
   const record=await page.evaluate(()=>window.fixture.record);
   expect(record).toEqual({target:{id:ID,protocol:"SSH",host:"127.0.0.1",port:22229,
     username:"fixture"},secret:"fixture-private-password"});
   await vault.getByRole("button",{name:"Lock",exact:true}).click();
   await expect(vault.getByRole("button",{name:"Save in OS store"})).toHaveCount(0);
   expect(await page.evaluate(()=>Object.values(localStorage).join(" "))).not.toContain("fixture-private-password");
+  expect(await page.evaluate(()=>Object.values(sessionStorage).join(" "))).not.toContain("fixture-private-password");
   await vault.getByRole("button",{name:"Unlock"}).click();
   await expect(vault).toContainText("Credential saved");
   page.once("dialog",dialog=>dialog.accept());

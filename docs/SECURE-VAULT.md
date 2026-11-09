@@ -19,7 +19,9 @@ GUI and Arch Secret Service QA remain **NOT TESTED**.
 - A credential is keyed by protocol and catalog UUID. The record includes the
   exact host, port and username. Read and replacement fail if those fields
   changed; the operator must explicitly delete the old record before saving
-  for a changed target. A catalog import never silently migrates credentials.
+  for a changed target. Catalog import does not copy OS credentials; an
+  imported record with the same ID and exact endpoint can still match an
+  existing OS item after unlock. The import confirmation warns about this.
 - No existing NodeDesk release saved credentials, so there is no plaintext
   credential migration. Catalog v1 import/export continues to strip unknown
   secret fields. OS keyring items are not included in catalog backups.

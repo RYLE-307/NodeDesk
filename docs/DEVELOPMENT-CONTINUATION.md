@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 VPN route/DNS presence increment (CI pending)
+
+- Previous VNC commit `85a30fc` is pushed; its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580735514)
+  must be checked before declaring that increment verified.
+- Added an explicit read-only VPN health query for a selected OS profile.
+  NetworkManager reads only active profile route/DNS fields by UUID. Windows
+  reads interface route/DNS presence through fixed PowerShell cmdlets with
+  the profile alias passed as an environment value. Only booleans or unknown
+  reach the WebView; no route, DNS address, profile secret or raw command
+  output is returned. Inactive profiles report unknown.
+- UI starts at Not checked and clears evidence on refresh or mutation. Browser
+  fixture verifies no automatic query, profile-ID-only IPC, and reset.
+  Windows unit fixture shadows all network cmdlets; no real VPN is touched.
+- Local 52 frontend unit tests and production build passed. Rust and browser
+  for this increment need CI; local Rust cannot link because MSVC `link.exe`
+  is absent, and local Playwright WebServer has not started in this environment.
+- **VPN-01 remains open:** presence of routes/DNS is not path correctness,
+  DNS leakage, split-tunnel policy or traffic proof. Real profile lifecycle,
+  native Windows/Arch acceptance and packet-level checks remain NOT TESTED.
+
 ### 2026-11-09 VNC gateway clipboard increment (verification pending)
 
 - Previous RDP/NSIS commit `c8c3b33` is pushed. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580185235)

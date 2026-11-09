@@ -17,6 +17,11 @@ async function open(page,{language="en",empty=false,fail=false,readOnly=false}={
       async invoke(cmd,args){
         window.fixture.calls.push({cmd,args});
         if(cmd==="vpn_list")return window.fixture.profiles;
+        if(cmd==="vpn_health"){
+          const current=window.fixture.profiles.find(p=>p.id===args.profileId);
+          return {profileId:current.id,active:current.active,
+            routeConfigured:current.active,dnsConfigured:current.active};
+        }
         if(cmd==="vpn_set"){
           if(window.fixture.fail)throw new Error("System VPN manager rejected the request");
           window.fixture.profiles=window.fixture.profiles.map(p=>
@@ -142,4 +147,20 @@ test("VPN IPC carries displayed identity and state, never arbitrary commands",as
     expect(Object.keys(call.args).sort()).toEqual(
       ["profileId","expectedName","expectedKind","expectedActive","connect"].sort());
   }
+});
+
+test("VPN route and DNS evidence is explicit, redacted and cleared on refresh",async({page})=>{
+  const pane=await open(page);
+  await expect(pane).toContainText("Not checked");
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==="vpn_health"))).toHaveLength(0);
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Connect",exact:true}).click();
+  await expect(pane.getByRole("button",{name:"Disconnect",exact:true})).toBeVisible();
+  await pane.getByRole("button",{name:"Check",exact:true}).click();
+  await expect(pane).toContainText("present / present");
+  const checks=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==="vpn_health"));
+  expect(checks).toEqual([{cmd:"vpn_health",args:{profileId:UUID}}]);
+  expect(JSON.stringify(checks)).not.toMatch(/password|secret|address|route|dns/i);
+  await pane.getByRole("button",{name:"Refresh VPNs"}).click();
+  await expect(pane).toContainText("Not checked");
 });

@@ -20,6 +20,17 @@ pub struct VpnProfile {
     control_allowed: bool, // unsupported encryption policies remain read-only
 }
 
+/// Presence of OS-reported routes/DNS on this active profile. This does not
+/// prove that traffic or DNS queries traverse the VPN correctly.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all="camelCase")]
+pub struct VpnHealth {
+    profile_id:String,
+    active:bool,
+    route_configured:Option<bool>,
+    dns_configured:Option<bool>,
+}
+
 /// Process-wide guard for mutations of system-owned VPN profiles.
 /// The worker owns this guard: cancelling an IPC call cannot unlock it while
 /// a blocking OS command is still running.
@@ -219,6 +230,22 @@ fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
     nmcli(&["-w","30","connection",verb,"uuid",&profile.id]).map(|_|())
 }
 
+#[cfg(target_os="linux")]
+fn health_impl(profile:&VpnProfile)->VpnHealth {
+    let mut health=VpnHealth{profile_id:profile.id.clone(),active:profile.active,
+        route_configured:None,dns_configured:None};
+    if !profile.active{return health;}
+    let deadline=Instant::now()+Duration::from_secs(10);
+    // Active UUID, not display name. Capture no raw addresses in the result.
+    health.route_configured=nmcli_until(&["-g","IP4.ROUTE,IP6.ROUTE", "connection",
+        "show","--active","uuid",&profile.id],deadline).ok()
+        .map(|v|!v.trim().is_empty());
+    health.dns_configured=nmcli_until(&["-g","IP4.DNS,IP6.DNS", "connection",
+        "show","--active","uuid",&profile.id],deadline).ok()
+        .map(|v|!v.trim().is_empty());
+    health
+}
+
 #[cfg(windows)]
 fn windows_tool(suffix:&[&str])->Result<Command,String> {
     let root=std::env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
@@ -280,6 +307,41 @@ fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
     if !connect {cmd.arg("/disconnect");}
     output(cmd).map(|_|())
 }
+
+#[cfg(windows)]
+const WINDOWS_HEALTH:&str=r#"
+ $ErrorActionPreference='Stop'
+ [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+ $alias = $env:NODEDESK_VPN_ALIAS
+ $iface = @(Get-NetIPInterface -InterfaceAlias $alias -ErrorAction SilentlyContinue)
+ if($iface.Count -eq 0) {
+   [pscustomobject]@{routeConfigured=$null;dnsConfigured=$null} | ConvertTo-Json -Compress
+ } else {
+   $ids = @($iface | Select-Object -ExpandProperty InterfaceIndex -Unique)
+   $routes = @(Get-NetRoute -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.InterfaceIndex })
+   $dns = @(Get-DnsClientServerAddress -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.InterfaceIndex -and @($_.ServerAddresses).Count -gt 0 })
+   [pscustomobject]@{routeConfigured=($routes.Count -gt 0);dnsConfigured=($dns.Count -gt 0)} | ConvertTo-Json -Compress
+ }
+"#;
+#[cfg(windows)]
+fn health_impl(profile:&VpnProfile)->VpnHealth {
+    let mut health=VpnHealth{profile_id:profile.id.clone(),active:profile.active,
+        route_configured:None,dns_configured:None};
+    if !profile.active{return health;}
+    let Ok(mut cmd)=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"])
+        else {return health};
+    cmd.args(["-NoProfile","-NonInteractive","-Command",WINDOWS_HEALTH]);
+    cmd.env("NODEDESK_VPN_ALIAS",&profile.name);
+    if let Ok(raw)=output_with_timeout(&mut cmd,Duration::from_secs(10)) {
+        #[derive(Deserialize)] #[serde(rename_all="camelCase")]
+        struct Status {route_configured:Option<bool>,dns_configured:Option<bool>}
+        if let Ok(status)=serde_json::from_str::<Status>(raw.trim()) {
+            health.route_configured=status.route_configured;
+            health.dns_configured=status.dns_configured;
+        }
+    }
+    health
+}
 #[cfg(not(any(windows,target_os="linux")))]
 fn list_impl()->Result<Vec<VpnProfile>,String>{Err("VPN manager is supported only on Windows and Linux".into())}
 #[cfg(not(any(windows,target_os="linux")))]
@@ -288,11 +350,25 @@ fn list_impl_until(_deadline:Instant)->Result<Vec<VpnProfile>,String>{list_impl(
 fn execute_impl(_profile:&VpnProfile,_connect:bool)->Result<(),String>{
     Err("VPN manager is supported only on Windows and Linux".into())
 }
+#[cfg(not(any(windows,target_os="linux")))]
+fn health_impl(profile:&VpnProfile)->VpnHealth {
+    VpnHealth{profile_id:profile.id.clone(),active:profile.active,
+        route_configured:None,dns_configured:None}
+}
 
 #[tauri::command]
 pub async fn vpn_list()->Result<Vec<VpnProfile>,String>{
     tauri::async_runtime::spawn_blocking(list_impl).await
         .map_err(|_|"VPN list worker failed".to_string())?
+}
+#[tauri::command]
+pub async fn vpn_health(profile_id:String)->Result<VpnHealth,String>{
+    if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile=list_impl()?.into_iter().find(|p|p.id.eq_ignore_ascii_case(&profile_id))
+            .ok_or("System VPN profile is missing or unsupported")?;
+        Ok(health_impl(&profile))
+    }).await.map_err(|_|"VPN health worker failed".to_string())?
 }
 #[tauri::command]
 pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expected_name:String,expected_kind:String,expected_active:bool,connect:bool)->Result<Vec<VpnProfile>,String>{
@@ -320,6 +396,34 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inactive_health_never_claims_route_or_dns_evidence() {
+        let profile=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Disposable fixture".into(),kind:"WireGuard".into(),active:false,
+            control_allowed:true};
+        let result=health_impl(&profile);
+        assert!(!result.active);
+        assert_eq!(result.route_configured,None);
+        assert_eq!(result.dns_configured,None);
+        assert!(!serde_json::to_string(&result).unwrap().contains("Disposable fixture"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_health_query_uses_only_mocked_network_objects() {
+        let mock=r#"
+function Get-NetIPInterface { [pscustomobject]@{InterfaceIndex=77} }
+function Get-NetRoute { [pscustomobject]@{InterfaceIndex=77;DestinationPrefix='10.99.0.0/16'} }
+function Get-DnsClientServerAddress { [pscustomobject]@{InterfaceIndex=77;ServerAddresses=@('192.0.2.53')} }
+"#;
+        let mut cmd=windows_tool(&["System32","WindowsPowerShell","v1.0","powershell.exe"]).unwrap();
+        cmd.args(["-NoProfile","-NonInteractive","-Command",&format!("{mock}\n{WINDOWS_HEALTH}")]);
+        cmd.env("NODEDESK_VPN_ALIAS","fixture-only");
+        let raw=output(cmd).unwrap();
+        assert!(raw.contains("\"routeConfigured\":true"));
+        assert!(raw.contains("\"dnsConfigured\":true"));
+        assert!(!raw.contains("192.0.2.53"));
+        assert!(!raw.contains("10.99.0.0"));
+    }
     #[test]
     fn vpn_enumeration_rejects_an_expired_total_deadline() {
         let expired=Instant::now()-Duration::from_millis(1);

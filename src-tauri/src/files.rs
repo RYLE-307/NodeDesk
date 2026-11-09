@@ -1118,16 +1118,18 @@ mod tests {
         let known_without_second=root.join("twohop-missing-second");
         let partial=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}");
         fs::write(&known_without_second,partial).unwrap();
-        let make_config=|path:&std::path::Path,trust:&std::path::Path| {
+        let make_config=|path:&std::path::Path,trust:&std::path::Path,identity:&std::path::Path| {
             fs::write(path,format!(
                 "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
-                trust.display(),root.join("client").display())).unwrap();
+                trust.display(),identity.display())).unwrap();
             fs::set_permissions(path,fs::Permissions::from_mode(0o600)).unwrap();
         };
         let full_config=root.join("twohop-ssh-config");
         let missing_config=root.join("twohop-second-untrusted-config");
-        make_config(&full_config,&known);
-        make_config(&missing_config,&known_without_second);
+        make_config(&full_config,&known,&root.join("client"));
+        make_config(&missing_config,&known_without_second,&root.join("client"));
+        let rejected_identity_config=root.join("twohop-wrong-identity-config");
+        make_config(&rejected_identity_config,&known,&root.join("other"));
         let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
             "host":"127.0.0.1","port":22230,"username":user,
             "next":{"host":"127.0.0.1","port":22231,"username":user}
@@ -1156,6 +1158,12 @@ mod tests {
         let bad=Operation::default();
         assert!(spawn_transport(make_command(&missing_config),&bad).is_err());
         bad.stop();
+        // All host keys are trusted, but none of the disposable listeners
+        // accepts this unrelated private key. A failed first-hop login must
+        // not open an SFTP stream or request an interactive fallback.
+        let denied=Operation::default();
+        assert!(spawn_transport(make_command(&rejected_identity_config),&denied).is_err());
+        denied.stop();
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");

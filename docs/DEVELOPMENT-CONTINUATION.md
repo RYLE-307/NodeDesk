@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 VNC gateway clipboard increment (verification pending)
+
+- Previous RDP/NSIS commit `c8c3b33` is pushed. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580185235)
+  has passed Windows/Ubuntu frontend, browser, Windows/Ubuntu desktop and
+  Windows package preview; Arch preview is still running at this checkpoint.
+- The existing noVNC WSS viewer now exposes per-session opt-in clipboard only
+  after an authenticated RFB connection. Receiving remote text never writes
+  to the OS clipboard automatically. Copy and send are separate actions;
+  sending requires confirmation and is disabled in view-only mode. Shared
+  validation bounds text to 64 KiB UTF-8 and rejects control/bidi characters.
+  Disconnect or tab teardown clears the retained remote text.
+- Local frontend unit tests (52) and production build passed. Browser coverage
+  checks clipboard controls are absent before VNC authentication with a
+  disposable mocked WSS failure. Full RFB clipboard exchange and native
+  Windows/Arch acceptance remain NOT TESTED. No real VNC endpoint was used.
+- **VNC-01 remains open:** the viewer requires an operator WSS/RFB proxy;
+  direct TCP, RFB identity acceptance, reconnect and native acceptance remain
+  unimplemented or untested. Next priority is direct native desktop clients
+  or a documented gateway deployment with disposable end-to-end fixtures;
+  then VPN route/DNS lifecycle evidence.
+
 ### 2026-11-09 RDP gateway clipboard increment (verification pending)
 
 - Current branch: `feat/post-v0.9-roadmap`; prior HEAD `9136c0a` is pushed.

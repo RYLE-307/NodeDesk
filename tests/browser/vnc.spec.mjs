@@ -79,3 +79,25 @@ test("embedded VNC refuses URL password and query-token leakage",async({page})=>
   }
 });
 
+test("embedded VNC clipboard is absent before authenticated RFB connection",async({page})=>{
+  await page.addInitScript(()=>{
+    const NativeWebSocket=window.WebSocket;
+    window.WebSocket=function(url,protocol){
+      if(!String(url).startsWith("wss://fixture.example.test/"))
+        return new NativeWebSocket(url,protocol);
+      const socket={readyState:0,send(){},close(){this.readyState=3;}};
+      setTimeout(()=>socket.onerror?.(new Event("error")),0);
+      return socket;
+    };
+  });
+  const workspace=await open(page);
+  const viewer=workspace.locator(".vnc-embedded");
+  await expect(viewer.getByRole("button",{name:"Copy remote text"})).toHaveCount(0);
+  await expect(viewer.getByRole("button",{name:"Send local text"})).toHaveCount(0);
+  await viewer.getByRole("textbox",{name:"WSS endpoint"}).fill("wss://fixture.example.test/rfb");
+  // A refused disposable WSS connection never exposes clipboard controls.
+  await viewer.getByRole("button",{name:"Connect embedded"}).click();
+  await expect(viewer.getByRole("button",{name:"Copy remote text"})).toHaveCount(0);
+  expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain("fixture-only-secret");
+});
+

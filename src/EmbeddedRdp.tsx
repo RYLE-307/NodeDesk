@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from "react";
 import Guacamole from "@pelotech/guacamole-common-js";
 import {isTauri} from "@tauri-apps/api/core";
-import {boundedRdpClipboard} from "./rdpClipboard";
+import {boundedRemoteClipboard} from "./remoteClipboard";
 import {
   guacBase, guacLogin, guacConnections, guacLogout, guacTunnelQuery,
   guacWssTunnel,
@@ -187,7 +187,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
         let received="",valid=true;
         reader.ontext=chunk=>{
           if(!valid||session.current!==client)return;
-          try{received=boundedRdpClipboard(received+chunk);}
+          try{received=boundedRemoteClipboard(received+chunk);}
           catch{valid=false;received="";}
         };
         reader.onend=()=>{
@@ -233,7 +233,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
   async function copyRemoteClipboard(){
     if(phaseRef.current!=="connected"||!clipboardEnabledRef.current||!remoteClipboard.current)return;
     try{
-      await navigator.clipboard.writeText(boundedRdpClipboard(remoteClipboard.current));
+      await navigator.clipboard.writeText(boundedRemoteClipboard(remoteClipboard.current));
       setMessage(ru?"Удалённый текст скопирован по вашему запросу.":"Remote text copied on request.");
     }catch{setError(ru?"Локальный буфер обмена недоступен.":"Local clipboard unavailable.");}
   }
@@ -243,7 +243,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
     if(!window.confirm(ru?"Передать текст из локального буфера обмена на удалённый компьютер?":
       "Send local clipboard text to the remote desktop?"))return;
     try{
-      const value=boundedRdpClipboard(await navigator.clipboard.readText());
+      const value=boundedRemoteClipboard(await navigator.clipboard.readText());
       if(session.current!==client||!clipboardEnabledRef.current)return;
       const writer=new Guacamole.StringWriter(client.createClipboardStream("text/plain"));
       writer.sendText(value);writer.sendEnd();

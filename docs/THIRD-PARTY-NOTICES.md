@@ -28,6 +28,10 @@ This development branch also directly uses `sysinfo` 0.39.6 for local metrics
 The OS credential vault directly uses `keyring` 3.6.3 (MIT OR Apache-2.0),
 with Windows Credential Manager and Linux Secret Service backends. Its
 transitive and native DBus dependencies require the same release audit.
+The direct RDP implementation uses IronRDP at pinned source revision
+`b553ed4315655d9003e37d7bcae13a029405b845` (MIT OR Apache-2.0),
+plus its transitive protocol, TLS and cryptography crates. Audit their locked
+licenses and build requirements before redistribution.
 
 Upstream resources:
 - [noVNC license / source](https://github.com/novnc/noVNC)
@@ -36,6 +40,7 @@ Upstream resources:
 - [xterm.js](https://github.com/xtermjs/xterm.js)
 - [React](https://github.com/facebook/react)
 - [keyring-rs](https://github.com/open-source-cooperative/keyring-rs)
+- [IronRDP](https://github.com/Devolutions/IronRDP)
 
 The built executable has not yet been manually accepted on native Windows
 and Arch. No release archives or third-party binaries are claimed here.

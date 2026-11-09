@@ -19,6 +19,8 @@ async function open(page,language="en",launchError=false) {
       unregisterCallback(){},
       async invoke(cmd,args) {
         window.fixture.calls.push({cmd,args});
+        if(cmd==="rdp_direct_connect"||cmd==="rdp_direct_disconnect"||
+            cmd==="rdp_direct_resize"||cmd==="rdp_direct_input")return;
         if(cmd!=="rdp_launch") throw new Error("Unexpected command");
         if(launchError) throw new Error("RDP client unavailable");
         return {client:"sdl-freerdp3",externalWindow:true};
@@ -42,6 +44,29 @@ test("RDP never autoconnects; explicit launch sends only catalog target",async({
   }});
   await expect(workspace).toContainText("embedded viewer above requires a separately configured Guacamole/WSS gateway");
   await expect(workspace).toContainText("Verify the server certificate");
+});
+test("direct RDP requires explicit credentials, forwards only catalog endpoint and clears input",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await expect(direct).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+  await direct.getByLabel("RDP password for this session").fill("disposable-only-password");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  await expect(direct.getByLabel("RDP password for this session")).toHaveValue("");
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect")
+    .map(c=>({cmd:c.cmd,target:c.args.target,password:c.args.password,
+      width:c.args.width,height:c.args.height})));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].target).toEqual({id:"rdp-fixture",host:"rdp.example.test",
+    port:3390,username:"LAB\\alice"});
+  expect(calls[0].password).toBe("disposable-only-password");
+  expect(calls[0].width).toBeGreaterThanOrEqual(320);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
+  expect(await page.evaluate(()=>JSON.stringify(localStorage)+JSON.stringify(sessionStorage)))
+    .not.toContain("disposable-only-password");
+  await direct.getByRole("button",{name:"Disconnect"}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.some(c=>
+    c.cmd==="rdp_direct_disconnect"&&c.args.id==="rdp-fixture"))).toBe(true);
 });
 test("saved SHA256 pin reaches the launcher and invalid edits are refused",async({page})=>{
   const workspace=await open(page);

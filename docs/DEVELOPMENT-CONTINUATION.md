@@ -6,6 +6,33 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-09 direct RDP implementation in progress (CI pending)
+
+- Branch `feat/post-v0.9-roadmap`; last verified pushed HEAD before this work
+  is `c938076`. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42581103542)
+  passed 6/6, as did [VNC CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580735514)
+  and [RDP/NSIS CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580185235).
+- Reviewed IronRDP's published `ironrdp-client 0.1.0`: its `ironrdp-tls`
+  verifier unconditionally accepts certificates. Do **not** use that release
+  for direct RDP. The current implementation pins upstream revision
+  `b553ed4315655d9003e37d7bcae13a029405b845`, which exposes explicit
+  `CertificateValidation::Strict`, and sets CredSSP on while disabling the
+  legacy TLS login path.
+- Added an IronRDP direct client backend with bounded framebuffer PNG events,
+  keyboard/mouse input, resize, bounded automatic reconnect and close on tab
+  or window teardown. The UI never writes the password or frame to WebView
+  storage. Saved SHA256 pins fail closed because the new path does not yet
+  enforce an additional pin. The existing Guacamole and external modes stay
+  available.
+- This code has **not yet passed Rust CI**. Current frontend unit tests (52)
+  and production build passed; Rust formatting completed, but local Rust
+  compilation is blocked by absent MSVC `link.exe`. Run exact-head Windows,
+  Ubuntu and Arch CI and repair all failures before calling this path usable.
+  Native RDP against a disposable Windows server, clipboard, certificate
+  error UX and Windows/Arch GUI acceptance remain **NOT TESTED** or incomplete.
+- Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and clipboard,
+  then direct VNC, vault binding and remaining P0/P1. Never use real servers.
+
 ### 2026-11-09 VPN route/DNS presence increment (CI pending)
 
 - Previous VNC commit `85a30fc` is pushed; its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42580735514)

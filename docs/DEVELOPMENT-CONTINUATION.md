@@ -37,7 +37,7 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   [CI 42613611254](https://github.com/RYLE-307/NodeDesk/actions/runs/42613611254)
   has passed browser, both frontend jobs and Ubuntu desktop; Arch and Windows
   desktop were still running at the time of this checkpoint update.
-- Current uncommitted follow-up adds common physical keys, exact pointer
+- The clipboard commit adds common physical keys, exact pointer
   coordinates on mouse button events and an explicit per-session opt-in for
   IronRDP's native OS clipboard backend. Clipboard stays disabled by default;
   enabling it permits the remote machine to read/change the OS clipboard.
@@ -46,6 +46,11 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   **NOT TESTED**. The pinned IronRDP revision stores the password in a regular
   String and does not promise memory wiping; this remains an open security
   gate, even though it never enters persistent WebView storage.
+- Clipboard commit `be571194d1b557b9015960c8d3e41e9b779311d1` is pushed.
+  [CI 42615017352](https://github.com/RYLE-307/NodeDesk/actions/runs/42615017352)
+  found a Rust **test-only** method resolution error in the clipboard property
+  assertion on Ubuntu. The follow-up uses `PropertySet::get` directly and
+  requires a new exact-head CI. Browser and both frontend jobs passed.
   Native RDP against a disposable Windows server, clipboard, certificate
   error UX and Windows/Arch GUI acceptance remain **NOT TESTED** or incomplete.
 - Next: finish direct RDP CI, add disposable TLS/CredSSP fixture and native clipboard acceptance,

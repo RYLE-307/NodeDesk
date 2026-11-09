@@ -511,9 +511,15 @@ mod tests {
             settings.certificate_validation(),
             CertificateValidation::Strict
         );
-        assert_eq!(settings.properties().redirect_clipboard(), Some(false));
+        assert_eq!(
+            settings.properties().get::<bool>("redirectclipboard"),
+            Some(false)
+        );
         let with_clipboard = config(&target, "fixture-only".into(), 800, 600, true).unwrap();
-        assert_eq!(with_clipboard.properties().redirect_clipboard(), Some(true));
+        assert_eq!(
+            with_clipboard.properties().get::<bool>("redirectclipboard"),
+            Some(true)
+        );
         assert!(config(
             &Target {
                 host: "bad/host".into(),

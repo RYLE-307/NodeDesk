@@ -1,0 +1,2849 @@
+//! Quality presets, SetEncodings list construction, and the adaptive Auto
+//! tuner (PRD/09).
+//!
+//! [`AutoTuner`] keeps a windowed maximum of measured link capacity, decaying
+//! averages of decode time and of how much of each tick the session spends
+//! inside a FramebufferUpdate, walks the tier ladder in §3.2, and applies
+//! mandatory hysteresis: a tier change must be sustained before it is offered,
+//! and switches never happen more often than one per cooldown. Both of those
+//! are split by direction (see [`SUSTAIN_UP`]), because a load spike and a
+//! recovery are not the same event and should not be priced the same.
+//!
+//! The tuner has two actuators and they are not interchangeable. The tier
+//! ladder changes BYTES PER UPDATE, which is the right lever when the wire is
+//! the constraint. [`AutoTuner::wants_paced_updates`] asks the run loop to
+//! govern UPDATES PER SECOND, which is the only lever that helps when the
+//! client is drowning in frames it can carry individually but not at the rate
+//! they arrive. Video is the case that separates them: every rect is small and
+//! cheap, and there are sixty of them a second.
+
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+
+use crate::types::{encoding, ColorDepth, QualityPreset, QualitySettings, ServerCapabilities};
+
+/// How long a desired point must hold before an UPGRADE is offered, and the
+/// minimum spacing between accepted upgrades ([`COOLDOWN_UP`]). The downgrade
+/// side ([`SUSTAIN_DOWN`], [`COOLDOWN_DOWN`]) is deliberately much shorter.
+///
+/// These used to be a single `SUSTAIN` of 2 s and a single `COOLDOWN` of 5 s
+/// applied to every change in either direction, which prices a load spike and
+/// a recovery identically. They are not the same event. Coming down is the
+/// response to something that is already hurting the session, and up to seven
+/// seconds of an unusable picture while the hysteresis runs its course is the
+/// entire complaint. Going up is speculative: it is the tuner betting that
+/// good conditions will hold, and betting slowly costs nothing but a few extra
+/// seconds of a slightly softer image.
+///
+/// The anti-oscillation property is carried entirely by this slow side, which
+/// is the correct place for it. A ladder that comes down quickly and climbs
+/// slowly cannot cycle, because every cycle has to pay for the climb.
+pub const SUSTAIN_UP: Duration = Duration::from_secs(2);
+/// How long a desired point must hold before a DOWNGRADE is offered.
+///
+/// One second, not lower: the run loop calls [`AutoTuner::observe`] once per
+/// stats tick (one second), so anything shorter would act on a single reading,
+/// and one reading is a sample rather than a trend. Together with
+/// [`COOLDOWN_DOWN`] the worst case from a load spike to a lower tier is about
+/// two seconds, against seven under the old symmetric constants.
+pub const SUSTAIN_DOWN: Duration = Duration::from_secs(1);
+/// Minimum spacing between accepted upgrades. See [`SUSTAIN_UP`].
+pub const COOLDOWN_UP: Duration = Duration::from_secs(5);
+/// Minimum spacing between accepted downgrades. See [`SUSTAIN_DOWN`].
+pub const COOLDOWN_DOWN: Duration = Duration::from_secs(1);
+/// Client decode budget per frame; sustained overruns trigger compression
+/// relief (PRD/09 §3.2).
+pub const FRAME_BUDGET_MS: f32 = 16.0;
+
+/// EWMA time constant. ~0.7 s gives an effective window of roughly 2 s.
+const TAU_S: f64 = 0.7;
+
+/// A burst must gather this many bytes before it is timed: a packet TRAIN
+/// (~11 MSS), not a pair.
+///
+/// Timing one segment measures the *last hop's* line rate, a segment coming
+/// off a gigabit NIC always reads gigabit whatever actually fed it. Requiring
+/// a train bounds the error from residual buffering to roughly `1 + gap/T`
+/// where `T = MIN_BURST_BYTES/rate`: at 1 Mbit/s, T is ~131ms so the error is
+/// a few percent; at 1 Gbit/s the bound is meaningless, but the link is
+/// already fast so it decides nothing. The slower the true link, the tighter
+/// the guarantee.
+pub(crate) const MIN_BURST_BYTES: u64 = 16 * 1024;
+
+/// Minimum elapsed time for a completed burst to be trusted.
+///
+/// Below this we are timing syscall/wakeup overhead, not the wire, AND (the
+/// bug this bound used to miss at 100 µs) a kernel socket buffer or an
+/// in-process carrier (the SSH tunnel's mpsc channel) can hand a whole
+/// backlog to one `poll_read` in well under a millisecond: that backlog was
+/// genuinely queued, not delivered, but timing it over a sub-millisecond
+/// interval reads it as multi-gigabit regardless of the real link. Several
+/// milliseconds is long enough that a kernel/tunnel handoff (microseconds)
+/// cannot pass for it, while still being far shorter than any real stall this
+/// type needs to see through.
+pub(crate) const MIN_BURST_S: f64 = 2e-3;
+
+/// Reject a completed sample above this rate as a measurement artifact rather
+/// than fold it into the window: nothing this client is ever plugged into
+/// legitimately delivers more than this over the interface being measured, so
+/// a "sample" past it is backlog draining, not the wire, and folding it in
+/// would let one bad reading pin the ladder at High for up to `2*LINK_WINDOW`
+/// (see [`AutoTuner::record_link`]). [`MIN_BURST_S`] already filters most of
+/// these; this is the backstop for the ones that still clear it (a large
+/// enough backlog can span a few milliseconds and still be absurd).
+const PLAUSIBLE_CEILING_BPS: f64 = 2e9;
+
+/// Abandon a burst that has not gathered [`MIN_BURST_BYTES`] within this long,
+/// so an idle desktop can't slowly accrue traffic into a fake sample.
+const MAX_BURST_S: f64 = 4.0;
+
+/// How long a link-capacity sample stays eligible for the rotating max
+/// (see [`AutoTuner::record_link`]).
+const LINK_WINDOW: Duration = Duration::from_secs(5);
+
+/// Nominal tier boundaries (PRD/09 §3.2), named so the hysteresis math in
+/// [`Tier::from_link`] stays legible.
+const HIGH_BPS: f64 = 20e6;
+const MEDIUM_BPS: f64 = 5e6;
+const LOWISH_BPS: f64 = 1e6;
+
+/// Falling back below a boundary requires dropping under this fraction of
+/// it, so a link oscillating right at the nominal value does not flap the
+/// tier every sample: clearing the boundary upgrades, but only a genuine
+/// drop below 0.8x of it downgrades back.
+const DOWNGRADE_HYSTERESIS: f64 = 0.8;
+
+/// Relief (see [`AutoTuner::observe_at`]) only ever engages when the link is
+/// demonstrably fast enough that `decode_ms` measuring the CPU rather than
+/// the wire is a safe assumption (PRD/09 §3.2, and the module doc on
+/// `decode_ms`). `decode_rect` awaits socket reads, so on anything slower,
+/// `decode_ms` is mostly telling you the LINK is slow, and reducing
+/// compression in response is backwards. This threshold coincides with the
+/// High tier's nominal boundary: relief is a High-tier-only behaviour.
+const RELIEF_MIN_CAPACITY_BPS: f64 = HIGH_BPS;
+
+/// Relief releases once `decode_ms` falls back under this fraction of
+/// [`FRAME_BUDGET_MS`], not the instant it dips under the budget itself, so a
+/// decode time hovering right at the budget does not flicker relief on and
+/// off every sample.
+const RELIEF_OFF_RATIO: f32 = 0.75;
+
+/// Floor for the compression level the automatic ladder may ask for.
+///
+/// Tight compression level 0 does not mean "a bit less zlib", it means **no
+/// zlib at all**: the server ships the basic-compression sub-encodings raw.
+/// Measured against TightVNC on a 2880x1800 desktop that is a 5-10x increase
+/// in payload, which is never a trade worth making to save the small amount of
+/// client CPU that inflate costs.
+///
+/// Without this floor, relief on the High tier computed
+/// `1u8.saturating_sub(2) == 0` and latched there permanently, via a feedback
+/// loop that is easy to miss: relief triggers on `decode_ms`, `decode_rect`
+/// awaits socket reads (see [`RELIEF_MIN_CAPACITY_BPS`]), and uncompressed
+/// rects take LONGER to read off the wire. So the relief that was supposed to
+/// bring `decode_ms` down pushed it up, which kept relief engaged, which kept
+/// compression at 0. Observed end state on a 82 Mbit/s link: a steady
+/// 9.9 MB/s per session, saturating both the link and the server's encoder,
+/// which starves every other client connected to that server.
+const MIN_AUTO_COMPRESSION: u8 = 1;
+
+/// Above this server response time, the SERVER is the constraint and the
+/// ladder must stop climbing, whatever the link can carry.
+///
+/// [`Tier::from_link`] chooses purely on measured link capacity, and its doc
+/// comment argues correctly that RTT is not capacity. That reasoning holds for
+/// ESTIMATING capacity and is incomplete as a control loop: it has no term for
+/// what the chosen tier costs, so on a fast link in front of a slow server it
+/// climbs to High and stays there while interactivity collapses.
+///
+/// Paired measurement against a real TightVNC-family server at 2880x1800 on an
+/// 82 Mbit/s link, alternating 30 s arms so remote screen activity could not
+/// drift between them, four rounds:
+///
+/// | tier   | duty cycle | throughput   | server response |
+/// |--------|-----------|--------------|-----------------|
+/// | High   | 42.7-43.2% | 36.3-36.5 Mbit/s | 426-434 ms  |
+/// | Medium | 17.7-28.4% | 10.5-17.1 Mbit/s | 18-20 ms (quiet rounds) |
+///
+/// High buys about twice the bandwidth and costs about twenty times the round
+/// trip. No user wants that trade, so cap the ladder once the server is
+/// visibly struggling. 100 ms is chosen to sit far above Medium's healthy
+/// 18-20 ms (so a well-behaved server is never capped) and far below High's
+/// 426 ms (so a struggling one always is).
+const SERVER_LATENCY_BUDGET_MS: f32 = 100.0;
+
+/// Release threshold for the cap, well under [`SERVER_LATENCY_BUDGET_MS`] so a
+/// server hovering near the budget does not toggle the cap every tick. Same
+/// asymmetric-hysteresis reasoning as [`RELIEF_OFF_RATIO`].
+const SERVER_LATENCY_RELEASE_MS: f32 = 60.0;
+
+/// How long a tier stays penalised after it provoked the latency cap.
+///
+/// Without this the cap limit-cycles, because the release criterion is
+/// measured in the state the cap itself created. Measured operating points on
+/// the server that motivated the cap: 426 to 434 ms at High, 18 to 20 ms at
+/// Medium. So the moment the cap drops the ladder to Medium the very next
+/// sample reads 19 ms, the cap releases, `from_link` sees a fast link and
+/// climbs straight back to High, and latency returns to 430 ms. With
+/// [`SUSTAIN_UP`] at 2 s and [`COOLDOWN_UP`] at 5 s that is a visible flap every
+/// 12 to 16 seconds, forever.
+///
+/// No hysteresis BAND can fix this: the two operating points are 19 ms and
+/// 430 ms, and any threshold between them is stable under one tier and
+/// unstable under the other, which is the definition of a limit cycle. What is
+/// needed is a memory of "we tried that and it was bad" that survives the
+/// improvement its own remedy produced.
+///
+/// Two minutes is chosen so the bad state is a small fraction of the time
+/// (roughly 7 s to re-probe against 120 s of good behaviour, about 5%) while
+/// still re-checking often enough to pick up a genuine improvement, for
+/// instance the remote user closing whatever was repainting the screen.
+const LATENCY_PENALTY: Duration = Duration::from_secs(120);
+
+/// The best tier the ladder may choose while the latency cap is engaged.
+///
+/// Medium, not lower: the measurement above shows Medium already restores an
+/// 18-20 ms round trip on the server that provoked the cap, so dropping
+/// further would sacrifice picture quality for latency that has already been
+/// recovered.
+const LATENCY_CAP_TIER: Tier = Tier::Medium;
+
+/// Time constant for the duty-cycle average, deliberately much longer than
+/// [`TAU_S`].
+///
+/// Duty cycle is the one input that legitimately spends whole seconds pinned
+/// at 1.0 without anything being wrong: dragging a window, scrolling a long
+/// page, or any other burst of real work does it. What distinguishes the
+/// condition worth acting on is that it does not stop. Three seconds gives an
+/// effective window of roughly eight, so a single busy tick moves the average
+/// by about a quarter of the way and it takes just under four seconds of
+/// near-total saturation to cross [`DUTY_BUDGET`] from an idle baseline. That
+/// is the shortest interval over which "the session is saturated" is a
+/// statement about the session rather than about one thing the user did.
+const DUTY_TAU_S: f64 = 3.0;
+
+/// Above this fraction of the tick spent inside FramebufferUpdate handling,
+/// the CLIENT is the constraint and the ladder must stop climbing, whatever
+/// the link can carry.
+///
+/// This is the live client-side brake. Every other one is structurally dead on
+/// the workload that needs it most. `rtt_ms` is not read at all (see
+/// [`AutoTuner::observe`]). `decode_ms` measures almost nothing under video,
+/// because JPEG and H.264 rects are passed through undecoded by this crate and
+/// decoded in the webview, so the signal collapses toward zero on exactly the
+/// content that is drowning the session. And the
+/// [`SERVER_LATENCY_BUDGET_MS`] cap can only fire from update-pipeline round
+/// trips, which the run loop cannot produce at all on a server that supports
+/// Fence or ContinuousUpdates, which is most modern servers. Duty cycle is
+/// measured locally, every tick, on every server, whatever the encoding.
+///
+/// 70% is chosen conservatively and it is a starting value picked by argument,
+/// not a measured one. Two things bound it. The paired measurement recorded
+/// under [`SERVER_LATENCY_BUDGET_MS`] found 42.7 to 43.2% duty at the High
+/// tier on a server that was visibly struggling, and 17.7 to 28.4% at Medium
+/// on an ordinary desktop, so anything at or under about 45% would fire on
+/// sessions that are merely busy. At the other end, a client spending seven of
+/// every ten milliseconds inside update handling has almost nothing left for
+/// input, rendering or the rest of the select loop, which is the unusable
+/// state this brake exists to catch, and under video the real figure sits near
+/// 1.0 rather than near the threshold, so a wide margin costs no sensitivity
+/// where it matters. Revisit it against a measured video session.
+const DUTY_BUDGET: f32 = 0.70;
+
+/// Release threshold for the duty cap, well under [`DUTY_BUDGET`] so a session
+/// hovering near the budget does not toggle the cap every tick. Same
+/// asymmetric-hysteresis reasoning as [`SERVER_LATENCY_RELEASE_MS`], and 50%
+/// still sits above the 28% measured on a busy but healthy desktop, so a
+/// session that genuinely recovered releases rather than sitting capped.
+const DUTY_RELEASE: f32 = 0.50;
+
+/// How long the duty cap holds after the reading that provoked it.
+///
+/// Exactly the limit cycle [`LATENCY_PENALTY`] describes, in the rate domain:
+/// the cap's own remedy (pacing the updates) is what brings the duty cycle
+/// down, so the release criterion is measured in the state the cap created.
+/// Without a memory the cap would release the moment pacing worked, the flood
+/// would resume, and ContinuousUpdates would be toggled on and off every few
+/// seconds forever.
+///
+/// One minute rather than [`LATENCY_PENALTY`]'s two. The thing the latency cap
+/// remembers is a property of the machine at the other end and will still be
+/// true in two minutes. The thing this one remembers is a video clip or a
+/// window animation, which is transient by nature, so re-probing sooner
+/// recovers the unpaced state sooner and costs about seven seconds of flood
+/// per minute, roughly a tenth of the time, against a permanently paced
+/// session.
+const DUTY_PENALTY: Duration = Duration::from_secs(60);
+
+/// The best tier the ladder may choose while the duty cap is engaged.
+///
+/// Medium, the same rung [`LATENCY_CAP_TIER`] uses, and for a stronger reason
+/// here: a high duty cycle is a RATE problem, and the ladder only moves bytes
+/// per update, so capping it is the secondary measure and
+/// [`AutoTuner::wants_paced_updates`] is the one that actually addresses the
+/// condition. Capping exists mainly to stop the ladder doing the opposite of
+/// what is needed, which is what it did before: on a fast link the burst
+/// sampler measures a genuinely fast wire during video, so the ladder climbed
+/// to High, the most expensive operating point it has, a few seconds after the
+/// video started.
+const DUTY_CAP_TIER: Tier = Tier::Medium;
+
+/// Duty at which the cap drops a second rung, to [`DUTY_DEEP_CAP_TIER`].
+///
+/// Medium alone was not enough, and this is measured rather than reasoned. On
+/// a 1920x1080 Windows desktop playing a YouTube video, the duty cycle sat
+/// between 0.72 and 0.99 with the cap already holding the ladder at Medium,
+/// and a right-click menu took 1359 ms to appear. Forced to Low by hand, on
+/// the same video: duty 0.44 to 0.55, and the menu appeared in 508 ms. So
+/// there IS a rung below Medium that buys back interactivity, and the comment
+/// that used to sit here, that dropping below Medium trades picture quality
+/// against a problem it cannot fix, was wrong.
+///
+/// Above 0.85 the session is spending almost every millisecond inside update
+/// handling and has nothing left for the person driving it. Below that, the
+/// Medium cap plus pacing is the gentler answer and keeps the picture.
+const DUTY_DEEP_BUDGET: f32 = 0.85;
+
+/// Release threshold for the deep rung, mirroring [`DUTY_RELEASE`]'s job for
+/// the first one: well under the engage threshold so a session hovering at the
+/// budget does not step up and down between Medium and Low.
+const DUTY_DEEP_RELEASE: f32 = 0.65;
+
+/// Where the deep rung caps. Low is jpeg quality 2, which measured 4.6 MB/s
+/// against Medium's 6.4 on the same video: fewer and smaller tiles, which is
+/// what both the server's encoder and this client's decoder are drowning in.
+const DUTY_DEEP_CAP_TIER: Tier = Tier::Low;
+
+/// The duty cap only engages when the link has also been measured at or above
+/// this rate.
+///
+/// A high duty cycle on its own does not say WHAT is saturating: a slow link
+/// and a slow encoder both leave the client parked inside an update. The
+/// documentation on `SessionStats::server_duty_cycle` prescribes the pairing
+/// directly: high duty with high throughput is a loaded link, high duty with
+/// low throughput is a struggling server. A struggling server is the
+/// Raspberry Pi case this crate has always refused to punish, and pacing it
+/// would slow it down further for nothing.
+///
+/// The Medium boundary is the right place to draw the line, because below it
+/// the ladder's own capacity term is already walking the session down and a
+/// cap at Medium would be a no-op anyway. Note that until a burst has ever
+/// completed, [`AutoTuner::capacity_bps`] reports the seeded 10 Mbit/s, so an
+/// unmeasured link counts as fast enough: the brake stays armed on a session
+/// so continuously saturated that the socket never goes empty long enough for
+/// [`LinkMeter`] to open a burst, which is precisely the session that needs
+/// it.
+const DUTY_MIN_CAPACITY_BPS: f64 = MEDIUM_BPS;
+
+/// Stall-anchored burst sampler (BBR's delivery-rate model, applied to a
+/// single TCP read side).
+///
+/// Soundness argument: if the socket was observed EMPTY at t0, and B bytes
+/// have been handed to us by t1, then all B bytes crossed the wire within
+/// `[t0, t1]`, so the link carried at least `B / (t1 - t0)`. That is a valid
+/// LOWER BOUND on capacity regardless of how slow the server's encoder is,
+/// because a slow link cannot physically deliver a fast burst.
+///
+/// There is deliberately NO stall-classification heuristic here: at 1 Mbit/s
+/// an inter-segment gap (~12 ms) and a Raspberry Pi encode stall (~30 ms) are
+/// the same order of magnitude, so no threshold reliably tells one from the
+/// other. A burst that straddles a server stall just reports a smaller
+/// number and loses to the windowed max (see [`AutoTuner::record_link`]);
+/// it is never wrong, only less tight.
+///
+/// Two further bounds keep the anchor itself honest against backlog, not
+/// stalls: a completed burst must SPAN at least [`MIN_BURST_S`] of wall
+/// clock, so a kernel socket buffer or an in-process carrier (the SSH
+/// tunnel's mpsc channel) handing a whole backlog to one read cannot read as
+/// an instantaneous, arbitrarily fast transfer; and any sample that still
+/// clears that bar but comes out above [`PLAUSIBLE_CEILING_BPS`] is dropped
+/// as a measurement artifact rather than folded into the window. Neither
+/// bound can make a genuinely slow link look fast: both only ever throw a
+/// sample away, never inflate one.
+#[derive(Debug, Default)]
+pub(crate) struct LinkMeter {
+    /// The socket has been observed empty (a `Poll::Pending`) since the last
+    /// completed burst.
+    drained: bool,
+    /// When the current burst started, if one is open.
+    started: Option<Instant>,
+    /// Bytes accumulated in the current burst.
+    bytes: u64,
+}
+
+impl LinkMeter {
+    /// Record that a poll found the socket empty. Must NOT end a burst in
+    /// progress: on a genuinely slow link the socket goes empty between
+    /// every segment, so ending bursts on stall would make slow links
+    /// unmeasurable, the exact opposite of this type's purpose.
+    pub(crate) fn stalled(&mut self) {
+        self.drained = true;
+    }
+
+    /// Record `n` bytes delivered at `now`. Returns a completed sample in
+    /// bits/sec, if this delivery completed one.
+    pub(crate) fn received(&mut self, now: Instant, n: usize) -> Option<f64> {
+        if n == 0 {
+            return None;
+        }
+        if self.started.is_none() {
+            if !self.drained {
+                // No burst running and the socket was never observed empty:
+                // there is nothing to anchor a start time to.
+                return None;
+            }
+            // The bytes that just ENDED the stall are not counted: they had
+            // already queued while we were decoding, and crediting them to an
+            // interval they did not cross the wire in is exactly how a slow
+            // link reads as gigabit.
+            self.drained = false;
+            self.started = Some(now);
+            self.bytes = 0;
+            return None;
+        }
+
+        let started = self.started.expect("checked above");
+        self.bytes += n as u64;
+
+        // Computed BEFORE the byte-threshold check (and used by it): a
+        // delivery that happens to cross MIN_BURST_BYTES after the burst has
+        // sat open for MAX_BURST_S must still be abandoned. It used to only
+        // be checked in the branch below, so a burst that lingered under
+        // threshold for 30 s and then finally crossed it on one delivery
+        // completed anyway, timed over the whole 30 s, reading a gigabit LAN
+        // as ~5 kbit/s.
+        let elapsed = now.saturating_duration_since(started).as_secs_f64();
+        if elapsed >= MAX_BURST_S {
+            // This burst has been open too long: an idle desktop trickling
+            // bytes must not slowly accrue into a fake sample, however this
+            // particular delivery happened to land relative to the byte
+            // threshold. Start over; a fresh stall is required to open the
+            // next one.
+            self.started = None;
+            self.bytes = 0;
+            self.drained = false;
+            return None;
+        }
+
+        if self.bytes < MIN_BURST_BYTES {
+            return None;
+        }
+
+        if elapsed < MIN_BURST_S {
+            // Too little wall-clock time has passed to trust either the
+            // clock or the sample: see `MIN_BURST_S`'s doc for why this also
+            // guards against backlog (kernel buffer / SSH tunnel mpsc)
+            // draining in a fraction of a millisecond. Keep accumulating.
+            return None;
+        }
+
+        let bps = self.bytes as f64 * 8.0 / elapsed;
+        if bps > PLAUSIBLE_CEILING_BPS {
+            // Implausible for any real last-hop this client measures:
+            // backlog draining, not the wire. Treat it like a burst that
+            // never happened rather than fold it into the window; a fresh
+            // stall is required to open the next one.
+            self.started = None;
+            self.bytes = 0;
+            self.drained = false;
+            return None;
+        }
+        // Reset so the next burst also starts from a known-empty socket.
+        self.started = None;
+        self.bytes = 0;
+        self.drained = false;
+        Some(bps)
+    }
+}
+
+/// Resolve a protocol neutral preset into the RFB knobs it means.
+///
+/// An extension trait because [`QualityPreset`] now lives in `remote-core`
+/// while [`QualitySettings`] stays here, so an inherent method cannot span the
+/// two (PRDRDP/02 §2.2.1). Every call site keeps its old spelling,
+/// `preset.settings()`, by importing this.
+pub trait QualityResolve {
+    fn settings(&self) -> QualitySettings;
+}
+
+impl QualityResolve for QualityPreset {
+    fn settings(&self) -> QualitySettings {
+        match self {
+            // Auto starts at Medium and adapts (see quality::AutoTuner).
+            QualityPreset::Auto | QualityPreset::Medium => QualitySettings {
+                jpeg_quality: 6,
+                compression: 3,
+                pixel_format: ColorDepth::Full,
+                allow_jpeg: true,
+                allow_h264: true,
+                grayscale_levels: None,
+            },
+            QualityPreset::High => QualitySettings {
+                jpeg_quality: 9,
+                compression: 1,
+                pixel_format: ColorDepth::Full,
+                allow_jpeg: true,
+                allow_h264: false,
+                grayscale_levels: None,
+            },
+            QualityPreset::Low => QualitySettings {
+                jpeg_quality: 2,
+                compression: 7,
+                pixel_format: ColorDepth::Palette256,
+                allow_jpeg: true,
+                allow_h264: true,
+                grayscale_levels: None,
+            },
+            QualityPreset::BlackAndWhite => QualitySettings {
+                jpeg_quality: 0,
+                compression: 9,
+                // Rides the SAME 8-bit palette wire format as `Low` (see
+                // `connection::pixel_format_for`): requesting full 32bpp true
+                // colour here used to make this the single MOST expensive
+                // preset on the wire, despite being the "survive a bad link"
+                // choice. The server's colour map threads through the exact
+                // path `Low` already uses; the client-side shader still does
+                // the black-and-white quantisation via `grayscale_levels`.
+                pixel_format: ColorDepth::Grayscale,
+                // JPEG on top of an already colour-reduced, near-flat image
+                // buys nothing: zlib/ZRLE over low-entropy palette indices
+                // compresses harder than re-encoding it as a lossy
+                // photographic format would.
+                allow_jpeg: false,
+                allow_h264: false,
+                grayscale_levels: Some(2),
+            },
+        }
+    }
+}
+
+/// Resolve a preset to concrete protocol knobs (Auto resolves to its
+/// starting point, Medium).
+pub fn settings_for(preset: QualityPreset) -> QualitySettings {
+    preset.settings()
+}
+
+/// Build the SetEncodings list for the given settings + server capabilities,
+/// in preference order, followed by the pseudo-encodings the client always
+/// wants, plus the JPEG-quality and compression-level pseudo-encodings.
+pub fn encodings_for(settings: &QualitySettings, caps: &ServerCapabilities) -> Vec<i32> {
+    // An Apple encrypted session gets its own short list whatever the
+    // quality: it must never advertise an encoding the client cannot decode,
+    // and the quality pseudo-encodings mean nothing to a Mac.
+    if caps.apple_session {
+        return crate::apple::session_encodings();
+    }
+    let mut v = Vec::with_capacity(24);
+
+    // Real encodings, most preferred first.
+    v.push(encoding::TIGHT);
+    if settings.allow_h264 && caps.supports_h264 {
+        v.push(encoding::OPEN_H264);
+    }
+    v.push(encoding::ZRLE);
+    v.push(encoding::COPY_RECT);
+    v.push(encoding::HEXTILE);
+    v.push(encoding::ZLIB);
+    v.push(encoding::RAW);
+
+    // Pseudo-encodings we always advertise.
+    v.extend_from_slice(&[
+        encoding::PSEUDO_LAST_RECT,
+        encoding::PSEUDO_DESKTOP_NAME,
+        encoding::PSEUDO_EXTENDED_DESKTOP_SIZE,
+        encoding::PSEUDO_CURSOR,
+        encoding::PSEUDO_X_CURSOR,
+        encoding::PSEUDO_CURSOR_WITH_ALPHA,
+        encoding::PSEUDO_FENCE,
+        encoding::PSEUDO_CONTINUOUS_UPDATES,
+        encoding::PSEUDO_EXTENDED_MOUSE_BUTTONS,
+        encoding::PSEUDO_QEMU_EXT_KEY_EVENT,
+        encoding::PSEUDO_QEMU_LED_STATE,
+        encoding::PSEUDO_EXTENDED_CLIPBOARD,
+    ]);
+
+    if settings.allow_jpeg {
+        v.push(encoding::jpeg_quality(settings.jpeg_quality.min(9)));
+    }
+    v.push(encoding::compression_level(settings.compression.min(9)));
+    v
+}
+
+// ---------------------------------------------------------------------------
+// Tier ladder (PRD/09 §3.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    High,
+    Medium,
+    /// "Low-ish": JPEG q4, 256 colours.
+    LowIsh,
+    /// Floor: JPEG q2, 64 colours, high compression.
+    Low,
+}
+
+impl Tier {
+    /// `link_bps` is a LOWER BOUND on link capacity from stall-anchored burst
+    /// sampling (see [`LinkMeter`]), not achieved throughput: it is what the
+    /// link proved it could carry during a burst, never contaminated by how
+    /// slowly the server encoded between bursts.
+    ///
+    /// RTT is deliberately not consulted. RTT is not capacity: a 1 Mbit/s DSL
+    /// line has a low RTT and a 100 Mbit/s satellite link has a high one. Our
+    /// own fence reply, the only way we obtain RTT, queues behind framebuffer
+    /// data on the same TCP stream, so it measures queue depth plus server
+    /// responsiveness, which is the very confound this sampling scheme exists
+    /// to remove. A "use RTT when available" rule would also split the client
+    /// into two algorithms where the untested path is the one most deployed
+    /// servers (libvncserver, x11vnc, TightVNC, Vino) actually take.
+    ///
+    /// `current` is the tier the session is running at now, consulted only
+    /// for directional hysteresis (see [`DOWNGRADE_HYSTERESIS`]): clearing a
+    /// boundary upgrades into the tier above it, but falling back below that
+    /// SAME boundary only downgrades once the value drops under 0.8x of it.
+    /// Without this, a link sampled right at a boundary (a real link, e.g. a
+    /// 20 Mbit/s cap measured as 19.9 then 20.1) would re-evaluate to a
+    /// different tier every sample; the sustain requirement alone does not
+    /// prevent this, because each flip restarts holding the SAME desired
+    /// point, which re-satisfies sustain repeatedly.
+    fn from_link(link_bps: f64, current: Tier) -> Self {
+        // Each boundary's lenient (downgrade) threshold applies ONLY when
+        // `current` is the tier immediately above that specific boundary,
+        // i.e. the session is actually resting at that edge right now. A
+        // boundary two tiers below `current` gets no leniency: there is no
+        // oscillation to guard against there, and a link that has genuinely
+        // collapsed several tiers at once must not be slowed down reaching
+        // the bottom by hysteresis meant for a different edge.
+        let high_th = if current == Tier::High {
+            HIGH_BPS * DOWNGRADE_HYSTERESIS
+        } else {
+            HIGH_BPS
+        };
+        if link_bps > high_th {
+            return Tier::High;
+        }
+        let medium_th = if current == Tier::Medium {
+            MEDIUM_BPS * DOWNGRADE_HYSTERESIS
+        } else {
+            MEDIUM_BPS
+        };
+        if link_bps > medium_th {
+            return Tier::Medium;
+        }
+        let lowish_th = if current == Tier::LowIsh {
+            LOWISH_BPS * DOWNGRADE_HYSTERESIS
+        } else {
+            LOWISH_BPS
+        };
+        if link_bps > lowish_th {
+            return Tier::LowIsh;
+        }
+        Tier::Low
+    }
+
+    /// The sample that would downgrade AWAY from this tier (the hysteresis
+    /// floor below the boundary this tier sits above), or `0.0` for `Low`,
+    /// which has nowhere further to fall.
+    ///
+    /// Used by the fast-downgrade path in [`AutoTuner::observe_at`]: the
+    /// windowed max is a max over two [`LINK_WINDOW`]s, so on its own a
+    /// single stale fast sample can rule for up to `2*LINK_WINDOW` after the
+    /// link has genuinely dropped. A fresh sample that already reads below
+    /// the CURRENT tier's own downgrade floor is trusted directly instead of
+    /// waiting for that stale sample to age out of the window.
+    fn downgrade_threshold_bps(self) -> f64 {
+        match self {
+            Tier::High => HIGH_BPS * DOWNGRADE_HYSTERESIS,
+            Tier::Medium => MEDIUM_BPS * DOWNGRADE_HYSTERESIS,
+            Tier::LowIsh => LOWISH_BPS * DOWNGRADE_HYSTERESIS,
+            Tier::Low => 0.0,
+        }
+    }
+
+    /// Rank on the ladder, 0 being the best picture. Only used for `cap_at`;
+    /// the enum deliberately does not derive `Ord`, because "greater tier" is
+    /// ambiguous when the variants are ordered best-first.
+    fn rank(self) -> u8 {
+        match self {
+            Tier::High => 0,
+            Tier::Medium => 1,
+            Tier::LowIsh => 2,
+            Tier::Low => 3,
+        }
+    }
+
+    /// This tier, or `limit` if this one is better than `limit` allows.
+    /// Never RAISES the tier: a link that already warrants Low stays at Low
+    /// when the server-latency cap says "no better than Medium".
+    fn cap_at(self, limit: Tier) -> Tier {
+        if self.rank() < limit.rank() {
+            limit
+        } else {
+            self
+        }
+    }
+
+    /// The automatic ladder moves JPEG quality and compression ONLY, never the
+    /// pixel format.
+    ///
+    /// The lower two tiers used to drop to 256 and then 64 colours, and both
+    /// of the things that makes a machine do are ones a user reads as a broken
+    /// picture rather than as an adaptation. Posterising a photographic desktop
+    /// to 64 colours is drastic and instantly visible, and worse, changing the
+    /// format mid-session forces the full-screen redraw documented in
+    /// `run_loop::apply_quality`. On a LAN with a server that encodes slowly
+    /// (a Raspberry Pi is the standard example) the throughput estimate reads
+    /// low even though the link is idle, so the ladder walked all the way down
+    /// and the session ended up posterised AND repainting in waves, with the
+    /// user moving the mouse around to force the stale regions to redraw.
+    ///
+    /// Colour-depth reduction still exists, as the explicit `Low` and
+    /// `BlackAndWhite` presets. That is the point: it is a big enough change
+    /// to be worth choosing, and choosing it is not the same as having it
+    /// applied on your behalf by a guess about the link. JPEG quality and
+    /// compression give Auto the bandwidth range it needs and need no format
+    /// change, so nothing has to be redrawn to apply them.
+    fn settings(self) -> QualitySettings {
+        match self {
+            // NOT `QualityPreset::High.settings()`: the manual High preset
+            // disables H.264 (a deliberate choice for the "I picked this
+            // explicitly" preset), but Auto's ladder must only ever trade off
+            // quality/compression, never the codec. Reusing the manual
+            // preset here made Auto silently toggle H.264 on and off every
+            // time it crossed the 20 Mbit/s boundary, each toggle costing the
+            // decoder a restart and a keyframe.
+            Tier::High => QualitySettings {
+                jpeg_quality: 9,
+                compression: 1,
+                pixel_format: ColorDepth::Full,
+                allow_jpeg: true,
+                allow_h264: true,
+                grayscale_levels: None,
+            },
+            Tier::Medium => QualityPreset::Medium.settings(),
+            Tier::LowIsh => QualitySettings {
+                jpeg_quality: 4,
+                compression: 6,
+                pixel_format: ColorDepth::Full,
+                allow_jpeg: true,
+                allow_h264: true,
+                grayscale_levels: None,
+            },
+            Tier::Low => QualitySettings {
+                // TigerVNC's entire automatic range is q6-q8, precisely
+                // because its link estimator is untrustworthy. Ours is
+                // better but not perfect, and q2 is a setting a user should
+                // have to choose deliberately, the identical argument already
+                // applied above to colour depth: Auto's floor stops one notch
+                // short of the explicit `Low`/`BlackAndWhite` presets.
+                jpeg_quality: 3,
+                compression: 9,
+                // The bottom rung, and the ONLY automatic tier that reduces
+                // colour. Below ~1 Mbit/s the 4x saving of 8bpp over 32bpp is
+                // worth more than the colours, which is the trade every mature
+                // client makes down here. It was briefly removed while a
+                // quality inversion elsewhere was being misdiagnosed as
+                // format-switch corruption; the inversion was the real cause,
+                // and taking a genuine adaptation away from genuinely bad
+                // links along with it was the wrong call.
+                pixel_format: ColorDepth::Palette256,
+                allow_jpeg: true,
+                allow_h264: true,
+                grayscale_levels: None,
+            },
+        }
+    }
+
+    fn preset(self) -> QualityPreset {
+        match self {
+            Tier::High => QualityPreset::High,
+            Tier::Medium => QualityPreset::Medium,
+            Tier::LowIsh | Tier::Low => QualityPreset::Low,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutoTuner
+// ---------------------------------------------------------------------------
+
+/// Desired operating point: a tier plus whether decode-time relief
+/// (reduced compression) is active.
+type Desired = (Tier, bool);
+
+/// The wire settings an operating point resolves to.
+///
+/// The mapping is deliberately many-to-one, which is why this is a function
+/// rather than something inlined at the one place that used it: see
+/// [`AutoTuner::recommended`] for what that costs when it is not noticed.
+fn resolve(tier: Tier, relief: bool) -> QualitySettings {
+    let mut s = tier.settings();
+    if relief {
+        s.compression = s.compression.saturating_sub(2).max(MIN_AUTO_COMPRESSION);
+    }
+    s
+}
+
+#[derive(Debug)]
+struct Shared {
+    /// Tier the session is currently running at (last taken recommendation).
+    current: Tier,
+    /// Whether the taken recommendation included compression relief.
+    relief_applied: bool,
+    /// A desired point differing from current, and since when it has held.
+    candidate: Option<(Tier, bool, Instant)>,
+    /// When the last recommendation was taken.
+    last_switch: Option<Instant>,
+    /// Switch that passed hysteresis and awaits `recommended()`.
+    ready: Option<Desired>,
+    /// Whether the server-latency cap is currently holding the ladder down.
+    /// See [`SERVER_LATENCY_BUDGET_MS`].
+    latency_capped: bool,
+    /// Until when the ladder stays capped REGARDLESS of the current reading,
+    /// because a better tier already provoked the cap once. See
+    /// [`LATENCY_PENALTY`]. This is what stops the cap limit-cycling on its
+    /// own success.
+    latency_penalty_until: Option<Instant>,
+    /// Whether the duty-cycle cap is currently holding the ladder down.
+    /// See [`DUTY_BUDGET`].
+    duty_capped: bool,
+    /// Whether the cap has dropped its second rung. See [`DUTY_DEEP_BUDGET`].
+    duty_deep_capped: bool,
+    /// The duty cap's equivalent of `latency_penalty_until`. See
+    /// [`DUTY_PENALTY`].
+    duty_penalty_until: Option<Instant>,
+    /// What [`AutoTuner::wants_paced_updates`] reports. Stored rather than
+    /// recomputed on read so the answer cannot depend on when the run loop
+    /// happens to ask: it is a decision made once per `observe`, on the same
+    /// clock as everything else here, which also keeps it deterministic under
+    /// `observe_at` in tests.
+    paced: bool,
+}
+
+/// Adaptive quality tuner for the Auto preset (PRD/09 §3).
+///
+/// Feed it measurements via [`AutoTuner::observe`]; poll
+/// [`AutoTuner::recommended`] for a settings change. Taking a recommendation
+/// is recorded, so the same switch is never returned twice.
+#[derive(Debug)]
+pub struct AutoTuner {
+    /// Highest link-capacity sample seen in the current [`LINK_WINDOW`].
+    link_cur_bps: f64,
+    /// Highest sample from the PREVIOUS window, kept so a slow window right
+    /// after a fast one does not instantly forget the fast sample.
+    link_prev_bps: f64,
+    /// When the current window started. `None` means no sample has arrived
+    /// yet, windows rotate only when a sample ARRIVES, never on a timer, a
+    /// quiet session keeps its estimate because silence is not evidence of
+    /// slowness.
+    link_window_start: Option<Instant>,
+    decode_ms: f32,
+    /// Decaying average of the fraction of each tick spent inside a
+    /// FramebufferUpdate. See [`DUTY_BUDGET`] and [`DUTY_TAU_S`].
+    duty: f32,
+    last_observe: Option<Instant>,
+    /// Whether any window has ever carried enough traffic to measure capacity.
+    /// Until one does, the seeded starting tier stands.
+    have_real_sample: bool,
+    shared: Mutex<Shared>,
+}
+
+impl Default for AutoTuner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AutoTuner {
+    pub fn new() -> Self {
+        Self {
+            // Seed inside the Medium band so we do not recommend a change
+            // before real measurements arrive (Auto starts at Medium).
+            link_cur_bps: 10e6,
+            link_prev_bps: 0.0,
+            link_window_start: None,
+            decode_ms: 5.0,
+            // A session starts idle, so the duty average starts at zero. Note
+            // that 0.0 is a MEANINGFUL reading here, unlike `decode_ms` where
+            // it means "not measured": an idle desktop genuinely spends none
+            // of its tick inside an update. That also makes the unmeasured
+            // case fail safe, since a caller with nothing to report passes
+            // 0.0 and the brake stays disengaged.
+            duty: 0.0,
+            last_observe: None,
+            have_real_sample: false,
+            shared: Mutex::new(Shared {
+                current: Tier::Medium,
+                relief_applied: false,
+                candidate: None,
+                last_switch: None,
+                ready: None,
+                latency_capped: false,
+                latency_penalty_until: None,
+                duty_capped: false,
+                duty_deep_capped: false,
+                duty_penalty_until: None,
+                paced: false,
+            }),
+        }
+    }
+
+    /// The capacity estimate the ladder decides on: the larger of the current
+    /// and previous window's maxima. Every sample is a lower bound, so the
+    /// correct aggregator is MAX, the tightest bound is the largest; an
+    /// average would be biased low by construction.
+    fn capacity_bps(&self) -> f64 {
+        self.link_cur_bps.max(self.link_prev_bps)
+    }
+
+    /// Fold one completed [`LinkMeter`] sample into the two-window rotating
+    /// max. Windows rotate only when a sample ARRIVES, never on a timer.
+    fn record_link(&mut self, now: Instant, bps: f64) {
+        match self.link_window_start {
+            None => {
+                self.link_window_start = Some(now);
+                self.link_cur_bps = bps;
+            }
+            Some(start) => {
+                let age = now.saturating_duration_since(start);
+                if age >= LINK_WINDOW * 2 {
+                    // Both windows are stale: nothing carries forward.
+                    self.link_prev_bps = 0.0;
+                    self.link_cur_bps = bps;
+                    self.link_window_start = Some(now);
+                } else if age >= LINK_WINDOW {
+                    // Rotate: the current window becomes the previous one.
+                    self.link_prev_bps = self.link_cur_bps;
+                    self.link_cur_bps = bps;
+                    self.link_window_start = Some(now);
+                } else {
+                    self.link_cur_bps = self.link_cur_bps.max(bps);
+                }
+            }
+        }
+    }
+
+    /// Record one measurement tick: a completed link-capacity sample from
+    /// [`LinkMeter`] (or `None` if nothing loaded the link this tick), decode
+    /// time of the last update, server response time, and the fraction of the
+    /// tick spent inside FramebufferUpdate handling. A non-positive
+    /// `decode_ms` is treated as "no sample".
+    ///
+    /// `server_latency_ms` is how long the SERVER is taking to answer, and it
+    /// is used to stop the ladder climbing past what the server can actually
+    /// serve rather than to estimate capacity (see [`Tier::from_link`]). Pass
+    /// 0.0 when no measurement is available, which disables that cap.
+    ///
+    /// `duty_cycle` is `SessionStats::server_duty_cycle`, in 0.0 to 1.0. It is
+    /// a separate input from `server_latency_ms` on purpose and neither is
+    /// derived from the other: the latency cap asks whether the SERVER is
+    /// keeping up and can only be measured on a minority of servers, while
+    /// this asks whether WE are, and is measured locally on every session.
+    /// Conflating them would also reintroduce the propagation-delay defect
+    /// that `latency_cap_ignores_propagation_delay` exists to catch. 0.0 is a
+    /// real reading (an idle desktop), not a "no sample" sentinel.
+    ///
+    /// `rtt_ms` is accepted and deliberately ignored. It has never been read:
+    /// [`Tier::from_link`] argues at length why round trip time is not
+    /// capacity, and nothing else here wants it. The parameter stays because
+    /// the call site has it to hand and because dropping it would make the
+    /// argument disappear along with the value, but there is no averaged RTT
+    /// behind it any more. If a future control law wants one, it should say
+    /// what question it is answering first.
+    pub fn observe(
+        &mut self,
+        link_bps: Option<f64>,
+        rtt_ms: f32,
+        decode_ms: f32,
+        server_latency_ms: f32,
+        duty_cycle: f32,
+    ) {
+        self.observe_at(
+            Instant::now(),
+            link_bps,
+            rtt_ms,
+            decode_ms,
+            server_latency_ms,
+            duty_cycle,
+        );
+    }
+
+    fn observe_at(
+        &mut self,
+        now: Instant,
+        link_bps: Option<f64>,
+        _rtt_ms: f32,
+        decode_ms: f32,
+        server_latency_ms: f32,
+        duty_cycle: f32,
+    ) {
+        // A caller that has lost count can hand us something outside the unit
+        // interval (the run loop clamps for its own reasons, but this type
+        // must not depend on that), and a NaN would silently disable the brake
+        // by making every comparison false, so pin it here.
+        let duty_cycle = if duty_cycle.is_finite() {
+            duty_cycle.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        match self.last_observe {
+            Some(prev) => {
+                let dt = now.saturating_duration_since(prev).as_secs_f64();
+                if dt > 0.0 {
+                    let a = 1.0 - (-dt / TAU_S).exp();
+                    // Decode cost is meaningful on every sample.
+                    if decode_ms > 0.0 {
+                        self.decode_ms += (a as f32) * (decode_ms - self.decode_ms);
+                    }
+                    // Duty cycle gets its own, slower time constant: see
+                    // `DUTY_TAU_S` for why a busy second must not be enough.
+                    let ad = 1.0 - (-dt / DUTY_TAU_S).exp();
+                    self.duty += (ad as f32) * (duty_cycle - self.duty);
+                }
+            }
+            None => {
+                // First sample: seed the decode average directly, but NOT the
+                // duty average. The first tick of every session carries the
+                // initial full-framebuffer transfer, so its duty cycle is
+                // close to 1.0 on a perfectly healthy connection; seeding from
+                // it would engage the brake on every session at connect and
+                // hold it for a full `DUTY_PENALTY`. Leaving `duty` at its
+                // zero start costs the same few seconds of convergence the
+                // brake is designed around anyway.
+                if decode_ms > 0.0 {
+                    self.decode_ms = decode_ms;
+                }
+            }
+        }
+        self.last_observe = Some(now);
+
+        // A completed burst is a LOWER BOUND on capacity (see [`LinkMeter`]),
+        // so fold it into the windowed max. `None` is NOT a low reading, it
+        // means nothing loaded the link this tick, not that the link is slow,
+        // so the estimate must stand rather than decay toward zero.
+        //
+        // `fresh_sample` also feeds the fast-downgrade path below: it is only
+        // `Some` on a tick that a real burst completed THIS call, never a
+        // carried-forward window value.
+        let mut fresh_sample: Option<f64> = None;
+        if let Some(bps) = link_bps {
+            if bps > 0.0 {
+                self.record_link(now, bps);
+                self.have_real_sample = true;
+                fresh_sample = Some(bps);
+            }
+        }
+        let windowed = self.capacity_bps();
+
+        let mut sh = self.shared.lock();
+
+        // Client flood brake, and the only one that works under video. Built
+        // on the same control law as the server-latency cap: engage above a
+        // budget, cap the ladder, and remember the engagement with a penalty
+        // so the remedy's own success cannot release it (see `DUTY_PENALTY`).
+        //
+        // Deliberately evaluated BEFORE the `have_real_sample` gate below. A
+        // session saturated hard enough never lets the socket go empty, so
+        // `LinkMeter` never opens a burst and no capacity sample ever arrives:
+        // gating the brake on one would disarm it in exactly the case it
+        // exists for. Nothing here moves the ladder on its own, it only
+        // decides how good a tier the ladder is allowed to pick.
+        let link_fast_enough = windowed > DUTY_MIN_CAPACITY_BPS;
+        let flooded = link_fast_enough
+            && if sh.duty_capped {
+                self.duty > DUTY_RELEASE
+            } else {
+                self.duty > DUTY_BUDGET
+            };
+        // Arm the penalty on EVERY rising edge, which is where this diverges
+        // from the latency cap. That one only arms when the running tier was
+        // better than the cap allows, because its remedy is the cap itself and
+        // engaging at or below the cap tier teaches it nothing. This one's
+        // real remedy is `wants_paced_updates`, which acts at every tier
+        // including the cap tier, so an engagement at Medium is just as
+        // informative as one at High and has to be remembered the same way. It
+        // still cannot latch forever: a session that stays flooded never
+        // produces another rising edge, so the penalty expires while
+        // `duty_capped` carries the state instead.
+        if flooded && !sh.duty_capped {
+            sh.duty_penalty_until = Some(now + DUTY_PENALTY);
+        }
+        sh.duty_capped = flooded;
+        // The second rung, on the same engage/release shape so it cannot
+        // chatter between Medium and Low while duty hovers at the budget.
+        sh.duty_deep_capped = link_fast_enough
+            && if sh.duty_deep_capped {
+                self.duty > DUTY_DEEP_RELEASE
+            } else {
+                self.duty > DUTY_DEEP_BUDGET
+            };
+        let duty_penalised = sh.duty_penalty_until.is_some_and(|until| now < until);
+        if !duty_penalised {
+            sh.duty_penalty_until = None;
+        }
+        let duty_cap_active = duty_penalised || sh.duty_capped;
+        // The rate lever. Published every tick, independent of SUSTAIN and
+        // COOLDOWN: those exist to stop the picture visibly changing back and
+        // forth, and turning ContinuousUpdates off changes nothing the user
+        // can see, so it should not wait behind a hysteresis budget meant for
+        // something else.
+        sh.paced = duty_cap_active;
+
+        if !self.have_real_sample {
+            // Never move the ladder before a real capacity sample exists:
+            // the seeded starting tier stands.
+            return;
+        }
+
+        // Fast downgrade: `windowed` is a MAX over two `LINK_WINDOW`s, so a
+        // single earlier high sample can rule for up to `2*LINK_WINDOW` after
+        // the link has genuinely dropped (a real downgrade otherwise takes
+        // 12-15 s to act). When the freshest sample already reads below the
+        // CURRENT tier's own downgrade floor, trust it directly instead of
+        // waiting for the stale high sample to age out of the window. This
+        // only changes which capacity number feeds the decision below; the
+        // sustain and cooldown constants still gate whether a switch is
+        // actually taken.
+        let capacity = match fresh_sample {
+            Some(bps) if bps < sh.current.downgrade_threshold_bps() => bps,
+            _ => windowed,
+        };
+
+        let mut target = Tier::from_link(capacity, sh.current);
+
+        // Server-bound cap. `from_link` answers "what can the WIRE carry",
+        // which on a fast link in front of a slow server is the wrong question
+        // to decide alone: measured, High bought 2x the bandwidth of Medium
+        // and cost 20x the response time (see `SERVER_LATENCY_BUDGET_MS`).
+        // A measurement of 0.0 means "no sample", so leave the cap untouched
+        // rather than reading it as a perfectly fast server.
+        if server_latency_ms > 0.0 {
+            let capped_now = if sh.latency_capped {
+                server_latency_ms > SERVER_LATENCY_RELEASE_MS
+            } else {
+                server_latency_ms > SERVER_LATENCY_BUDGET_MS
+            };
+            // Arm the penalty on the RISING edge, and only when the tier we
+            // were actually running is better than the cap allows. That is the
+            // case where we have just learned something: "at this tier, this
+            // server cannot keep up". Engaging while already at or below the
+            // cap teaches nothing, so it must not extend the penalty, or a
+            // permanently slow server would hold the penalty forever and never
+            // re-probe.
+            if capped_now && !sh.latency_capped && sh.current.rank() < LATENCY_CAP_TIER.rank() {
+                sh.latency_penalty_until = Some(now + LATENCY_PENALTY);
+            }
+            sh.latency_capped = capped_now;
+        }
+        // The penalty outlives the reading that caused it. Without it the cap
+        // releases the instant the tier it forced makes latency look healthy
+        // again, which is every single time, and the ladder flaps forever.
+        let penalised = sh.latency_penalty_until.is_some_and(|until| now < until);
+        if !penalised {
+            sh.latency_penalty_until = None;
+        }
+        let latency_cap_active = penalised || sh.latency_capped;
+        if latency_cap_active {
+            target = target.cap_at(LATENCY_CAP_TIER);
+        }
+        // The two caps are applied separately rather than folded into one
+        // flag: they answer different questions, they may grow different cap
+        // tiers, and `cap_at` never raises a tier, so applying both in turn
+        // simply takes the stricter of the two.
+        if duty_cap_active {
+            target = target.cap_at(DUTY_CAP_TIER);
+        }
+        // Stricter still while the client is drowning. `cap_at` never raises a
+        // tier, so this simply takes over from the Medium cap above.
+        if sh.duty_deep_capped {
+            target = target.cap_at(DUTY_DEEP_CAP_TIER);
+        }
+        let cap_active = latency_cap_active || duty_cap_active;
+
+        // Client CPU-bound: sustained decode overruns ask for lower
+        // compression at the same tier. Gated on a demonstrably fast link
+        // (see `RELIEF_MIN_CAPACITY_BPS`'s doc): `decode_rect` awaits socket
+        // reads, so on a slow link `decode_ms` mostly measures the WIRE, and
+        // relief would reduce compression exactly when the link can least
+        // afford it. Asymmetric on/off thresholds (`FRAME_BUDGET_MS` vs
+        // `RELIEF_OFF_RATIO` of it) stop decode time hovering at the budget
+        // from flickering relief on and off every sample.
+        // Relief lowers the compression LEVEL, which means the server spends
+        // less CPU and puts more bytes on the wire. When the latency cap is
+        // engaged the server is already the bottleneck, so handing it a larger
+        // payload is precisely backwards: measured with the cap engaged but
+        // relief still free to act, the tuner held JPEG quality at 6 (correct)
+        // but pulled compression 3 down to 1, and throughput stayed at
+        // 4.5 MB/s instead of the 620 KB/s a plain Medium session uses.
+        //
+        // The duty cap suppresses relief for the same reason and more
+        // bluntly: a client that is already spending most of its time inside
+        // update handling must not be handed larger updates.
+        //
+        // Worth recording why the lever is weak in general: zlib DEcompression
+        // cost barely depends on the level the encoder chose, so lowering it
+        // does not measurably speed the client's inflate. What it does do is
+        // add bytes, and `decode_ms` (relief's own trigger) includes socket
+        // reads, so relief tends to worsen the number it is reacting to. It is
+        // kept rather than deleted because the ladder may grow a rung between
+        // High and Medium where it would have room to act; note that under
+        // video it is doubly inert, since JPEG and H.264 rects are handed to
+        // the webview undecoded and `decode_ms` never sees their real cost.
+        let fast_link = capacity > RELIEF_MIN_CAPACITY_BPS;
+        let relief = fast_link
+            && !cap_active
+            && if sh.relief_applied {
+                self.decode_ms > FRAME_BUDGET_MS * RELIEF_OFF_RATIO
+            } else {
+                self.decode_ms > FRAME_BUDGET_MS
+            };
+        let desired: Desired = (target, relief);
+
+        if desired == (sh.current, sh.relief_applied) {
+            // Back where we already are: abandon any pending change.
+            sh.candidate = None;
+            sh.ready = None;
+            return;
+        }
+        // Which pair of time constants applies is decided by the DIRECTION of
+        // the change being contemplated, not by the direction of the last one.
+        // Only a genuine drop down the ladder earns the fast path: that is the
+        // one change that reliably reduces what the session is asking for.
+        // Everything else, including a relief toggle at the same tier (relief
+        // ADDS bytes), goes through the slow side.
+        let downgrade = desired.0.rank() > sh.current.rank();
+        let (sustain, cooldown) = if downgrade {
+            (SUSTAIN_DOWN, COOLDOWN_DOWN)
+        } else {
+            (SUSTAIN_UP, COOLDOWN_UP)
+        };
+        match sh.candidate {
+            Some((t, r, since)) if (t, r) == desired => {
+                let sustained = now.saturating_duration_since(since) >= sustain;
+                let cooled = sh
+                    .last_switch
+                    .is_none_or(|ls| now.saturating_duration_since(ls) >= cooldown);
+                if sustained && cooled {
+                    sh.ready = Some(desired);
+                }
+            }
+            _ => {
+                // The desired point changed: restart the sustain clock.
+                sh.candidate = Some((desired.0, desired.1, now));
+                sh.ready = None;
+            }
+        }
+    }
+
+    /// Recommended settings if a tier change is warranted (hysteresis
+    /// applied), else `None`. Returning `Some` records the switch as taken:
+    /// the tuner's current tier advances, and the cooldown timer restarts
+    /// UNLESS the recommendation resolves to the settings already in force.
+    ///
+    /// That exception is not a nicety. The operating point is a tier plus a
+    /// relief flag, but two distinct operating points can resolve to identical
+    /// wire settings: at `Tier::High` compression is already 1, and relief
+    /// computes `1.saturating_sub(2).max(MIN_AUTO_COMPRESSION)`, which is also
+    /// 1 again. So relief engaging or releasing at High produced a "switch"
+    /// that changed nothing, and the old unconditional `last_switch` write
+    /// burned a full cooldown on it, during which a genuine downgrade could
+    /// not be applied. A recommendation that asks for what is already applied
+    /// has to be free.
+    pub fn recommended(&self) -> Option<QualitySettings> {
+        let mut sh = self.shared.lock();
+        let (tier, relief) = sh.ready.take()?;
+        let before = resolve(sh.current, sh.relief_applied);
+        let after = resolve(tier, relief);
+        sh.current = tier;
+        sh.relief_applied = relief;
+        sh.candidate = None;
+        if after != before {
+            sh.last_switch = self.last_observe.or_else(|| Some(Instant::now()));
+        }
+        Some(after)
+    }
+
+    /// Whether the update RATE should be governed: true while the client is
+    /// judged to be flooded (see [`DUTY_BUDGET`]).
+    ///
+    /// The run loop answers this by turning ContinuousUpdates off and falling
+    /// back to its one-outstanding-request pipeline, which is the only rate
+    /// lever the RFB protocol offers. It matters because every other actuator
+    /// this type has changes BYTES PER UPDATE and nothing changes UPDATES PER
+    /// SECOND, and under video the rate term is the one that dominates: the
+    /// individual rects are small, there are simply sixty of them a second and
+    /// the client cannot keep up with the cadence.
+    pub fn wants_paced_updates(&self) -> bool {
+        self.shared.lock().paced
+    }
+
+    /// The tier the tuner currently considers active (as a preset).
+    pub fn current_tier(&self) -> QualityPreset {
+        self.shared.lock().current.preset()
+    }
+
+    /// The raw ladder rung, for tests that need to tell `Tier::High` from
+    /// `Tier::Medium` without going through the lossy `preset()` mapping.
+    #[cfg(test)]
+    fn current_tier_raw(&self) -> Tier {
+        self.shared.lock().current
+    }
+
+    /// Align the tuner's internal bookkeeping to settings applied from
+    /// OUTSIDE it (a manual preset via `SetQuality`).
+    ///
+    /// Without this, a manual preset detour desyncs the tuner: `SetQuality`
+    /// applies settings to the wire directly, but `Shared::current` still
+    /// holds whatever tier Auto was last at, so switching back to Auto does
+    /// nothing until fresh measurements happen to walk the ladder back to
+    /// wherever it actually is. Called from the `SetQuality` command arm
+    /// whenever quality changes, manual or Auto, so the tuner is never more
+    /// than one command stale.
+    pub fn resync(&mut self, qs: &QualitySettings) {
+        // Presets don't line up with tier settings byte-for-byte (Low's q2
+        // vs. the auto floor's q3, for one), so match on the ordinal that
+        // actually varies monotonically across the ladder: JPEG quality.
+        let tier = if qs.jpeg_quality >= QualityPreset::High.settings().jpeg_quality {
+            Tier::High
+        } else if qs.jpeg_quality >= QualityPreset::Medium.settings().jpeg_quality {
+            Tier::Medium
+        } else if qs.jpeg_quality >= Tier::LowIsh.settings().jpeg_quality {
+            Tier::LowIsh
+        } else {
+            Tier::Low
+        };
+        let mut sh = self.shared.lock();
+        sh.current = tier;
+        sh.relief_applied = false;
+        sh.candidate = None;
+        sh.ready = None;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- encodings_for / settings_for ---------------------------------------
+
+    #[test]
+    fn settings_for_mirrors_presets() {
+        for p in [
+            QualityPreset::Auto,
+            QualityPreset::High,
+            QualityPreset::Medium,
+            QualityPreset::Low,
+            QualityPreset::BlackAndWhite,
+        ] {
+            assert_eq!(settings_for(p), p.settings());
+        }
+    }
+
+    #[test]
+    fn encodings_order_and_pseudo_levels() {
+        let caps = ServerCapabilities::default();
+        let s = settings_for(QualityPreset::Medium);
+        let list = encodings_for(&s, &caps);
+        // Preference order without H.264 (server does not support it).
+        assert_eq!(
+            &list[..7],
+            &[
+                encoding::TIGHT,
+                encoding::ZRLE,
+                encoding::COPY_RECT,
+                encoding::HEXTILE,
+                encoding::ZLIB,
+                encoding::RAW,
+                encoding::PSEUDO_LAST_RECT,
+            ]
+        );
+        assert!(list.contains(&encoding::PSEUDO_EXTENDED_CLIPBOARD));
+        assert!(list.contains(&encoding::PSEUDO_QEMU_EXT_KEY_EVENT));
+        assert!(list.contains(&encoding::PSEUDO_EXTENDED_MOUSE_BUTTONS));
+        assert!(list.contains(&encoding::PSEUDO_FENCE));
+        assert!(list.contains(&encoding::PSEUDO_CONTINUOUS_UPDATES));
+        // Medium: JPEG q6 (-29), compression 3 (-250).
+        assert!(list.contains(&encoding::jpeg_quality(6)));
+        assert!(list.contains(&encoding::compression_level(3)));
+        assert!(!list.contains(&encoding::OPEN_H264));
+    }
+
+    #[test]
+    fn encodings_h264_and_jpeg_gating() {
+        let caps = ServerCapabilities {
+            supports_h264: true,
+            ..Default::default()
+        };
+        let s = settings_for(QualityPreset::Medium); // allow_h264: true
+        let list = encodings_for(&s, &caps);
+        assert_eq!(list[1], encoding::OPEN_H264, "H.264 right after Tight");
+
+        // High disallows H.264 even when the server supports it.
+        let s = settings_for(QualityPreset::High);
+        assert!(!encodings_for(&s, &caps).contains(&encoding::OPEN_H264));
+
+        // B&W disables JPEG entirely: no quality pseudo-encoding at all.
+        let s = settings_for(QualityPreset::BlackAndWhite);
+        let list = encodings_for(&s, &caps);
+        assert!(!list.iter().any(|&e| (-32..=-23).contains(&e)));
+        assert!(list.contains(&encoding::compression_level(9)));
+    }
+
+    // -- AutoTuner ----------------------------------------------------------
+
+    const STEP: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn sustained_fast_link_upgrades_to_high_once() {
+        let mut t = AutoTuner::new();
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            // 6 s of 60 Mbit/s, 1 ms RTT
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        }
+        let rec = t.recommended().expect("sustained fast link must upgrade");
+        // NOT `QualityPreset::High.settings()`: Auto's High tier keeps
+        // `allow_h264: true` (see `Tier::settings`) so the ladder never
+        // toggles the codec on its own; only the manual High preset turns
+        // H.264 off.
+        assert_eq!(
+            rec,
+            QualitySettings {
+                allow_h264: true,
+                ..QualityPreset::High.settings()
+            }
+        );
+        assert_eq!(t.current_tier(), QualityPreset::High);
+        // Taking the recommendation records it: not returned again.
+        assert_eq!(t.recommended(), None);
+        // And with unchanged conditions, no new recommendation appears.
+        now += STEP;
+        t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        assert_eq!(t.recommended(), None);
+    }
+
+    #[test]
+    fn sustained_slow_link_downgrades() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            // 6 s of ~200 kbit/s
+            now += STEP;
+            t.observe_at(now, Some(0.2e6), 300.0, 4.0, 0.0, 0.0);
+        }
+        let rec = t.recommended().expect("sustained slow link must downgrade");
+        assert_eq!(rec.jpeg_quality, 3);
+        assert!(rec.compression >= 7);
+        assert_eq!(t.current_tier(), QualityPreset::Low);
+    }
+
+    /// The time constants are asymmetric on purpose: a load spike gets a fast
+    /// answer, a recovery gets a slow one. Pinned as an invariant because the
+    /// anti-oscillation argument depends on the ORDER, not on the values: a
+    /// ladder that comes down faster than it climbs cannot cycle, because
+    /// every cycle has to pay for the climb.
+    #[test]
+    fn the_time_constants_are_asymmetric() {
+        assert!(
+            SUSTAIN_DOWN < SUSTAIN_UP,
+            "a downgrade must be offered sooner than an upgrade"
+        );
+        assert!(
+            COOLDOWN_DOWN < COOLDOWN_UP,
+            "downgrades must be spaced more tightly than upgrades"
+        );
+    }
+
+    #[test]
+    fn flapping_input_does_not_oscillate() {
+        // Alternate 1 s blocks between the Medium band (10 Mbit/s) and the
+        // Low band (50 kbit/s). The desired tier flips roughly every second,
+        // and the tuner must hold steady and recommend nothing.
+        //
+        // What guards this is now SUSTAIN_DOWN rather than the old symmetric
+        // SUSTAIN, and this test is the reason SUSTAIN_DOWN is a full second
+        // rather than something smaller. A block is five 200 ms ticks, so a
+        // candidate can be held for at most 800 ms inside one, which is under
+        // SUSTAIN_DOWN and therefore never offered. Cut the downgrade sustain
+        // below about 800 ms and this input starts producing switches again.
+        // The upgrade side is untouched and far slower still.
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        let mut recommendations = 0;
+        for block in 0..20 {
+            let bps = if block % 2 == 0 { 10e6 } else { 0.05e6 };
+            for _ in 0..5 {
+                now += STEP;
+                t.observe_at(now, Some(bps), 30.0, 5.0, 0.0, 0.0);
+                if t.recommended().is_some() {
+                    recommendations += 1;
+                }
+            }
+        }
+        assert_eq!(recommendations, 0, "flapping input must not cause switches");
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+    }
+
+    /// The cooldown still blocks rapid consecutive switches, but it is no
+    /// longer one number: this asserts the ASYMMETRY that replaced it.
+    ///
+    /// The test used to drive a link crash and assert that nothing happened
+    /// for a full 5 s, which was the honest reading of a symmetric cooldown
+    /// and also the bug. Five seconds of an unusable picture is the complaint,
+    /// not the remedy. The property actually worth protecting is that the
+    /// ladder cannot cycle, and that is carried by the SLOW side alone: coming
+    /// down is cheap, climbing back is expensive, so every oscillation has to
+    /// pay for a climb it cannot afford.
+    #[test]
+    fn cooldown_blocks_rapid_consecutive_switches() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        // Upgrade to High.
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        }
+        assert!(t.recommended().is_some());
+        let up_at = now;
+
+        // Crash the link. The fresh sample is already below High's own
+        // downgrade floor, so the fast-downgrade path rules directly rather
+        // than waiting for the 60 Mbit/s sample to age out of both windows.
+        // The downgrade must arrive quickly, but not instantly: one bad tick
+        // is still a sample rather than a trend.
+        let mut down_at = None;
+        while now.duration_since(up_at) < 2 * LINK_WINDOW + COOLDOWN_UP {
+            now += STEP;
+            t.observe_at(now, Some(0.05e6), 300.0, 4.0, 0.0, 0.0);
+            if t.recommended().is_some() {
+                down_at = Some(now);
+                break;
+            }
+        }
+        let down_at = down_at.expect("a crashed link must produce a downgrade");
+        let took = down_at.duration_since(up_at);
+        assert!(
+            took >= SUSTAIN_DOWN,
+            "a single bad tick must not switch anything, took {took:?}"
+        );
+        assert!(
+            took <= SUSTAIN_DOWN + COOLDOWN_DOWN + 2 * STEP,
+            "a crashed link must come down on the fast constants, took {took:?}"
+        );
+        assert_eq!(t.current_tier(), QualityPreset::Low);
+
+        // Now hand the link straight back. Climbing is the expensive
+        // direction: nothing may be offered until the slow constants are both
+        // satisfied, which is what stops this pair of transitions repeating.
+        // The bound is on the tick ABOUT to be observed, not the last one:
+        // the first tick that lands exactly on COOLDOWN_UP is allowed to
+        // switch, and asserting `None` for it would be asserting the opposite
+        // of what this test is for.
+        while now.duration_since(down_at) + STEP < COOLDOWN_UP {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+            assert_eq!(
+                t.recommended(),
+                None,
+                "an upgrade must wait out the full COOLDOWN_UP, {:?} in",
+                now.duration_since(down_at)
+            );
+        }
+        // And once it is satisfied, the upgrade does arrive: the slow side is
+        // slow, not broken.
+        let mut up_again = false;
+        while now.duration_since(down_at) < COOLDOWN_UP + SUSTAIN_UP + 2 * STEP {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+            if t.recommended().is_some() {
+                up_again = true;
+                break;
+            }
+        }
+        assert!(up_again, "a restored link must eventually climb again");
+    }
+
+    #[test]
+    fn sustained_decode_overrun_holds_the_compression_floor() {
+        // This test used to assert relief drove compression BELOW the High
+        // tier's level of 1, i.e. to 0. That was the bug, see
+        // `MIN_AUTO_COMPRESSION` and `relief_never_disables_compression_entirely`.
+        //
+        // The lever was mis-specified in the first place: zlib decompression
+        // cost barely depends on the level the ENCODER used, so lowering the
+        // compression level does not speed the client's decode. It lowers the
+        // SERVER's CPU and raises the byte count. Since relief only engages
+        // above `RELIEF_MIN_CAPACITY_BPS`, and any link that fast selects
+        // `Tier::High`, whose compression is already at the floor, the
+        // compression lever is now inert. Left in place rather than deleted
+        // because the tier ladder may grow a rung between High and Medium
+        // where it would have room to act.
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            // `decode_rect` awaits socket reads, so decode_ms only trusts a
+            // CPU-bound diagnosis on a link fast enough to rule out the wire
+            // (see `RELIEF_MIN_CAPACITY_BPS`): 60 Mbit/s, comfortably above
+            // the High tier's 20 Mbit/s floor, decoding 30 ms per frame.
+            now += STEP;
+            t.observe_at(now, Some(60e6), 5.0, 30.0, 0.0, 0.0);
+        }
+        let rec = t
+            .recommended()
+            .expect("CPU-bound client on a fast link warrants relief");
+        let high = QualityPreset::High.settings();
+        assert_eq!(t.current_tier(), QualityPreset::High, "tier: High");
+        assert_eq!(rec.jpeg_quality, high.jpeg_quality);
+        assert_eq!(
+            rec.compression, 1,
+            "relief must never disable zlib. Asserting the literal 1 on purpose: \
+             `>= MIN_AUTO_COMPRESSION` is unconditionally true for a u8 and \
+             would still pass with the floor deleted."
+        );
+    }
+
+    /// Drive the tuner to a settled tier under a given link, server latency
+    /// and duty cycle.
+    ///
+    /// The duty cycle is a required argument rather than an implied zero
+    /// because it is now a discriminator in its own right: "no duty reported"
+    /// and "an idle session" have to be spelled the same way at every call
+    /// site so it is visible which case a test is modelling.
+    fn settle(link_bps: f64, server_latency_ms: f32, duty: f32) -> Tier {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(link_bps), 5.0, 4.0, server_latency_ms, duty);
+            let _ = t.recommended();
+        }
+        t.current_tier_raw()
+    }
+
+    #[test]
+    fn server_latency_caps_the_ladder_below_high() {
+        // 80 Mbit/s says High on capacity alone. But measured against a real
+        // server, High sat at 426 to 434 ms response while Medium sat at 18 to
+        // 20 ms for only half the bandwidth. A link that fast in front of a
+        // server that slow must not climb.
+        assert_eq!(
+            settle(80e6, 430.0, 0.0),
+            Tier::Medium,
+            "a server answering in 430 ms must cap the ladder at Medium"
+        );
+        // Same link, healthy server: nothing to cap, High is correct.
+        assert_eq!(
+            settle(80e6, 19.0, 0.0),
+            Tier::High,
+            "a fast link in front of a responsive server should still reach High"
+        );
+    }
+
+    #[test]
+    fn latency_cap_also_suppresses_compression_relief() {
+        // Relief trades compression level for bytes. A server that is already
+        // too slow must not be handed a bigger payload, so the cap suppresses
+        // relief as well as pinning the tier.
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        // Fast link, heavy decode (relief's trigger), slow server (the cap's).
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 40.0, 430.0, 0.0);
+            if let Some(rec) = t.recommended() {
+                assert_eq!(
+                    rec.compression,
+                    Tier::Medium.settings().compression,
+                    "relief must not lower compression while the server is the bottleneck"
+                );
+            }
+        }
+        assert_eq!(t.current_tier_raw(), Tier::Medium);
+    }
+
+    #[test]
+    fn no_latency_sample_leaves_the_cap_disengaged() {
+        // 0.0 means "not measured", which is what every server without a
+        // usable round-trip source reports. It must not read as "instant".
+        assert_eq!(settle(80e6, 0.0, 0.0), Tier::High);
+    }
+
+    #[test]
+    fn latency_cap_never_raises_a_tier() {
+        // A genuinely slow link belongs at the bottom. The cap limits how GOOD
+        // a tier may be chosen; it must never drag a bad link upward.
+        assert_eq!(settle(0.2e6, 500.0, 0.0), Tier::Low);
+    }
+
+    #[test]
+    fn latency_cap_does_not_limit_cycle_when_the_remedy_looks_healthy() {
+        // The failure this guards: the cap's release criterion is measured in
+        // the state the cap created. Measured, High reads 430 ms and Medium
+        // reads 19 ms, so a naive cap drops to Medium, immediately sees 19 ms,
+        // releases, climbs back to High, and flaps every 12 to 16 seconds.
+        //
+        // Model that feedback explicitly: latency is a FUNCTION of the tier the
+        // tuner has chosen, which is exactly what the earlier test with its
+        // constant 25 ms could not express.
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        let mut switches = 0;
+        let mut at_high_ticks = 0;
+        for _ in 0..900 {
+            now += STEP;
+            let latency = match t.current_tier_raw() {
+                Tier::High => 430.0,
+                _ => 19.0,
+            };
+            if t.current_tier_raw() == Tier::High {
+                at_high_ticks += 1;
+            }
+            t.observe_at(now, Some(80e6), 5.0, 4.0, latency, 0.0);
+            if t.recommended().is_some() {
+                switches += 1;
+            }
+        }
+        // Without the penalty this cycles continuously. STEP is 1 s, so 900
+        // ticks is 15 minutes; at a 120 s penalty that is at most about 8
+        // re-probes, each costing a pair of switches.
+        assert!(
+            switches <= 20,
+            "ladder flapped {switches} times in 900 ticks: the cap is limit-cycling"
+        );
+        // And it must spend most of its time in the good state, not oscillate
+        // evenly between them.
+        assert!(
+            at_high_ticks < 200,
+            "spent {at_high_ticks} of 900 ticks at High, which the server cannot serve"
+        );
+    }
+
+    #[test]
+    fn latency_cap_ignores_propagation_delay() {
+        // A fast link with a genuinely high NETWORK round trip (satellite,
+        // transcontinental) must still reach High. The cap is about the server
+        // failing to keep up, not about distance. In the real system this is
+        // enforced upstream, in `run_loop`, by only passing the
+        // update-pipeline source through; here we assert the tuner's own
+        // contract: a caller that has no server-latency measurement passes
+        // 0.0, and 0.0 must never be read as "capped".
+        //
+        // Regression for a real defect: the first version of this cap was fed
+        // `stats.rtt_ms` whatever its source, so a 130 ms Fence measurement on
+        // an 80 Mbit/s WAN link pinned the session to Medium for its entire
+        // life, with no way back because 60 ms is not reachable at the speed of
+        // light.
+        assert_eq!(
+            settle(80e6, 0.0, 0.0),
+            Tier::High,
+            "no server-latency sample must leave the ladder free"
+        );
+        // A high RTT passed as the tuner's RTT argument (not as server
+        // latency) must also leave the ladder free.
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 130.0, 4.0, 0.0, 0.0);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::High,
+            "130 ms of propagation on an 80 Mbit/s link is still a High-tier link"
+        );
+    }
+
+    #[test]
+    fn latency_cap_releases_with_hysteresis() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        // Engage the cap.
+        for _ in 0..120 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 430.0, 0.0);
+            let _ = t.recommended();
+        }
+        assert_eq!(t.current_tier_raw(), Tier::Medium, "cap should be engaged");
+
+        // Between the release threshold (60 ms) and the budget (100 ms): a
+        // server hovering here must NOT flip the cap off, or the ladder
+        // oscillates every tick.
+        for _ in 0..120 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 80.0, 0.0);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Medium,
+            "80 ms is under the budget but over the release threshold: stay capped"
+        );
+
+        // Comfortably recovered: the cap releases and High becomes reachable.
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 25.0, 0.0);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::High,
+            "a recovered server should let the ladder climb again"
+        );
+    }
+
+    // -- Duty-cycle brake ---------------------------------------------------
+
+    /// The bug this brake exists for. A fast link carrying video: the burst
+    /// sampler measures a genuinely fast wire, so the capacity term says High
+    /// and the ladder climbs to the most expensive operating point it has,
+    /// then stays there because no capacity sample below High's floor ever
+    /// arrives on a link that really is fast.
+    ///
+    /// The duty cycle is the input that says the client cannot keep up. Note
+    /// what this test does NOT assert: that the ladder never touches High. It
+    /// does, briefly. The duty average needs a few seconds to establish that
+    /// the saturation is not just a busy moment (see `DUTY_TAU_S`), and
+    /// SUSTAIN_UP is shorter than that, so a cold start can climb before the
+    /// brake has anything to say. What changed is the exit: the asymmetric
+    /// constants bring it back down about three seconds later instead of
+    /// leaving it there for the length of the video.
+    #[test]
+    fn a_flooded_client_on_a_fast_link_is_capped_and_paced() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        let mut at_high_ticks = 0;
+        // 60 s of an 80 Mbit/s link with the client inside update handling
+        // 95% of the time, which is what a full-screen video looks like.
+        for _ in 0..300 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.95);
+            let _ = t.recommended();
+            if t.current_tier_raw() == Tier::High {
+                at_high_ticks += 1;
+            }
+        }
+        // Low, not Medium. 0.95 is past `DUTY_DEEP_BUDGET`, and this test's
+        // own comment above says what 0.95 models: a full-screen video. That
+        // is precisely the case where Medium measured 1359 ms to open a
+        // right-click menu and Low measured 508 ms on the same video, so the
+        // deep rung is the whole point rather than an over-reaction.
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Low,
+            "a client inside update handling 95% of the time must drop to the \
+             rung that measurably buys interactivity back, not stop at Medium"
+        );
+        assert!(
+            t.wants_paced_updates(),
+            "the rate lever is the one that addresses this, and it must be asked for"
+        );
+        assert!(
+            at_high_ticks <= 20,
+            "spent {at_high_ticks} of 300 ticks at High: the excursion before the \
+             duty average settles must be seconds, not the whole session"
+        );
+    }
+
+    /// The counterpart to `a_slow_server_on_a_fast_link_never_downgrades`, and
+    /// the pairing `SessionStats::server_duty_cycle` prescribes: high duty
+    /// with high throughput is a loaded link, high duty with low throughput is
+    /// a struggling server. Pacing a struggling server would only slow it
+    /// down, and the ladder's own capacity term already has the slow case
+    /// covered, so the brake stays out of it.
+    #[test]
+    fn a_high_duty_cycle_on_a_slow_link_does_not_request_pacing() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..300 {
+            now += STEP;
+            t.observe_at(now, Some(0.8e6), 200.0, 4.0, 0.0, 0.98);
+            let _ = t.recommended();
+        }
+        assert!(
+            !t.wants_paced_updates(),
+            "a saturated 800 kbit/s link is a bandwidth problem, not a rate problem"
+        );
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Low,
+            "and the capacity term should have walked it down on its own"
+        );
+    }
+
+    /// Releasing on the reading alone would limit-cycle, because pacing is
+    /// what brought the duty cycle down in the first place. The penalty is the
+    /// memory that survives its own remedy, exactly as `LATENCY_PENALTY` is
+    /// for the latency cap.
+    #[test]
+    fn the_duty_cap_has_two_rungs_and_moderate_load_keeps_the_picture() {
+        // Busy but not drowning: past `DUTY_BUDGET`, short of
+        // `DUTY_DEEP_BUDGET`. This is a window being dragged or an animation,
+        // where the Medium cap plus pacing is the right answer and throwing
+        // the picture away would be an over-reaction.
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..300 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.78);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Medium,
+            "moderate saturation caps at Medium and keeps the picture"
+        );
+        assert!(t.wants_paced_updates(), "the rate lever still applies");
+
+        // Now it gets worse, the way a video starting makes it worse.
+        for _ in 0..300 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.95);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Low,
+            "deep saturation drops the second rung"
+        );
+    }
+
+    #[test]
+    fn duty_returning_to_normal_releases_the_cap_after_the_penalty() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.95);
+            let _ = t.recommended();
+        }
+        assert!(t.wants_paced_updates(), "the cap must engage first");
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::Low,
+            "0.95 duty is the deep rung"
+        );
+
+        // The video stops. The duty average falls below the release threshold
+        // within a couple of seconds, but the penalty outlives it.
+        let calm = now;
+        let mut released = None;
+        while now.duration_since(calm) < DUTY_PENALTY + Duration::from_secs(20) {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.05);
+            let _ = t.recommended();
+            if !t.wants_paced_updates() {
+                released = Some(now);
+                break;
+            }
+        }
+        let after = released
+            .expect("the cap must release eventually, or a video clip costs the session forever")
+            .duration_since(calm);
+        assert!(
+            after >= Duration::from_secs(10),
+            "released after {after:?}: releasing as soon as pacing works is the limit cycle"
+        );
+        assert!(
+            after <= DUTY_PENALTY,
+            "released after {after:?}, which is longer than the penalty it should have been"
+        );
+
+        // And with the brake off the ladder is free again.
+        for _ in 0..100 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.05);
+            let _ = t.recommended();
+        }
+        assert_eq!(
+            t.current_tier_raw(),
+            Tier::High,
+            "a recovered session on an 80 Mbit/s link belongs at High"
+        );
+    }
+
+    /// Dragging a window or scrolling a long page pins the duty cycle at
+    /// nearly 1.0 for a second or two on a perfectly healthy session. That
+    /// must not turn ContinuousUpdates off for a minute, which is why the duty
+    /// average has its own slow time constant (`DUTY_TAU_S`).
+    #[test]
+    fn a_brief_duty_spike_does_not_trip_the_brake() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..100 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.05);
+            let _ = t.recommended();
+        }
+        assert!(!t.wants_paced_updates());
+
+        // Two seconds of near-total saturation. Against a 3 s time constant
+        // that carries the average to about 0.50, which is deliberately close
+        // to but clear of the 0.70 budget: this is the near miss the margin
+        // was chosen for, not a comfortable one.
+        for _ in 0..10 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.98);
+            let _ = t.recommended();
+            assert!(
+                !t.wants_paced_updates(),
+                "a two second burst of real work is not a flooded session"
+            );
+        }
+        for _ in 0..50 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.05);
+            let _ = t.recommended();
+            assert!(!t.wants_paced_updates(), "and it must not trip afterwards");
+        }
+    }
+
+    /// The idle desktop case, which every input added to this type has to be
+    /// checked against: a client that is doing nothing must never be told it
+    /// is drowning. Pacing an idle session would cost a round trip per frame
+    /// for nothing.
+    #[test]
+    fn a_healthy_idle_session_is_never_paced() {
+        let mut t = AutoTuner::new();
+        assert!(
+            !t.wants_paced_updates(),
+            "a tuner that has observed nothing has no grounds to pace"
+        );
+        let start = Instant::now();
+        for i in 1..=60 {
+            t.observe_at(start + Duration::from_secs(i), None, 0.4, 1.0, 0.0, 0.0);
+            assert!(
+                !t.wants_paced_updates(),
+                "60 s of a static desktop must leave the rate lever alone"
+            );
+        }
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+    }
+
+    /// REGRESSION: two distinct operating points can resolve to identical wire
+    /// settings, and the tuner used to charge a full cooldown for switching
+    /// between them. At `Tier::High` compression is 1 and relief computes
+    /// `1.saturating_sub(2).max(MIN_AUTO_COMPRESSION)`, which is also 1, so
+    /// relief engaging there changed nothing, restarted `last_switch` anyway,
+    /// and bought five seconds during which a genuine downgrade could not be
+    /// applied. A recommendation for what is already applied has to be free.
+    #[test]
+    fn a_no_op_recommendation_does_not_consume_the_cooldown() {
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 4.0, 0.0, 0.0);
+        }
+        let applied = t.recommended().expect("must upgrade to High");
+        assert_eq!(t.current_tier_raw(), Tier::High);
+        let switch_at = t.shared.lock().last_switch;
+        assert!(switch_at.is_some(), "the real upgrade must record a switch");
+
+        // Now drive decode past the frame budget so relief engages. On a link
+        // this fast the tier is High, where relief is a no-op on the wire.
+        let mut noop = None;
+        for _ in 0..60 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 40.0, 0.0, 0.0);
+            if let Some(rec) = t.recommended() {
+                noop = Some(rec);
+                break;
+            }
+        }
+        let noop = noop.expect("relief must engage on a fast link with a heavy decode");
+        assert_eq!(
+            noop, applied,
+            "relief at High resolves to the settings already in force"
+        );
+        assert_eq!(
+            t.shared.lock().last_switch,
+            switch_at,
+            "a recommendation that changes nothing must not restart the cooldown"
+        );
+    }
+
+    #[test]
+    fn relief_never_disables_compression_entirely() {
+        // Regression: the High tier's compression is 1, and relief used a bare
+        // `saturating_sub(2)`, so a CPU-bound client on a fast link landed on
+        // compression 0. That is not "less zlib", it is NO zlib, and it grew
+        // payloads 5-10x. Worse, it latched: relief keys off `decode_ms`,
+        // `decode_rect` awaits socket reads, and uncompressed rects take
+        // longer to read, so the relief meant to lower `decode_ms` raised it
+        // and kept itself engaged. Measured end state against a real server:
+        // a steady 9.9 MB/s, saturating the link and the server's encoder and
+        // starving every other client on it.
+        let mut t = AutoTuner::new();
+        let mut now = Instant::now();
+        // Fast link + heavy decode: the exact conditions that engage relief,
+        // driven well past the sustain and cooldown windows so the ladder
+        // settles.
+        let mut last = None;
+        for _ in 0..200 {
+            now += STEP;
+            t.observe_at(now, Some(80e6), 5.0, 40.0, 0.0, 0.0);
+            if let Some(rec) = t.recommended() {
+                assert!(
+                    rec.compression >= 1,
+                    "auto ladder asked for compression {}, which disables zlib",
+                    rec.compression
+                );
+                last = Some(rec);
+            }
+        }
+        let rec = last.expect("relief should have engaged at least once");
+        assert_eq!(
+            rec.compression, 1,
+            "settled compression must be exactly the High tier's 1, not 0"
+        );
+    }
+
+    /// `decode_rect` awaits socket reads, so on a slow link `decode_ms`
+    /// mostly measures the WIRE, not the CPU. Relief must never fire there:
+    /// reducing compression on an already-slow link is backwards.
+    #[test]
+    fn decode_ms_on_a_slow_link_never_triggers_relief() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            // Medium-band link (well under the 20 Mbit/s relief floor) with
+            // an "overrun" decode time that is really queueing time.
+            now += STEP;
+            t.observe_at(now, Some(10e6), 90.0, 30.0, 0.0, 0.0);
+        }
+        assert_eq!(
+            t.recommended(),
+            None,
+            "no relief without a demonstrably fast link, and the tier is already Medium"
+        );
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+    }
+
+    /// Relief's on/off thresholds are asymmetric: it engages once decode
+    /// exceeds `FRAME_BUDGET_MS`, but releases only once decode falls under
+    /// `RELIEF_OFF_RATIO` of it, so a decode time hovering right at the
+    /// budget does not flicker relief on and off every sample.
+    #[test]
+    fn relief_off_threshold_is_lower_than_the_on_threshold() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+
+        // Engage relief on a fast link with a sustained decode overrun.
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 2.0, 30.0, 0.0, 0.0);
+        }
+        t.recommended().expect("relief should engage");
+
+        // Decode drops to 14 ms: under the 16 ms ON threshold but still
+        // above the 12 ms (0.75x) OFF threshold. Relief must hold.
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 2.0, 14.0, 0.0, 0.0);
+        }
+        assert_eq!(
+            t.recommended(),
+            None,
+            "relief must not release the instant decode dips under the ON threshold"
+        );
+
+        // Only once decode genuinely falls under the OFF threshold does
+        // relief release.
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 2.0, 8.0, 0.0, 0.0);
+        }
+        let rec = t
+            .recommended()
+            .expect("relief must release once decode is genuinely fast");
+        assert_eq!(
+            rec.compression,
+            QualityPreset::High.settings().compression,
+            "compression must return to the un-relieved High value"
+        );
+    }
+
+    #[test]
+    fn no_recommendation_without_measurements() {
+        let t = AutoTuner::new();
+        assert_eq!(t.recommended(), None);
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+    }
+
+    /// The bug the user hit: a gigabit LAN showing a desktop nobody is
+    /// touching. No burst ever completes, and the old tuner read wall-clock
+    /// idleness as a slow link and walked down to 64 colours, which also
+    /// forced a full-screen redraw on every step ("the picture repaints in
+    /// waves").
+    #[test]
+    fn an_idle_fast_link_never_downgrades() {
+        let mut t = AutoTuner::new();
+        let start = Instant::now();
+        // 60 seconds of a static desktop: nothing loads the link, so every
+        // tick observes `None` (this guards `have_real_sample`: the seeded
+        // starting tier must hold with no real sample ever seen).
+        for i in 1..=60 {
+            t.observe_at(start + Duration::from_secs(i), None, 0.4, 1.0, 0.0, 0.0);
+        }
+        assert!(
+            t.recommended().is_none(),
+            "an idle link must not trigger a quality change"
+        );
+        assert_eq!(t.current_tier(), QualityPreset::Medium);
+    }
+
+    /// ...but a link that is genuinely being loaded and genuinely slow must
+    /// still be detected, or Auto would be useless.
+    #[test]
+    fn a_loaded_slow_link_still_downgrades() {
+        let mut t = AutoTuner::new();
+        let start = Instant::now();
+        // ~800 kbit/s sustained with real traffic in every window.
+        for i in 1..=12 {
+            // 100 KiB that genuinely took a full second to transfer: ~800 kbit/s.
+            let bps = (100.0 * 1024.0 * 8.0) / 1.0;
+            t.observe_at(
+                start + Duration::from_secs(i),
+                Some(bps),
+                90.0,
+                2.0,
+                0.0,
+                0.0,
+            );
+        }
+        let rec = t.recommended().expect("a loaded slow link must downgrade");
+        assert!(
+            rec.jpeg_quality <= 4,
+            "expected a lower-quality tier, got {rec:?}"
+        );
+    }
+
+    /// The whole point of switching to stall-anchored burst sampling: a
+    /// server whose OWN encoder is slow (a Raspberry Pi is the standard
+    /// example) must not read as a slow link just because the socket sits
+    /// empty between rects. Every rect here opens on a real stall, then
+    /// delivers its data as a fast burst, exactly what a gigabit LAN behind
+    /// a slow encoder actually looks like on the wire.
+    ///
+    /// The contract this test carries changed when the duty-cycle brake
+    /// arrived, and the change is worth stating plainly. A fast link behind a
+    /// slow encoder and a fast link in front of a drowning client look
+    /// identical from the capacity estimator's point of view: both measure a
+    /// fast wire, both deliver less than it could carry. The old version of
+    /// this test relied on the SECOND case being unrepresentable, so any fast
+    /// link that was not delivering had to be a slow server. That is what let
+    /// video climb the ladder to High and stay there.
+    ///
+    /// So the discriminator is now an explicit input rather than an absent
+    /// one. This session reports the duty cycle it actually has: the Pi holds
+    /// the socket empty for 30 ms of every 32.5 ms rect and sends five rects a
+    /// second, so the client spends around 1% of each tick inside update
+    /// handling, and the same fast link with a duty cycle near 1.0 is a
+    /// different session that gets a different answer (see
+    /// `a_flooded_client_on_a_fast_link_is_capped_and_paced`). Low duty on a
+    /// fast link means the server is the one struggling, and this crate has
+    /// never punished a struggling server: the ladder stays free.
+    #[test]
+    fn a_slow_server_on_a_fast_link_never_downgrades() {
+        let mut t = AutoTuner::new();
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+
+        for _ in 0..20 {
+            let mut best: Option<f64> = None;
+            for _ in 0..5 {
+                // The Pi's encoder holds the socket empty for ~30 ms per
+                // rect: that time is the SERVER's, not the link's.
+                meter.stalled();
+                now += Duration::from_millis(30);
+                let opening = meter.received(now, 4 * 1024);
+                assert_eq!(
+                    opening, None,
+                    "the bytes that end a stall must not be timed: they \
+                     queued during the stall, not while crossing the wire"
+                );
+                // Once the queued rect starts flowing it arrives as a fast
+                // burst (gigabit LAN), which is what proves the link, not
+                // the server: enough bytes across enough wall time to clear
+                // both MIN_BURST_BYTES and MIN_BURST_S in this one delivery,
+                // so the burst completes within THIS rep rather than
+                // bleeding into the next one's stall/opening (a burst still
+                // open when the next rep starts would swallow its "opening"
+                // bytes into an ongoing accumulation instead of discarding
+                // them, breaking the assertion above).
+                now += Duration::from_micros(2500);
+                if let Some(bps) = meter.received(now, 80 * 1024) {
+                    best = Some(best.map_or(bps, |b: f64| b.max(bps)));
+                }
+            }
+            let sample = best.expect("a burst must complete every second");
+            assert!(
+                sample > 100e6,
+                "a burst timed on a gigabit LAN must read as fast, got {sample}"
+            );
+            // The duty cycle this modelled session really has: five rects a
+            // second, each 2.5 ms of delivery after 30 ms of the server
+            // thinking, so about 12.5 ms of every 1000 ms inside update
+            // handling. Rounded up to 5% rather than stated as 0.0, because
+            // "the client is barely working" is the fact under test and a
+            // literal zero would read as "nothing reported".
+            t.observe_at(now, Some(sample), 1.0, 2.0, 0.0, 0.05);
+            now += Duration::from_millis(850);
+        }
+
+        assert!(
+            !t.wants_paced_updates(),
+            "a client that is idle 95% of the time is not flooded: pacing a \
+             slow server only slows it down further"
+        );
+        let medium = QualityPreset::Medium.settings();
+        if let Some(rec) = t.recommended() {
+            assert!(
+                rec.jpeg_quality >= medium.jpeg_quality,
+                "must never drop below Medium's quality: {rec:?}"
+            );
+        }
+        assert_ne!(
+            t.current_tier(),
+            QualityPreset::Low,
+            "a Pi's slow encoder must never read as a slow link"
+        );
+    }
+
+    /// ...but a link that is genuinely slow, not merely fed by a slow
+    /// server, must still be caught, driven with realistic segment-sized
+    /// deliveries and a stall before every single one, which is exactly what
+    /// proves stalls-mid-burst do not truncate a sample: a truly slow link
+    /// stalls constantly (the wire itself is the bottleneck), so if a stall
+    /// ended a burst this link could never accumulate enough to be measured.
+    #[test]
+    fn a_genuinely_slow_link_still_downgrades() {
+        let mut t = AutoTuner::new();
+        let mut meter = LinkMeter::default();
+        let start = Instant::now();
+        let mut now = start;
+        const SEGMENT: usize = 1448; // one Ethernet MSS' worth of payload
+
+        while now.duration_since(start) < Duration::from_secs(20) {
+            meter.stalled();
+            now += Duration::from_millis(12); // ~965 kbit/s worth of spacing
+            if let Some(bps) = meter.received(now, SEGMENT) {
+                assert!(
+                    bps < 1.5e6,
+                    "a ~965 kbit/s link must not read as fast, got {bps}"
+                );
+                t.observe_at(now, Some(bps), 40.0, 2.0, 0.0, 0.0);
+            }
+        }
+
+        let rec = t
+            .recommended()
+            .expect("a genuinely slow link must downgrade");
+        assert_eq!(rec.jpeg_quality, 3, "must land on the new automatic floor");
+        assert_eq!(t.current_tier(), QualityPreset::Low);
+    }
+
+    /// A single fast burst (a fluke: a backlog flushing all at once, say)
+    /// must not pin the link estimate at high quality forever. The windowed
+    /// max keeps it alive for up to 2*LINK_WINDOW, but a link that is
+    /// genuinely slow the rest of the time still has to win once the fluke
+    /// ages out.
+    #[test]
+    fn one_fluke_burst_cannot_pin_a_slow_link_at_high_quality() {
+        let mut t = AutoTuner::new();
+        let start = Instant::now();
+        let mut now = start;
+
+        t.observe_at(now, Some(200e6), 1.0, 2.0, 0.0, 0.0);
+
+        while now.duration_since(start) < Duration::from_secs(20) {
+            now += Duration::from_millis(200);
+            t.observe_at(now, Some(0.4e6), 200.0, 2.0, 0.0, 0.0);
+        }
+
+        let rec = t
+            .recommended()
+            .expect("the outlier must age out and the link must downgrade");
+        assert_eq!(t.current_tier(), QualityPreset::Low);
+        assert_eq!(rec.jpeg_quality, 3);
+    }
+
+    /// A measured estimate must not erode just because nothing loads the
+    /// link for a while: silence is not evidence of slowness. Windows rotate
+    /// only when a sample ARRIVES (see `AutoTuner::record_link`), never on a
+    /// timer.
+    #[test]
+    fn a_quiet_spell_does_not_erode_a_measured_estimate() {
+        let mut t = AutoTuner::new();
+        let start = Instant::now();
+        let mut now = start;
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 2.0, 0.0, 0.0);
+        }
+        t.recommended()
+            .expect("sustained fast burst must upgrade to High");
+        assert_eq!(t.current_tier(), QualityPreset::High);
+
+        // A quiet spell: nobody moves the mouse, no burst ever completes, so
+        // every tick observes `None`.
+        for _ in 0..60 {
+            now += Duration::from_secs(1);
+            t.observe_at(now, None, 1.0, 2.0, 0.0, 0.0);
+        }
+        assert_eq!(
+            t.recommended(),
+            None,
+            "a quiet spell must not trigger a downgrade"
+        );
+        assert_eq!(t.current_tier(), QualityPreset::High);
+    }
+
+    // -- LinkMeter ------------------------------------------------------
+
+    /// Data that queued while the socket was empty and then all arrives at
+    /// once must not be timed as if it crossed the wire in zero time. The
+    /// burst that delivery OPENS is then timed normally.
+    #[test]
+    fn bytes_that_were_already_waiting_are_never_timed() {
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+
+        meter.stalled();
+        assert_eq!(
+            meter.received(now, 64 * 1024),
+            None,
+            "data that queued during a stall must not be credited to a zero-time interval"
+        );
+
+        now += Duration::from_millis(10);
+        let bps = meter
+            .received(now, 32 * 1024)
+            .expect("the burst this opened must complete once it reaches MIN_BURST_BYTES");
+        let expected = (32.0 * 1024.0 * 8.0) / 0.010;
+        assert!(
+            (bps - expected).abs() / expected < 1e-6,
+            "got {bps}, expected {expected}"
+        );
+    }
+
+    /// A stall arriving WHILE a burst is still accumulating must not
+    /// truncate or reset it: on a genuinely slow link the socket goes empty
+    /// between every segment, so ending bursts on stall would make slow
+    /// links unmeasurable, the exact opposite of what this type is for.
+    #[test]
+    fn a_stall_inside_a_burst_does_not_end_it() {
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+
+        meter.stalled();
+        assert_eq!(meter.received(now, 4096), None); // opens the burst
+
+        now += Duration::from_millis(1);
+        assert_eq!(meter.received(now, 4096), None); // 4 KiB, below the 16 KiB train
+
+        // A stall mid-burst.
+        meter.stalled();
+
+        now += Duration::from_millis(1);
+        assert_eq!(meter.received(now, 4096), None); // 8 KiB
+        now += Duration::from_millis(1);
+        assert_eq!(meter.received(now, 4096), None); // 12 KiB
+
+        now += Duration::from_millis(1);
+        let bps = meter
+            .received(now, 4096)
+            .expect("16 KiB reached: the burst completes as ONE continuous interval");
+        let expected = (16.0 * 1024.0 * 8.0) / 0.004;
+        assert!(
+            (bps - expected).abs() / expected < 1e-6,
+            "the stall in the middle must not have reset the burst: got {bps}, expected {expected}"
+        );
+    }
+
+    /// A trickle that never gathers a full packet train must never complete
+    /// a burst, or a nearly-idle link would read as an arbitrarily fast one
+    /// off a handful of bytes.
+    #[test]
+    fn an_idle_trickle_never_completes_a_burst() {
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+        for _ in 0..60 {
+            meter.stalled();
+            now += Duration::from_secs(1);
+            assert_eq!(
+                meter.received(now, 300),
+                None,
+                "a 300 B/s trickle must never complete a burst"
+            );
+        }
+    }
+
+    /// REGRESSION: the MAX_BURST_S abandonment check used to run only in the
+    /// under-`MIN_BURST_BYTES` branch, so a delivery that crossed the byte
+    /// threshold skipped it entirely: a burst partially filled, then left
+    /// idle for MAX_BURST_S, then finally topped up by one more delivery
+    /// completed anyway, timed over the WHOLE idle span. That read a
+    /// gigabit LAN as ~5 kbit/s and walked Auto all the way down to
+    /// `Tier::Low`.
+    #[test]
+    fn a_burst_left_idle_past_max_burst_s_is_abandoned_even_when_the_next_delivery_crosses_the_threshold(
+    ) {
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+
+        meter.stalled();
+        // Opens the burst; partially fills it, well under MIN_BURST_BYTES.
+        assert_eq!(meter.received(now, 4 * 1024), None);
+
+        // Idle far past MAX_BURST_S with the burst still open.
+        now += Duration::from_secs(30);
+
+        // This delivery crosses MIN_BURST_BYTES, the branch the bug never
+        // checked MAX_BURST_S in. It must still be abandoned, not completed
+        // and timed over the full 30 s gap.
+        assert_eq!(
+            meter.received(now, 16 * 1024),
+            None,
+            "a burst idle past MAX_BURST_S must be abandoned even on the delivery \
+             that crosses MIN_BURST_BYTES, not completed and timed over the whole gap"
+        );
+
+        // The abandonment must actually have reset state: a fresh stall can
+        // open (and complete) a new, plausible burst right away.
+        meter.stalled();
+        now += Duration::from_millis(1);
+        assert_eq!(meter.received(now, 4 * 1024), None); // opens
+        now += Duration::from_millis(4);
+        let bps = meter
+            .received(now, 16 * 1024)
+            .expect("a fresh burst after abandonment must still complete normally");
+        assert!(
+            bps < 100e6,
+            "the fresh burst must be timed on its own short span, not the stale one: got {bps}"
+        );
+    }
+
+    /// REGRESSION: a kernel socket buffer or an in-process carrier (the SSH
+    /// tunnel's mpsc channel) can hand a whole backlog to one `poll_read` in
+    /// a slice of a millisecond. That backlog was genuinely QUEUED, not
+    /// delivered at that rate; timing it naively reads a 5 Mbit/s link as
+    /// multi-gigabit and pins Auto at High via back-pressure. The plausible-
+    /// rate ceiling must reject it instead of folding it into the window.
+    #[test]
+    fn a_backlog_dump_right_after_a_stall_is_rejected_as_implausible() {
+        let mut meter = LinkMeter::default();
+        let mut now = Instant::now();
+
+        meter.stalled();
+        assert_eq!(meter.received(now, 64 * 1024), None); // opens, discarded
+
+        // The rest of a large backlog draining in one shot: 256 MiB in 3 ms
+        // is ~700 Gbit/s, comfortably clearing MIN_BURST_S but nowhere near
+        // plausible for a real last hop.
+        now += Duration::from_millis(3);
+        assert_eq!(
+            meter.received(now, 256 * 1024 * 1024),
+            None,
+            "an implausible rate must be rejected as a measurement artifact, \
+             not folded into the window"
+        );
+
+        // Rejection must reset state: a subsequent stall can still open and
+        // complete a fresh, plausible burst.
+        meter.stalled();
+        now += Duration::from_millis(5);
+        assert_eq!(meter.received(now, 4096), None); // opens
+        now += Duration::from_millis(5);
+        let bps = meter
+            .received(now, 32 * 1024)
+            .expect("a plausible burst must still complete after the rejection");
+        assert!(bps < 1e9, "expected a plausible rate, got {bps}");
+    }
+
+    /// REGRESSION: the automatic ladder must never change the pixel format.
+    ///
+    /// Every tier it can reach has to stay at full colour, because a format
+    /// change costs a full-screen redraw (`run_loop::apply_quality`) and
+    /// posterising to 64 colours reads as a broken picture, not as an
+    /// adaptation. This is what made a Raspberry Pi on a LAN, whose slow
+    /// encoder reads as a slow link, end up both pixelated and repainting in
+    /// patches as the user moved the mouse.
+    #[test]
+    fn the_automatic_ladder_never_reduces_colour_depth() {
+        // Everything except the bottom rung stays at full colour: a format
+        // switch costs a full redraw, so it is reserved for the one tier where
+        // the bandwidth saving genuinely outweighs that.
+        for tier in [Tier::High, Tier::Medium, Tier::LowIsh] {
+            assert_eq!(
+                tier.settings().pixel_format,
+                ColorDepth::Full,
+                "{tier:?} must not change the pixel format"
+            );
+        }
+        assert_eq!(
+            Tier::Low.settings().pixel_format,
+            ColorDepth::Palette256,
+            "the sub-1 Mbit/s rung keeps its colour reduction"
+        );
+        // The explicit presets go further still:
+        // choosing it is not the same as having it chosen for you.
+        assert_eq!(
+            QualityPreset::Low.settings().pixel_format,
+            ColorDepth::Palette256
+        );
+        assert_eq!(
+            QualityPreset::BlackAndWhite.settings().pixel_format,
+            ColorDepth::Grayscale
+        );
+    }
+
+    /// The ladder must still span a real bandwidth range, or Auto cannot
+    /// adapt at all once colour depth is off the table.
+    #[test]
+    fn the_ladder_still_spans_a_useful_quality_range() {
+        let q = |t: Tier| t.settings().jpeg_quality;
+        assert!(
+            q(Tier::High) > q(Tier::Medium)
+                && q(Tier::Medium) > q(Tier::LowIsh)
+                && q(Tier::LowIsh) > q(Tier::Low),
+            "each tier down must actually cost quality"
+        );
+        let c = |t: Tier| t.settings().compression;
+        assert!(
+            c(Tier::Low) > c(Tier::High),
+            "the slow end must compress harder"
+        );
+    }
+
+    /// A fast link that is actually being used must be recognised as fast.
+    ///
+    /// This assertion was re-examined when the duty-cycle brake went in,
+    /// because the climb it asserts is the same climb that made video
+    /// unusable: on a fast wire the ladder reaches High, the most expensive
+    /// operating point it has, a few seconds in. It is kept, and the reason is
+    /// that the climb was never wrong, only underdetermined. High is exactly
+    /// what a 40 Mbit/s link with a client comfortably keeping up should be
+    /// running, and the information that used to be missing (whether the
+    /// client is keeping up) is now an argument rather than an assumption.
+    ///
+    /// So the scenario is stated fully: 20% duty, inside the 17.7 to 28.4%
+    /// band measured on a healthy Medium-tier session, which is a link being
+    /// genuinely used by a client with plenty of headroom. The same link at a
+    /// duty cycle near 1.0 must NOT climb, and
+    /// `a_flooded_client_on_a_fast_link_is_capped_and_paced` pins that half.
+    /// Between them the two tests say what one test alone could not.
+    #[test]
+    fn a_loaded_fast_link_upgrades() {
+        let mut t = AutoTuner::new();
+        let start = Instant::now();
+        // ~40 Mbit/s with sub-millisecond RTT.
+        for i in 1..=12 {
+            // 5 MiB in a second of actual transfer: ~40 Mbit/s.
+            let bps = (5.0 * 1024.0 * 1024.0 * 8.0) / 1.0;
+            t.observe_at(
+                start + Duration::from_secs(i),
+                Some(bps),
+                0.5,
+                3.0,
+                0.0,
+                0.2,
+            );
+        }
+        let rec = t.recommended().expect("a loaded fast link must upgrade");
+        assert!(rec.jpeg_quality >= 8, "expected high quality, got {rec:?}");
+        assert!(
+            !t.wants_paced_updates(),
+            "a busy but healthy session must not be paced"
+        );
+    }
+
+    // -- Tier hysteresis / relief gating / fast downgrade / resync ----------
+
+    /// Directional hysteresis at a tier boundary: clearing it upgrades, but
+    /// only falling below `DOWNGRADE_HYSTERESIS` (0.8x) of it downgrades back.
+    /// Without this a link sampled right at the boundary re-evaluates to a
+    /// different tier on every sample.
+    #[test]
+    fn tier_boundary_has_directional_hysteresis() {
+        // Once at High, a small dip below 20 Mbit/s (but still above the
+        // 16 Mbit/s floor) must not read as a downgrade.
+        assert_eq!(Tier::from_link(19e6, Tier::High), Tier::High);
+        assert_eq!(Tier::from_link(20.5e6, Tier::High), Tier::High);
+        // Falling below the 0.8x floor genuinely downgrades.
+        assert_eq!(Tier::from_link(15e6, Tier::High), Tier::Medium);
+        // From Medium, climbing back requires clearing the FULL boundary,
+        // not just the hysteresis floor a High session would tolerate.
+        assert_eq!(Tier::from_link(17e6, Tier::Medium), Tier::Medium);
+        assert_eq!(Tier::from_link(20.1e6, Tier::Medium), Tier::High);
+    }
+
+    /// A link oscillating 19-21 Mbit/s across a boundary reads, via the
+    /// windowed max (every sample is a lower bound, see `capacity_bps`), as
+    /// "at least ~21 Mbit/s" continuously, so it correctly settles at High
+    /// and stays there for as long as the oscillation continues, which this
+    /// confirms; it is `a_link_settled_at_high_does_not_downgrade_from_a_dip_
+    /// within_the_hysteresis_band` below, where the 21 Mbit/s samples stop
+    /// recurring and the windowed max genuinely converges on 19 Mbit/s, that
+    /// isolates what the hysteresis fix actually changes.
+    #[test]
+    fn an_oscillating_link_near_the_high_boundary_settles_at_high_and_holds() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        let mut recommendations = 0;
+        for cycle in 0..20 {
+            let bps = if cycle % 2 == 0 { 21e6 } else { 19e6 };
+            for _ in 0..7 {
+                now += STEP; // ~1.4 s per half-period
+                t.observe_at(now, Some(bps), 2.0, 3.0, 0.0, 0.0);
+                if t.recommended().is_some() {
+                    recommendations += 1;
+                }
+            }
+        }
+        assert_eq!(
+            recommendations, 1,
+            "must settle into High once and hold, not flap back and forth"
+        );
+        assert_eq!(t.current_tier(), QualityPreset::High);
+    }
+
+    /// REGRESSION (directional hysteresis): once genuinely settled at High
+    /// with the seeding fast sample long aged out of both `LINK_WINDOW`s, a
+    /// sustained dip to 19 Mbit/s, below the nominal 20 Mbit/s boundary but
+    /// above the 16 Mbit/s (0.8x) floor a High session tolerates, must not
+    /// downgrade. The OLD flat-threshold ladder read every sample under
+    /// 20 Mbit/s as a downgrade the instant the fast seed aged out.
+    #[test]
+    fn a_link_settled_at_high_does_not_downgrade_from_a_dip_within_the_hysteresis_band() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 2.0, 0.0, 0.0);
+        }
+        t.recommended().expect("must upgrade to High");
+        assert_eq!(t.current_tier(), QualityPreset::High);
+
+        // Sustained at 19 Mbit/s for long enough (> 2*LINK_WINDOW) that the
+        // windowed max fully forgets the 60 Mbit/s seed and genuinely
+        // converges on 19 Mbit/s.
+        let switch_time = now;
+        let deadline = 2 * LINK_WINDOW + Duration::from_secs(2);
+        while now.duration_since(switch_time) < deadline {
+            now += STEP;
+            t.observe_at(now, Some(19e6), 2.0, 3.0, 0.0, 0.0);
+            assert_eq!(
+                t.recommended(),
+                None,
+                "a dip to 19 Mbit/s (above the 0.8x hysteresis floor) must not downgrade High"
+            );
+        }
+        assert_eq!(t.current_tier(), QualityPreset::High);
+    }
+
+    /// REGRESSION: `capacity_bps()` is a MAX over two `LINK_WINDOW`s, so a
+    /// single spurious high sample used to rule for up to `2*LINK_WINDOW`
+    /// even after the link genuinely dropped, taking 12-15 s to react. A
+    /// fresh sample already below the CURRENT tier's own downgrade floor must
+    /// be trusted directly, downgrading within SUSTAIN_DOWN + COOLDOWN_DOWN
+    /// instead. The bound tightened when the time constants were split by
+    /// direction: this used to be allowed the 2 s and 5 s of the symmetric
+    /// pair, and a crashed link now has to be answered inside about two
+    /// seconds.
+    #[test]
+    fn a_single_low_sample_downgrades_within_sustain_plus_cooldown_not_two_windows() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        }
+        assert!(t.recommended().is_some(), "must upgrade to High first");
+        assert_eq!(t.current_tier(), QualityPreset::High);
+        let switch_time = now;
+
+        // A single, sustained low sample (2 Mbit/s, well under High's
+        // 16 Mbit/s downgrade floor): must rule directly rather than wait for
+        // the stale 60 Mbit/s sample to age out of the windowed max.
+        let mut rec = None;
+        while now.duration_since(switch_time)
+            < SUSTAIN_DOWN + COOLDOWN_DOWN + Duration::from_secs(1)
+        {
+            now += STEP;
+            t.observe_at(now, Some(2e6), 100.0, 4.0, 0.0, 0.0);
+            if let Some(r) = t.recommended() {
+                rec = Some(r);
+                break;
+            }
+        }
+        let elapsed = now.duration_since(switch_time);
+        assert!(
+            elapsed < 2 * LINK_WINDOW,
+            "must not wait for the windowed max to age out, took {elapsed:?}"
+        );
+        assert!(
+            rec.is_some(),
+            "must downgrade within SUSTAIN_DOWN + COOLDOWN_DOWN of the crash, took {elapsed:?}"
+        );
+        assert_ne!(t.current_tier(), QualityPreset::High);
+    }
+
+    /// `resync` must realign the tuner's bookkeeping to settings applied from
+    /// OUTSIDE it (a manual `SetQuality`), or a manual detour desyncs Auto:
+    /// switching back to it would do nothing until fresh measurements happen
+    /// to walk the ladder back to wherever it actually is.
+    #[test]
+    fn resync_realigns_the_tuner_after_a_manual_preset_detour() {
+        let mut t = AutoTuner::new();
+        let base = Instant::now();
+        let mut now = base;
+        // Establish Auto at High with real measurements.
+        for _ in 0..30 {
+            now += STEP;
+            t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        }
+        t.recommended().expect("must upgrade to High");
+        assert_eq!(t.current_tier(), QualityPreset::High);
+
+        // The user manually detours to Low. Without resync, `current` would
+        // still say High.
+        t.resync(&QualityPreset::Low.settings());
+        assert_eq!(
+            t.current_tier(),
+            QualityPreset::Low,
+            "resync must realign current_tier() to the manual preset"
+        );
+
+        // Immediately observing the SAME link that was already High-band
+        // must not instantly flip back: resync must also have cleared any
+        // stale candidate, so a fresh sustain period is required.
+        now += STEP;
+        t.observe_at(now, Some(60e6), 1.0, 4.0, 0.0, 0.0);
+        assert_eq!(
+            t.recommended(),
+            None,
+            "a single sample right after resync must not immediately recommend a switch"
+        );
+    }
+}

@@ -6,6 +6,38 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-10 direct VNC implementation awaiting exact-head CI
+
+- Branch `feat/post-v0.9-roadmap`; last verified pushed HEAD before this block
+  `cabd6ede50bea3b4b04f77c3397a5dd461c5970a`. Its
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42681820162)
+  passed 6/6, including Windows release/NSIS, Ubuntu desktop, Arch preview,
+  browser and frontend. PR #13 remains Draft.
+- Added native RFB/VeNCrypt client with X509Vnc/X509Plain only. Vendored
+  DeskVNC `vnc-core` at `e80c515d94c5d91ec16f3bdb4439ed83c949437f`
+  with MIT/Apache licenses, patched to reject cleartext/anonymous subtypes
+  and verify the exact TLS SPKI pin before any password exchange. Added
+  rectangle PNG framebuffer, keyboard/mouse, resize request, opt-in text
+  clipboard, bounded reconnect/disconnect, UI and disposable loopback
+  X509Plain positive/wrong-pin fixture. See `docs/DIRECT-VNC.md`.
+- Local frontend tests: 53 passed; production build passed. Rustfmt and
+  locked dependency resolution passed. Local Rust compilation is blocked by
+  absent MSVC `link.exe`; the new Rust code and disposable fixture require
+  Windows/Ubuntu/Arch CI before this block can be called verified.
+- Open VNC gates: exact-head CI and fixture result; native Windows/Arch GUI
+  acceptance **NOT TESTED**; clipboard round trip, resize and reconnect
+  with a disposable server need dedicated coverage; password zeroization in
+  every upstream library copy is unproven. Do not call VNC complete yet.
+- Open RDP gates: guaranteed password zeroization in IronRDP, saved pin
+  enforcement, clipboard round trip and reconnect native acceptance.
+- Next: fix any VNC CI failures; add positive/negative disposable VNC
+  clipboard/resize/reconnect checks; then finish RDP, Vault, VPN and remaining
+  P0/P1 from roadmap. Do not merge, tag or release.
+- Resume commands: `git status --short --branch`, `git rev-parse HEAD`,
+  `npm test`, `npm run build`, `cargo test --locked --manifest-path
+  src-tauri/Cargo.toml` in CI; inspect exact-head Actions jobs and their
+  failing logs only.
+
 ### 2026-11-09 Vault to direct RDP native handoff (verification pending)
 
 - Working branch `feat/post-v0.9-roadmap`; last pushed HEAD before this block

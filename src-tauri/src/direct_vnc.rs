@@ -530,11 +530,11 @@ mod tests {
                         .accept(stream)
                         .await;
                     let Ok(mut secure) = accepted else {
-                        return (false, false, false, false);
+                        return (false, false, false, false, false);
                     };
                     let mut lengths = [0; 8];
                     if secure.read_exact(&mut lengths).await.is_err() {
-                        return (false, false, false, false);
+                        return (false, false, false, false, false);
                     }
                     let user_len = u32::from_be_bytes(lengths[0..4].try_into().unwrap()) as usize;
                     let pass_len = u32::from_be_bytes(lengths[4..8].try_into().unwrap()) as usize;
@@ -560,11 +560,23 @@ mod tests {
                     // 32-bit true-colour pixel format in this fixture.
                     secure
                         .write_all(&[
-                            0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0,
+                            0, 0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0,
                             255, 0, 0, 0, 255, 0, 0, 0, 255, 0,
                         ])
                         .await
                         .unwrap();
+                    // Advertise ExtendedDesktopSize with one screen so the
+                    // client may send SetDesktopSize after its first frame.
+                    let mut desktop = Vec::new();
+                    desktop.extend_from_slice(&[0, 0, 0, 0, 0, 2, 0, 2]);
+                    desktop.extend_from_slice(&(-308i32).to_be_bytes());
+                    desktop.extend_from_slice(&[1, 0, 0, 0]);
+                    desktop.extend_from_slice(&[0; 4]); // screen ID
+                    desktop.extend_from_slice(&[0; 4]); // x and y
+                    desktop.extend_from_slice(&2u16.to_be_bytes());
+                    desktop.extend_from_slice(&2u16.to_be_bytes());
+                    desktop.extend_from_slice(&[0; 4]); // flags
+                    secure.write_all(&desktop).await.unwrap();
                     let remote_text = b"remote fixture";
                     secure.write_all(&[3, 0, 0, 0]).await.unwrap();
                     secure
@@ -576,7 +588,8 @@ mod tests {
                         let mut pointer = false;
                         let mut key = false;
                         let mut clipboard = false;
-                        while !(pointer && key && clipboard) {
+                        let mut resize = false;
+                        while !(pointer && key && clipboard && resize) {
                             let kind = secure.read_u8().await.unwrap();
                             match kind {
                                 0 => {
@@ -617,14 +630,24 @@ mod tests {
                                     secure.read_exact(&mut body).await.unwrap();
                                     clipboard = body == b"local fixture";
                                 }
+                                251 => {
+                                    let mut header = [0; 7];
+                                    secure.read_exact(&mut header).await.unwrap();
+                                    let width = u16::from_be_bytes([header[1], header[2]]);
+                                    let height = u16::from_be_bytes([header[3], header[4]]);
+                                    assert_eq!(header[5], 1);
+                                    let mut screen = [0; 16];
+                                    secure.read_exact(&mut screen).await.unwrap();
+                                    resize = (width, height) == (640, 480);
+                                }
                                 other => panic!("unexpected disposable VNC client message {other}"),
                             }
                         }
-                        (pointer, key, clipboard)
+                        (pointer, key, clipboard, resize)
                     })
                     .await
                     .expect("disposable VNC input timed out");
-                    (true, observed.0, observed.1, observed.2)
+                    (true, observed.0, observed.1, observed.2, observed.3)
                 });
                 let mut target = target();
                 target.port = port;
@@ -640,7 +663,7 @@ mod tests {
                         match event {
                             SessionEvent::StateChanged(SessionState::Connected) => connected = true,
                             SessionEvent::FramebufferUpdate { rects, .. } => {
-                                frame = !rects.is_empty();
+                                frame |= !rects.is_empty();
                             }
                             SessionEvent::ClipboardText(text) => {
                                 clipboard = text == "remote fixture"
@@ -666,6 +689,12 @@ mod tests {
                             handle
                                 .try_send(ClientCommand::ClipboardText("local fixture".into()))
                                 .unwrap();
+                            handle
+                                .try_send(ClientCommand::RequestResize {
+                                    width: 640,
+                                    height: 480,
+                                })
+                                .unwrap();
                             break;
                         }
                     }
@@ -681,9 +710,9 @@ mod tests {
                 assert_eq!(
                     observed,
                     if correct_pin {
-                        (true, true, true, true)
+                        (true, true, true, true, true)
                     } else {
-                        (false, false, false, false)
+                        (false, false, false, false, false)
                     }
                 );
                 assert_eq!(

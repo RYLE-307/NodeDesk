@@ -35,9 +35,10 @@ it for a full username and password exchange inside verified TLS.
 The disposable tests use loopback RFB/VeNCrypt X509Plain servers with generated
 certificates. They check that the wrong pin receives no password, and that a
 matching pin permits authentication, framebuffer, keyboard, pointer and text
-clipboard exchange. A separate fixture drops the first connection and checks
-that the client reconnects to the same pinned server. The new input, clipboard
-and reconnect fixtures require exact-head CI confirmation. Native Windows and
-Arch GUI acceptance and live resize remain **NOT TESTED**. The pinned upstream
+clipboard exchange. The input fixture also advertises ExtendedDesktopSize and
+checks a SetDesktopSize request. A separate fixture drops the first connection
+and checks that the client reconnects to the same pinned server. The resize
+extension requires exact-head CI confirmation. Native Windows and Arch GUI
+acceptance remains **NOT TESTED**. The pinned upstream
 credential type uses ordinary `String` values, so guaranteed password
 zeroization in all library copies is also an open security gate.

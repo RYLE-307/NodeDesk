@@ -30,6 +30,19 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 - Resume: `git status --short --branch`; run frontend unit/build locally;
   commit and push this repair; inspect exact-head CI jobs and only failed logs.
 
+### 2026-11-10 direct VNC resize fixture in progress
+
+- Repair/Vault commit `3cd3f4fe3bbc4f6cbc069e777fb189b11b12bfc1`
+  pushed. [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42773333004)
+  passed frontend, browser and Rust tests on Windows/Ubuntu/Arch at this
+  update; desktop packages were still running. Do not claim 6/6 yet.
+- Added an ExtendedDesktopSize advertisement to the disposable X509Plain
+  fixture and an assertion for the resulting SetDesktopSize request. This
+  local change is **NOT YET TESTED by CI**. Finish Rust formatting and diff
+  checks, commit/push and require exact-head Windows/Ubuntu/Arch CI.
+- Native Windows/Arch VNC GUI, all library password copies zeroized and
+  live server interoperability remain open release gates.
+
 ### 2026-11-10 direct VNC implementation awaiting exact-head CI
 
 - Repair commit `95217a606093e3516de8f290c03984231658fbae` pushed;

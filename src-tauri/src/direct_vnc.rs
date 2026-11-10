@@ -141,11 +141,11 @@ impl Framebuffer {
             RectPayload::Jpeg(data) if data.len() <= 16 * 1024 * 1024 => {
                 let mut reader =
                     image::ImageReader::with_format(Cursor::new(&data), image::ImageFormat::Jpeg);
-                reader.limits(image::Limits {
-                    max_image_width: Some(rect.width as u32),
-                    max_image_height: Some(rect.height as u32),
-                    max_alloc: Some(expected as u64 * 4),
-                });
+                let mut limits = image::Limits::default();
+                limits.max_image_width = Some(rect.width as u32);
+                limits.max_image_height = Some(rect.height as u32);
+                limits.max_alloc = Some(expected as u64 * 4);
+                reader.limits(limits);
                 let decoded = reader.decode().map_err(|_| "Invalid VNC JPEG rectangle")?;
                 if decoded.width() != rect.width as u32 || decoded.height() != rect.height as u32 {
                     return Err("VNC JPEG dimensions mismatch".into());
@@ -203,16 +203,15 @@ pub async fn vnc_direct_connect(
 ) -> Result<(), String> {
     let config = options(&target, password, spki_sha256)?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let handle = Arc::new(Session::spawn(target.id.clone(), config, tx));
-    {
+    let handle = {
         let mut active = sessions
             .0
             .lock()
             .map_err(|_| "VNC session state unavailable")?;
         if active.contains_key(&target.id) {
-            handle.shutdown();
             return Err("VNC connection already active".into());
         }
+        let handle = Arc::new(Session::spawn(target.id.clone(), config, tx));
         active.insert(
             target.id.clone(),
             Active {
@@ -220,7 +219,8 @@ pub async fn vnc_direct_connect(
                 clipboard,
             },
         );
-    }
+        handle
+    };
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
     tauri::async_runtime::spawn(async move {
@@ -255,31 +255,39 @@ pub async fn vnc_direct_connect(
                     }
                 }
                 SessionEvent::FramebufferUpdate { rects, .. } => {
-                    let mut outcome = Ok(());
+                    let mut failed = false;
                     for tile in rects {
                         let rect = tile.rect;
-                        outcome = match frame.apply(rect, tile.payload) {
-                            Ok(png) => events
-                                .send(Event::Frame {
-                                    x: rect.x,
-                                    y: rect.y,
-                                    width: rect.width,
-                                    height: rect.height,
-                                    png,
-                                })
-                                .map_err(|_| "VNC event channel closed".into()),
+                        match frame.apply(rect, tile.payload) {
+                            Ok(png) => {
+                                if events
+                                    .send(Event::Frame {
+                                        x: rect.x,
+                                        y: rect.y,
+                                        width: rect.width,
+                                        height: rect.height,
+                                        png,
+                                    })
+                                    .is_err()
+                                {
+                                    failed = true;
+                                }
+                            }
                             Err(_) => {
                                 let _ = events.send(Event::Error {
                                     message: "Invalid VNC frame",
                                 });
-                                Err("Invalid VNC frame".into())
+                                failed = true;
                             }
-                        };
-                        if outcome.is_err() {
+                        }
+                        if failed {
                             break;
                         }
                     }
-                    outcome
+                    if failed {
+                        break;
+                    }
+                    continue;
                 }
                 SessionEvent::ClipboardText(text) if clipboard && text.len() <= 65536 => {
                     events.send(Event::Clipboard { text })
@@ -551,7 +559,10 @@ mod tests {
                 .await
                 .unwrap();
                 handle.shutdown();
-                let password_reached_server = server.await.unwrap();
+                let password_reached_server = tokio::time::timeout(Duration::from_secs(10), server)
+                    .await
+                    .expect("disposable VNC server timed out")
+                    .unwrap();
                 assert_eq!(password_reached_server, correct_pin);
                 assert_eq!(
                     outcome,

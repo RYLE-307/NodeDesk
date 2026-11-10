@@ -50,8 +50,8 @@ export function VncWorkspace({connection,language}:{connection:Connection;langua
       : "The alternative mode opens TigerVNC Viewer in an external X.509 window. Enter its password only in TigerVNC. The server must support X509Vnc or X509Plain. Verify the certificate before signing in."}
     </p>
     <p className="ssh-help">{ru
-      ? "Незащищённый VNCAuth и анонимный TLS не используются. Для старого VNC-сервера потребуется будущий SSH/VPN-туннель. Буфер обмена отключён. Закрытие вкладки NodeDesk не завершает внешнее VNC-подключение."
-      : "Unencrypted VncAuth and anonymous TLS are disabled. Legacy VNC needs a future SSH/VPN tunnel. Clipboard sharing is disabled. Closing the NodeDesk tab does not close the external VNC session."}
+      ? "Незащищённый VNCAuth и анонимный TLS не используются. Для старого VNC-сервера потребуется отдельный безопасный туннель. Во внешнем режиме буфер обмена отключён. Закрытие вкладки NodeDesk не завершает внешнее VNC-подключение."
+      : "Unencrypted VncAuth and anonymous TLS are disabled. Legacy VNC needs a separate secure tunnel. Clipboard sharing is disabled in the external mode. Closing the NodeDesk tab does not close the external VNC session."}
     </p>
     <p className="ssh-help">{ru
       ? "Arch: пакет tigervnc. Windows: установите TigerVNC Viewer с официального сайта. Имя пользователя из каталога пока не передаётся программе просмотра."

@@ -41,6 +41,21 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
   useEffect(()=>()=>{generation.current++;connected.current=false;
     if(started.current&&isTauri())void invoke("vnc_direct_disconnect",{id}).catch(()=>{});
     started.current=false;remoteClipboard.current="";},[id]);
+  useEffect(()=>{
+    if(phase!=="connected"||!surface.current)return;
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const observer=new ResizeObserver(()=>{
+      clearTimeout(timer);
+      timer=setTimeout(()=>{
+        if(!surface.current||!connected.current)return;
+        const width=Math.max(320,Math.min(4096,Math.round(surface.current.clientWidth)));
+        const height=Math.max(240,Math.min(2160,Math.round(surface.current.clientHeight)));
+        send({type:"resize",width,height});
+      },300);
+    });
+    observer.observe(surface.current);
+    return ()=>{observer.disconnect();clearTimeout(timer);};
+  },[phase,id]);
 
   async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number){
     if(event.width<1||event.height<1||event.png.length>24*1024*1024)return;

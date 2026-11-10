@@ -8,6 +8,16 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ### 2026-11-10 direct VNC implementation awaiting exact-head CI
 
+- Initial direct VNC commit `53df38289ec9c57a5195d9997c3a32aae8d18d8f`
+  was pushed. Its [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42769204972)
+  passed browser/frontend, but Rust compilation failed on Ubuntu and Arch
+  (and Windows Rust test) on two local type errors: Tauri event error type
+  inference and construction of non-exhaustive `image::Limits`. Both are
+  fixed in the next commit. No protocol fixture ran in that CI.
+- The same repair adds resize requests from the embedded view and prevents a
+  duplicate session from spawning before the active-id check. Local frontend
+  build and 53 unit tests passed; new Rust CI is still required.
+
 - Branch `feat/post-v0.9-roadmap`; last verified pushed HEAD before this block
   `cabd6ede50bea3b4b04f77c3397a5dd461c5970a`. Its
   [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42681820162)

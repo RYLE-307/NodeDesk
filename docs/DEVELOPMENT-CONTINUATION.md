@@ -8,6 +8,15 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ### 2026-11-10 direct VNC implementation awaiting exact-head CI
 
+- Repair commit `95217a606093e3516de8f290c03984231658fbae` pushed;
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42770041989)
+  passed Rust tests on Windows, Ubuntu and Arch plus browser/frontend. At
+  this update Windows/Arch desktop packaging was still running.
+- The next test change extends the disposable X509Plain fixture to check
+  keyboard, pointer and clipboard in both directions and adds a two-connection
+  reconnect fixture with a pinned generated certificate. Rust formatting
+  passed; these additions are **NOT YET TESTED by CI**.
+
 - Initial direct VNC commit `53df38289ec9c57a5195d9997c3a32aae8d18d8f`
   was pushed. Its [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42769204972)
   passed browser/frontend, but Rust compilation failed on Ubuntu and Arch

@@ -29,11 +29,12 @@ limited to three attempts. X509Vnc uses classic VNC DES authentication and
 truncates the password to eight bytes; use X509Plain where the server supports
 it for a full username and password exchange inside verified TLS.
 
-The disposable test uses a loopback RFB/VeNCrypt X509Plain server with a
-generated certificate. It checks that the wrong pin receives no password and
-that the correct pin can authenticate and produce a framebuffer update. The
-native Windows and Arch GUI paths, live resize, clipboard round trip, and
-reconnect after a server restart remain **NOT TESTED** until their dedicated
-fixtures and native acceptance are complete. The pinned upstream credential
-type uses ordinary `String` values, so guaranteed password zeroization in all
-library copies is also an open security gate.
+The disposable tests use loopback RFB/VeNCrypt X509Plain servers with generated
+certificates. They check that the wrong pin receives no password, and that a
+matching pin permits authentication, framebuffer, keyboard, pointer and text
+clipboard exchange. A separate fixture drops the first connection and checks
+that the client reconnects to the same pinned server. The new input, clipboard
+and reconnect fixtures require exact-head CI confirmation. Native Windows and
+Arch GUI acceptance and live resize remain **NOT TESTED**. The pinned upstream
+credential type uses ordinary `String` values, so guaranteed password
+zeroization in all library copies is also an open security gate.

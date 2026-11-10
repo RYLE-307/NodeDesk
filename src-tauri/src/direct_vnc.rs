@@ -494,11 +494,11 @@ mod tests {
                         .accept(stream)
                         .await;
                     let Ok(mut secure) = accepted else {
-                        return false;
+                        return (false, false, false, false);
                     };
                     let mut lengths = [0; 8];
                     if secure.read_exact(&mut lengths).await.is_err() {
-                        return false;
+                        return (false, false, false, false);
                     }
                     let user_len = u32::from_be_bytes(lengths[0..4].try_into().unwrap()) as usize;
                     let pass_len = u32::from_be_bytes(lengths[4..8].try_into().unwrap()) as usize;
@@ -529,8 +529,66 @@ mod tests {
                         ])
                         .await
                         .unwrap();
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    true
+                    let remote_text = b"remote fixture";
+                    secure.write_all(&[3, 0, 0, 0]).await.unwrap();
+                    secure
+                        .write_all(&(remote_text.len() as u32).to_be_bytes())
+                        .await
+                        .unwrap();
+                    secure.write_all(remote_text).await.unwrap();
+                    let observed = tokio::time::timeout(Duration::from_secs(5), async {
+                        let mut pointer = false;
+                        let mut key = false;
+                        let mut clipboard = false;
+                        while !(pointer && key && clipboard) {
+                            let kind = secure.read_u8().await.unwrap();
+                            match kind {
+                                0 => {
+                                    let mut body = [0; 19];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                }
+                                2 => {
+                                    let mut header = [0; 3];
+                                    secure.read_exact(&mut header).await.unwrap();
+                                    let count = u16::from_be_bytes([header[1], header[2]]) as usize;
+                                    assert!(count <= 128);
+                                    let mut body = vec![0; count * 4];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                }
+                                3 => {
+                                    let mut body = [0; 9];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                }
+                                4 => {
+                                    let mut body = [0; 7];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                    key = body[0] == 1
+                                        && u32::from_be_bytes(body[3..7].try_into().unwrap())
+                                            == 0x61;
+                                }
+                                5 => {
+                                    let mut body = [0; 5];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                    pointer = body == [1, 0, 1, 0, 1];
+                                }
+                                6 => {
+                                    let mut header = [0; 7];
+                                    secure.read_exact(&mut header).await.unwrap();
+                                    let len = u32::from_be_bytes(header[3..7].try_into().unwrap())
+                                        as usize;
+                                    assert!(len <= 65536);
+                                    let mut body = vec![0; len];
+                                    secure.read_exact(&mut body).await.unwrap();
+                                    clipboard = body == b"local fixture";
+                                }
+                                other => panic!("unexpected disposable VNC client message {other}"),
+                            }
+                        }
+                        (pointer, key, clipboard)
+                    })
+                    .await
+                    .expect("disposable VNC input timed out");
+                    (true, observed.0, observed.1, observed.2)
                 });
                 let mut target = target();
                 target.port = port;
@@ -541,38 +599,192 @@ mod tests {
                 let outcome = tokio::time::timeout(Duration::from_secs(10), async {
                     let mut connected = false;
                     let mut frame = false;
+                    let mut clipboard = false;
                     while let Some(event) = receiver.recv().await {
                         match event {
                             SessionEvent::StateChanged(SessionState::Connected) => connected = true,
                             SessionEvent::FramebufferUpdate { rects, .. } => {
                                 frame = !rects.is_empty();
                             }
+                            SessionEvent::ClipboardText(text) => {
+                                clipboard = text == "remote fixture"
+                            }
                             SessionEvent::StateChanged(SessionState::Disconnected { .. }) => break,
                             _ => {}
                         }
-                        if connected && frame {
+                        if connected && frame && clipboard {
+                            handle
+                                .try_send(ClientCommand::Pointer {
+                                    x: 1,
+                                    y: 1,
+                                    button_mask: 1,
+                                })
+                                .unwrap();
+                            handle
+                                .try_send(ClientCommand::Key {
+                                    keysym: 0x61,
+                                    keycode: None,
+                                    down: true,
+                                })
+                                .unwrap();
+                            handle
+                                .try_send(ClientCommand::ClipboardText("local fixture".into()))
+                                .unwrap();
                             break;
                         }
                     }
-                    (connected, frame)
+                    (connected, frame, clipboard)
                 })
                 .await
                 .unwrap();
                 handle.shutdown();
-                let password_reached_server = tokio::time::timeout(Duration::from_secs(10), server)
+                let observed = tokio::time::timeout(Duration::from_secs(10), server)
                     .await
                     .expect("disposable VNC server timed out")
                     .unwrap();
-                assert_eq!(password_reached_server, correct_pin);
+                assert_eq!(
+                    observed,
+                    if correct_pin {
+                        (true, true, true, true)
+                    } else {
+                        (false, false, false, false)
+                    }
+                );
                 assert_eq!(
                     outcome,
                     if correct_pin {
-                        (true, true)
+                        (true, true, true)
                     } else {
-                        (false, false)
+                        (false, false, false)
                     }
                 );
             }
+        });
+    }
+
+    #[test]
+    fn disposable_x509_session_reconnects_after_server_disconnect() {
+        use sha2::{Digest, Sha256};
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn serve_one(
+            mut stream: tokio::net::TcpStream,
+            acceptor: &tokio_rustls::TlsAcceptor,
+        ) -> tokio_rustls::server::TlsStream<tokio::net::TcpStream> {
+            stream.write_all(b"RFB 003.008\n").await.unwrap();
+            let mut banner = [0; 12];
+            stream.read_exact(&mut banner).await.unwrap();
+            assert_eq!(&banner, b"RFB 003.008\n");
+            stream.write_all(&[1, 19, 0, 2]).await.unwrap();
+            let mut selected = [0; 3];
+            stream.read_exact(&mut selected).await.unwrap();
+            assert_eq!(selected, [19, 0, 2]);
+            stream.write_all(&[0, 1, 0, 0, 1, 6]).await.unwrap();
+            let mut subtype = [0; 4];
+            stream.read_exact(&mut subtype).await.unwrap();
+            assert_eq!(u32::from_be_bytes(subtype), 262);
+            stream.write_all(&[1]).await.unwrap();
+            let mut secure = acceptor.accept(stream).await.unwrap();
+            let mut lengths = [0; 8];
+            secure.read_exact(&mut lengths).await.unwrap();
+            let user_len = u32::from_be_bytes(lengths[0..4].try_into().unwrap()) as usize;
+            let pass_len = u32::from_be_bytes(lengths[4..8].try_into().unwrap()) as usize;
+            assert_eq!((user_len, pass_len), (7, 12));
+            let mut credentials = vec![0; user_len + pass_len];
+            secure.read_exact(&mut credentials).await.unwrap();
+            assert_eq!(&credentials, b"fixturefixture-only");
+            credentials.fill(0);
+            secure.write_all(&0u32.to_be_bytes()).await.unwrap();
+            let mut init = [0];
+            secure.read_exact(&mut init).await.unwrap();
+            let mut server_init = Vec::new();
+            server_init.extend_from_slice(&2u16.to_be_bytes());
+            server_init.extend_from_slice(&2u16.to_be_bytes());
+            server_init
+                .extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+            server_init.extend_from_slice(&7u32.to_be_bytes());
+            server_init.extend_from_slice(b"fixture");
+            secure.write_all(&server_init).await.unwrap();
+            secure
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            let pin = hex::encode_upper(Sha256::digest(
+                rdp_pdu::asn1::der::extract_spki(cert.cert.der()).unwrap(),
+            ));
+            let config = tokio_rustls::rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![cert.cert.der().clone()],
+                    tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
+                        cert.signing_key.serialize_der().into(),
+                    ),
+                )
+                .unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let first_close = Arc::new(tokio::sync::Notify::new());
+            let second_close = Arc::new(tokio::sync::Notify::new());
+            let server_first = Arc::clone(&first_close);
+            let server_second = Arc::clone(&second_close);
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let first = serve_one(stream, &acceptor).await;
+                server_first.notified().await;
+                drop(first);
+                let (stream, _) = listener.accept().await.unwrap();
+                let second = serve_one(stream, &acceptor).await;
+                server_second.notified().await;
+                drop(second);
+            });
+            let mut target = target();
+            target.port = port;
+            let mut options = options(&target, "fixture-only".into(), pin).unwrap();
+            options.reconnect.max_attempts = Some(2);
+            options.reconnect.initial_delay_ms = 10;
+            options.reconnect.jitter = 0.0;
+            let (events, mut receiver) = tokio::sync::mpsc::channel(16);
+            let handle = Session::spawn("fixture-reconnect".into(), options, events);
+            let (connected, reconnecting) = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut connected = 0;
+                let mut reconnecting = false;
+                while let Some(event) = receiver.recv().await {
+                    match event {
+                        SessionEvent::StateChanged(SessionState::Connected) => {
+                            connected += 1;
+                            if connected == 1 {
+                                first_close.notify_one();
+                            }
+                            if connected == 2 {
+                                second_close.notify_one();
+                                break;
+                            }
+                        }
+                        SessionEvent::StateChanged(SessionState::Reconnecting { .. }) => {
+                            reconnecting = true
+                        }
+                        SessionEvent::StateChanged(SessionState::Disconnected { .. }) => break,
+                        _ => {}
+                    }
+                }
+                (connected, reconnecting)
+            })
+            .await
+            .expect("disposable VNC reconnect timed out");
+            handle.shutdown();
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("disposable VNC server did not stop")
+                .unwrap();
+            assert_eq!(connected, 2);
+            assert!(reconnecting);
         });
     }
 }

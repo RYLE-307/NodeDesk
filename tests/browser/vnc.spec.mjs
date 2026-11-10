@@ -16,7 +16,7 @@ async function open(page,language="en",error=false) {
       unregisterCallback(){},
       async invoke(cmd,args) {
         window.fixture.calls.push({cmd,args});
-        if(cmd==="vnc_direct_connect"||cmd==="vnc_direct_disconnect"||cmd==="vnc_direct_input")return;
+        if(cmd==="vnc_direct_connect"||cmd==="vnc_direct_connect_saved"||cmd==="vnc_direct_disconnect"||cmd==="vnc_direct_input")return;
         if(cmd!=="vnc_launch") throw new Error("Unexpected native command");
         if(error) throw new Error("TigerVNC Viewer not found");
         return {client:"TigerVNC",security:"X509Vnc,X509Plain",externalWindow:true};
@@ -67,6 +67,24 @@ test("direct VNC requires verified SPKI before sending a transient password",asy
   expect(calls).toEqual([{target:{id:"vnc-fixture",host:"vnc.example.test",port:5901,
     username:"unused-catalog-user"},pin:"ab".repeat(32),password:"fixture-only",clipboard:false}]);
   expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("fixture-only");
+  await direct.getByRole("button",{name:"Disconnect"}).click();
+});
+
+test("saved VNC credential stays behind native vault command",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct VNC"});
+  await direct.getByLabel("VNC password for this session").fill("discard-me");
+  await direct.getByLabel("Use password from unlocked OS vault").check();
+  await expect(direct.getByLabel("VNC password for this session")).toHaveCount(0);
+  await direct.getByLabel("Verified SHA256 SPKI fingerprint").fill("ab".repeat(32));
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vnc_direct_connect_saved"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.target).toEqual({id:"vnc-fixture",host:"vnc.example.test",port:5901,
+    username:"unused-catalog-user"});
+  expect(calls[0].args.spkiSha256).toBe("ab".repeat(32));
+  expect(calls[0].args).not.toHaveProperty("password");
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("discard-me");
   await direct.getByRole("button",{name:"Disconnect"}).click();
 });
 

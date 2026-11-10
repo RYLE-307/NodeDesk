@@ -204,8 +204,15 @@ mod tests {
             target.port,target.username.clone()).is_err());
         assert!(vault.read_connection(target.id.clone(),"VNC",target.host.clone(),
             target.port,target.username.clone()).unwrap().is_none());
+        let mut vnc=target.clone(); vnc.protocol="VNC".into();
+        vault.put(&vnc,Zeroizing::new("vnc-fixture".into())).unwrap();
+        assert_eq!(vault.read_connection(vnc.id.clone(),"VNC",vnc.host.clone(),
+            vnc.port,vnc.username.clone()).unwrap().unwrap().as_str(),"vnc-fixture");
+        assert!(vault.read_connection(vnc.id.clone(),"VNC",vnc.host.clone(),
+            vnc.port,"changed-user".into()).is_err());
         vault.lock();
         assert!(read().is_err());
+        assert!(vault.read_connection(vnc.id,"VNC",vnc.host,vnc.port,vnc.username).is_err());
     }
     #[test] fn locked_by_default_and_no_secret_in_errors() {
         let (vault,target)=fixture();

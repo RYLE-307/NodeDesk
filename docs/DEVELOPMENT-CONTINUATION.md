@@ -6,6 +6,30 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-10 direct VNC fixture repair and native Vault handoff
+
+- Branch `feat/post-v0.9-roadmap`; last pushed HEAD before this repair:
+  `132efa25586ad57ed2e1a1fba804ea9d601a0c45`.
+  [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42770991213)
+  passed frontend/browser and Windows/Ubuntu builds, but VNC Rust fixture
+  failed on Windows/Ubuntu/Arch. The test shut the client down immediately
+  after queueing input, before the fixture could read it. Reconnect fixture
+  passed on all three systems. This change waits for server-observed input
+  before shutdown; exact-head CI must confirm the repair.
+- Added native Vault handoff for direct VNC. The UI offers explicit use of a
+  saved credential; the backend reads only an unlocked VNC record bound to
+  exact id, host, port and username. No saved password crosses WebView IPC.
+  Added browser contract and Rust identity/lock tests. Local frontend unit
+  tests (53), production build, Rust formatting and diff check passed. Local
+  Rust linking remains unavailable without MSVC `link.exe`. This change is
+  not yet verified by CI.
+- Open gates: complete exact-head CI, live resize with disposable server,
+  upstream password zeroization, and native Windows/Arch GUI acceptance
+  **NOT TESTED**. Continue direct RDP memory/clipboard/reconnect, VPN and
+  remaining P0/P1 after VNC verification. Do not merge, tag or release.
+- Resume: `git status --short --branch`; run frontend unit/build locally;
+  commit and push this repair; inspect exact-head CI jobs and only failed logs.
+
 ### 2026-11-10 direct VNC implementation awaiting exact-head CI
 
 - Repair commit `95217a606093e3516de8f290c03984231658fbae` pushed;

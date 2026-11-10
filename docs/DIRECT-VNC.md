@@ -21,8 +21,11 @@ openssl x509 -in server.crt -pubkey -noout |
 ```
 
 The session password and pin are passed through native IPC at connect time.
-The password input is cleared immediately and neither value is saved to the
-catalog, WebView storage, a URL, a process argument, or a log. Clipboard text
+Alternatively, an explicitly selected saved password is read by the native
+backend from the unlocked OS Vault using the exact connection identity; that
+password is never returned to WebView. The password input is cleared immediately
+and neither value is saved to the catalog, WebView storage, a URL, a process
+argument, or a log. Clipboard text
 transfer requires per-session opt-in and explicit user actions; it is off by
 default. On tab close, disconnect cancels the native session. Reconnect is
 limited to three attempts. X509Vnc uses classic VNC DES authentication and

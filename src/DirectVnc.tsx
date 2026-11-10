@@ -16,6 +16,7 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
   const [error,setError]=useState("");
   const [viewOnly,setViewOnly]=useState(false);
   const [clipboard,setClipboard]=useState(false);
+  const [saved,setSaved]=useState(false);
   const password=useRef<HTMLInputElement>(null);
   const pin=useRef<HTMLInputElement>(null);
   const canvas=useRef<HTMLCanvasElement>(null);
@@ -72,9 +73,9 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
     const secret=password.current?.value??"";
     if(password.current)password.current.value="";
     const fingerprint=(pin.current?.value??"").replaceAll(":","").trim();
-    if(!secret||!/^[a-fA-F0-9]{64}$/.test(fingerprint)){
-      setError(ru?"Введите пароль и проверенный SHA256 SPKI отпечаток сервера.":
-        "Enter a password and a verified SHA256 SPKI server fingerprint.");return;
+    if((!secret&&!saved)||!/^[a-fA-F0-9]{64}$/.test(fingerprint)){
+      setError(ru?"Введите пароль (или выберите Vault) и проверенный SHA256 SPKI отпечаток сервера.":
+        "Enter a password (or select Vault) and a verified SHA256 SPKI server fingerprint.");return;
     }
     setError("");setPhase("connecting");started.current=true;connected.current=false;
     const token=++generation.current;
@@ -96,8 +97,9 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
       }else if(event.phase==="closed")close();
     };
     try{
-      await invoke("vnc_direct_connect",{target:{id,host:connection.host,port:connection.port,
-        username:connection.username},password:secret,spkiSha256:fingerprint,clipboard,events});
+      await invoke(saved?"vnc_direct_connect_saved":"vnc_direct_connect",{
+        target:{id,host:connection.host,port:connection.port,username:connection.username},
+        ...(saved?{}:{password:secret}),spkiSha256:fingerprint,clipboard,events});
     }catch{
       if(token===generation.current){close();setError(ru?"Не удалось открыть прямой VNC-сеанс.":
         "Could not start direct VNC session.");}
@@ -119,8 +121,11 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
       "Enter the server TLS certificate public-key SHA256 fingerprint (SPKI) from a trusted source. Identity is checked before the password is sent. Do not copy a fingerprint from this unverified connection."}</p>
     <label>{ru?"Проверенный SHA256 SPKI отпечаток":"Verified SHA256 SPKI fingerprint"}
       <input ref={pin} type="text" autoComplete="off" spellCheck={false} disabled={phase!=="idle"}/></label>
-    <label>{ru?"Пароль VNC для этого сеанса":"VNC password for this session"}
-      <input ref={password} type="password" autoComplete="off" disabled={phase!=="idle"}/></label>
+    {!saved&&<label>{ru?"Пароль VNC для этого сеанса":"VNC password for this session"}
+      <input ref={password} type="password" autoComplete="off" disabled={phase!=="idle"}/></label>}
+    <label className="check"><input type="checkbox" checked={saved} disabled={phase!=="idle"}
+      onChange={e=>{if(password.current)password.current.value="";setSaved(e.target.checked);}}/>
+      {ru?"Использовать пароль из разблокированного системного Vault":"Use password from unlocked OS vault"}</label>
     <div className="rdp-embedded-controls">
       <button type="button" onClick={()=>void open()} disabled={phase!=="idle"}>{ru?"Подключить напрямую":"Connect directly"}</button>
       <button type="button" onClick={close} disabled={phase==="idle"}>{ru?"Отключить":"Disconnect"}</button>

@@ -193,6 +193,42 @@ impl Framebuffer {
 }
 
 #[tauri::command]
+pub async fn vnc_direct_connect_saved(
+    sessions: State<'_, Sessions>,
+    vault: State<'_, crate::vault::Vault>,
+    target: Target,
+    spki_sha256: String,
+    clipboard: bool,
+    events: Channel<Event>,
+) -> Result<(), String> {
+    // The vault binds its record to this entire public identity. The secret
+    // stays in the native process and is never returned to WebView.
+    let store = vault.inner().clone();
+    let identity = target.clone();
+    let secret = tauri::async_runtime::spawn_blocking(move || {
+        store.read_connection(
+            identity.id,
+            "VNC",
+            identity.host,
+            identity.port,
+            identity.username,
+        )
+    })
+    .await
+    .map_err(|_| "Vault worker failed".to_string())??
+    .ok_or("Saved VNC credential not found")?;
+    vnc_direct_connect(
+        sessions,
+        target,
+        secret.to_string(),
+        spki_sha256,
+        clipboard,
+        events,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn vnc_direct_connect(
     sessions: State<'_, Sessions>,
     target: Target,
@@ -637,11 +673,11 @@ mod tests {
                 })
                 .await
                 .unwrap();
-                handle.shutdown();
                 let observed = tokio::time::timeout(Duration::from_secs(10), server)
                     .await
                     .expect("disposable VNC server timed out")
                     .unwrap();
+                handle.shutdown();
                 assert_eq!(
                     observed,
                     if correct_pin {

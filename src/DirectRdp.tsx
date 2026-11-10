@@ -65,11 +65,6 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
   },[phase,id]);
   async function open(){
     if(phase!=="idle"||!isTauri())return;
-    if(connection.rdpSha256Fingerprint){
-      setError(ru?"Для прямого RDP пока не поддерживается проверка сохранённого SHA256 pin. Удалите pin только после отдельной проверки сертификата.":
-        "Direct RDP cannot yet enforce the saved SHA256 pin. Review the certificate before changing the profile.");
-      return;
-    }
     const secret=password.current?.value??"";
     if(password.current)password.current.value="";
     if(!secret&&!saved){setError(ru?"Введите пароль RDP.":"Enter the RDP password.");return;}
@@ -97,7 +92,8 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
       const height=Math.max(240,Math.min(1080,Math.round(surface.current?.clientHeight||720)));
       await invoke(saved?"rdp_direct_connect_saved":"rdp_direct_connect",{
         target:{id,host:connection.host,port:connection.port,username:connection.username},
-        ...(saved?{}:{password:secret}),width,height,clipboard,events});
+        ...(saved?{}:{password:secret}),width,height,clipboard,
+        certificateSha256:connection.rdpSha256Fingerprint??null,events});
     }catch{
       if(token===generation.current){setPhase("idle");
         started.current=false;

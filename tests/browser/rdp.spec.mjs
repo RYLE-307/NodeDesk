@@ -2,12 +2,13 @@ import {test,expect} from "@playwright/test";
 
 // Contract-only UI fixture. Does NOT spawn an OS RDP client.
 // Native Rust argument tests check the actual launcher's safety.
-async function open(page,language="en",launchError=false) {
-  await page.addInitScript(({language,launchError}) => {
+async function open(page,language="en",launchError=false,pin=null) {
+  await page.addInitScript(({language,launchError,pin}) => {
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],
       connections:[{id:"rdp-fixture",name:"Fixture RDP",host:"rdp.example.test",port:3390,
-        username:"LAB\\alice",protocol:"RDP",groupId:null,favorite:false}],
+        username:"LAB\\alice",protocol:"RDP",groupId:null,favorite:false,
+        ...(pin?{rdpSha256Fingerprint:pin}:{})}],
       language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};
@@ -27,7 +28,7 @@ async function open(page,language="en",launchError=false) {
         return {client:"sdl-freerdp3",externalWindow:true};
       }
     };
-  },{language,launchError});
+  },{language,launchError,pin});
   await page.goto("/");
   await page.locator(".connection-open").filter({hasText:"Fixture RDP"}).dblclick();
   return page.getByRole("region",{name:language==="en"?"RDP remote desktop":"Удалённый рабочий стол RDP"});
@@ -69,6 +70,18 @@ test("direct RDP requires explicit credentials, forwards only catalog endpoint a
   await direct.getByRole("button",{name:"Disconnect"}).click();
   expect(await page.evaluate(()=>window.fixture.calls.some(c=>
     c.cmd==="rdp_direct_disconnect"&&c.args.id==="rdp-fixture"))).toBe(true);
+});
+
+test("direct RDP forwards a saved certificate pin for native enforcement",async({page})=>{
+  const pin="ab".repeat(32);
+  const workspace=await open(page,"en",false,pin);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await direct.getByLabel("RDP password for this session").fill("fixture-only");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.certificateSha256).toBe(pin);
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("fixture-only");
 });
 test("saved RDP credential is requested only by identity and never enters WebView storage",async({page})=>{
   const workspace=await open(page);

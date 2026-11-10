@@ -10,6 +10,7 @@ use ironrdp_client::{
 };
 use ironrdp_tls::CertificateValidation;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -81,6 +82,31 @@ fn config(
     clipboard: bool,
 ) -> Result<ironrdp_client::config::Config, String> {
     config_inner(target, password, width, height, clipboard, None)
+}
+
+fn config_pinned(
+    target: &Target,
+    password: String,
+    width: u16,
+    height: u16,
+    clipboard: bool,
+    certificate_sha256: Option<String>,
+) -> Result<ironrdp_client::config::Config, String> {
+    let callback: Option<ironrdp_tls::CertificateValidationCallback> = if let Some(fingerprint) =
+        certificate_sha256
+    {
+        let normalized = fingerprint.replace(':', "");
+        if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Invalid RDP certificate SHA256 pin".into());
+        }
+        let expected = hex::decode(normalized).map_err(|_| "Invalid RDP certificate SHA256 pin")?;
+        Some(Arc::new(move |certificate, _, _| {
+            Sha256::digest(certificate).as_slice() == expected.as_slice()
+        }))
+    } else {
+        None
+    };
+    config_inner(target, password, width, height, clipboard, callback)
 }
 
 fn config_inner(
@@ -176,6 +202,7 @@ pub async fn rdp_direct_connect_saved(
     width: u16,
     height: u16,
     clipboard: bool,
+    certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
     if !valid_target(&target) {
@@ -202,6 +229,7 @@ pub async fn rdp_direct_connect_saved(
         width,
         height,
         clipboard,
+        certificate_sha256,
         events,
     )
     .await
@@ -215,12 +243,20 @@ pub async fn rdp_direct_connect(
     width: u16,
     height: u16,
     clipboard: bool,
+    certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
     // Config owns the transient password after IPC; no catalog, WebView storage,
     // command line, URL, file or log contains it. The pinned IronRDP revision
     // stores it as a String, so memory wiping remains an open security gate.
-    let settings = config(&target, password, width, height, clipboard)?;
+    let settings = config_pinned(
+        &target,
+        password,
+        width,
+        height,
+        clipboard,
+        certificate_sha256,
+    )?;
     let (output, mut receiver) = output_channel(8);
     let client = RdpClient::new(settings, output).with_auto_reconnect(3);
     let session = Arc::new(Session {
@@ -599,6 +635,33 @@ mod tests {
     }
 
     #[test]
+    fn direct_rdp_pin_accepts_only_exact_disposable_certificate() {
+        let cert = rcgen::generate_simple_self_signed(vec!["fixture.example.test".into()]).unwrap();
+        let der = cert.cert.der().as_ref();
+        let target = Target {
+            id: "123e4567-e89b-12d3-a456-426614174000".into(),
+            host: "fixture.example.test".into(),
+            port: 3389,
+            username: "fixture".into(),
+        };
+        let pin = hex::encode(Sha256::digest(der));
+        let settings =
+            config_pinned(&target, "fixture-only".into(), 800, 600, false, Some(pin)).unwrap();
+        let check = settings.certificate_validation_callback().unwrap();
+        assert!(check(der, "fixture.example.test", ""));
+        assert!(!check(b"different certificate", "fixture.example.test", ""));
+        assert!(config_pinned(
+            &target,
+            "fixture-only".into(),
+            800,
+            600,
+            false,
+            Some("bad".into())
+        )
+        .is_err());
+    }
+
+    #[test]
     fn input_allowlist_rejects_unknown_browser_codes() {
         for code in [
             "KeyA",
@@ -725,7 +788,7 @@ mod tests {
         let key = directory.path().join("fixture.key");
         std::fs::write(&certificate, fixture.cert.pem()).unwrap();
         std::fs::write(&key, fixture.signing_key.serialize_pem()).unwrap();
-        let expected_certificate = fixture.cert.der().to_vec();
+        let certificate_pin = hex::encode(Sha256::digest(fixture.cert.der().as_ref()));
         let identity = TlsIdentityCtx::init_from_paths(&certificate, &key).unwrap();
         let acceptor = identity.make_acceptor().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -763,17 +826,14 @@ mod tests {
                 port: address.port(),
                 username: "fixture".into(),
             };
-            // Only this fixture cert is accepted by the test callback. Production
-            // passes None and requires the platform trust store instead.
-            let callback: ironrdp_tls::CertificateValidationCallback =
-                Arc::new(move |presented, _, _| presented == expected_certificate);
-            let settings = config_inner(
+            // Self-signed disposable server is accepted only by its exact pin.
+            let settings = config_pinned(
                 &target,
                 "fixture-only".into(),
                 800,
                 600,
                 false,
-                Some(callback),
+                Some(certificate_pin),
             )
             .unwrap();
             let (output, mut events) = output_channel(8);

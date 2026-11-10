@@ -31,6 +31,11 @@ tokio = { version = "1", features = ["sync", "time"] }
 png = "0.18"
 vnc-core = { path = "vendor/deskvnc-vnc-core" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[patch."https://github.com/Devolutions/IronRDP.git"]
+ironrdp-tls = { path = "vendor/ironrdp-tls" }
 
 [dev-dependencies]
 serde_json = "1"
@@ -40,5 +45,3 @@ ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed431
 tempfile = "3"
 async-trait = "0.1"
 rdp-pdu = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }
-sha2 = "0.10"
-hex = "0.4"

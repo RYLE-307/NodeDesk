@@ -31,7 +31,10 @@ transitive and native DBus dependencies require the same release audit.
 The direct RDP implementation uses IronRDP at pinned source revision
 `b553ed4315655d9003e37d7bcae13a029405b845` (MIT OR Apache-2.0),
 plus its transitive protocol, TLS and cryptography crates. Audit their locked
-licenses and build requirements before redistribution.
+licenses and build requirements before redistribution. The local
+`src-tauri/vendor/ironrdp-tls` copy of that revision retains both license
+texts and changes the rustls certificate callback to run for CA-valid as
+well as invalid certificates, allowing a configured pin to reject either.
 
 Upstream resources:
 - [noVNC license / source](https://github.com/novnc/noVNC)

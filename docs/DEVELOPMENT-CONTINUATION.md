@@ -6,6 +6,30 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-10 direct RDP certificate pin enforcement awaiting CI
+
+- Last pushed HEAD before this block: `477b46946822ac192f46e16d5795691204e58676`
+  on `feat/post-v0.9-roadmap`. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42773996036)
+  passed frontend/browser and Rust tests on Windows/Ubuntu/Arch at this
+  update; desktop packages were still running. PR #13 remains Draft.
+- Direct RDP now forwards the saved leaf-certificate SHA256 pin to native
+  IronRDP for both transient and Vault credentials. Invalid pins fail before
+  connection. Vendored `ironrdp-tls` at pinned upstream revision with a narrow
+  verifier patch so the callback rejects a changed certificate even if a CA
+  validates it. Without a pin, strict system CA and host-name validation
+  remains. See `docs/DIRECT-RDP-SECURITY.md`.
+- The disposable hybrid CredSSP/framebuffer/mouse fixture uses its generated
+  certificate pin. Added wrong-certificate/malformed-pin Rust test and browser
+  pin handoff test. Local frontend unit tests (53), production build and
+  formatting passed. Local Rust compilation is blocked by missing MSVC
+  `link.exe`; all Rust changes require exact-head CI.
+- Still open: direct RDP clipboard round trip, native reconnect acceptance,
+  guaranteed wiping of all IronRDP password copies, native Windows/Arch GUI
+  acceptance **NOT TESTED**. VNC native GUI and upstream password wiping also
+  remain open. Continue P0 VPN and SSH/SFTP after these.
+- Resume: `git status --short --branch`; commit/push this RDP pin block;
+  inspect exact-head CI, fix failures; then continue remaining RDP gates.
+
 ### 2026-11-10 direct VNC fixture repair and native Vault handoff
 
 - Branch `feat/post-v0.9-roadmap`; last pushed HEAD before this repair:

@@ -6,6 +6,33 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-10 Linux VPN file import awaiting verification
+
+- Last pushed HEAD before this block: `bb7d7db291ef35165524985d9db5209e54413631`
+  on `feat/post-v0.9-roadmap`. Its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/42774801803)
+  passed frontend/browser and Rust tests on Windows/Ubuntu/Arch at this
+  update; desktop package builds remained in progress. PR #13 is Draft.
+- Added explicit NetworkManager import for existing WireGuard `.conf` and
+  OpenVPN `.ovpn` files. The native backend checks absolute regular files,
+  refuses symlinks/oversize/unsupported types, imports temporarily with fixed
+  `nmcli` arguments under the shared VPN mutation guard, rejects conflicting
+  or active additions, restricts autoconnect and access to the current user,
+  discards command output, and relists OS profiles. Cancellation kills the
+  import process and attempts rollback of only one newly observed UUID.
+  The UI clears the file path and never reads config content. NodeDesk does
+  not request connection; NetworkManager auto-activation in the short import
+  interval remains a native acceptance gate. See `docs/VPN-IMPORT.md`.
+- Disposable Linux fixture tests validation and a mock `nmcli` executable;
+  Playwright checks confirmation and IPC without config content. Local Rust
+  compilation remains blocked by absent MSVC `link.exe`; exact-head CI is
+  required. Local frontend 53 unit tests and production build pass; local
+  Playwright did not start its WebServer and was stopped. Rustfmt parsing and
+  `git diff --check` pass. Native Arch import, NetworkManager secret agent, routes/DNS and
+  Windows profile creation are **NOT TESTED** or unimplemented as stated in
+  the VPN document.
+- Resume: finish frontend unit/build, Rust formatting/diff check; commit,
+  push, inspect exact-head Windows/Ubuntu/Arch/browser CI and fix failures.
+
 ### 2026-11-10 direct RDP certificate pin enforcement awaiting CI
 
 - Last pushed HEAD before this block: `477b46946822ac192f46e16d5795691204e58676`

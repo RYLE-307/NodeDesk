@@ -1,14 +1,15 @@
 import {test,expect} from "@playwright/test";
 
 const UUID="123e4567-e89b-12d3-a456-426614174000";
-async function open(page,{language="en",empty=false,fail=false,readOnly=false}={}) {
-  await page.addInitScript(({language,empty,fail,readOnly,uuid})=>{
+async function open(page,{language="en",empty=false,fail=false,readOnly=false,holdImport=false}={}) {
+  await page.addInitScript(({language,empty,fail,readOnly,holdImport,uuid})=>{
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],connections:[],language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};window.isTauri=true;
     window.fixture={
-      calls:[], fail, profiles:empty?[]:[{id:uuid,name:"Office VPN",kind:"vpn",active:false,controlAllowed:!readOnly}]
+      calls:[], fail, holdImport, rejectImport:null,
+      profiles:empty?[]:[{id:uuid,name:"Office VPN",kind:"vpn",active:false,controlAllowed:!readOnly}]
     };
     let next=0;
     window.__TAURI_INTERNALS__={
@@ -17,6 +18,17 @@ async function open(page,{language="en",empty=false,fail=false,readOnly=false}={
       async invoke(cmd,args){
         window.fixture.calls.push({cmd,args});
         if(cmd==="vpn_list")return window.fixture.profiles;
+        if(cmd==="vpn_import"){
+          if(window.fixture.holdImport)return new Promise((_,reject)=>{window.fixture.rejectImport=reject;});
+          if(window.fixture.fail)throw new Error("Import rejected");
+          window.fixture.profiles=[...window.fixture.profiles,{id:"123e4567-e89b-12d3-a456-426614174099",
+            name:"Imported fixture",kind:args.kind,active:false,controlAllowed:true}];
+          return window.fixture.profiles;
+        }
+        if(cmd==="vpn_cancel_import"){
+          window.fixture.rejectImport?.(new Error("cancelled"));
+          return true;
+        }
         if(cmd==="vpn_health"){
           const current=window.fixture.profiles.find(p=>p.id===args.profileId);
           return {profileId:current.id,active:current.active,
@@ -31,7 +43,7 @@ async function open(page,{language="en",empty=false,fail=false,readOnly=false}={
         throw new Error("Unexpected native command: "+cmd);
       }
     };
-  },{language,empty,fail,readOnly,uuid:UUID});
+  },{language,empty,fail,readOnly,holdImport,uuid:UUID});
   await page.goto("/");
   await page.locator(".catalog-tools").getByRole("button",{
     name: language==="en"?"System VPN":"Системные VPN",exact:true
@@ -163,4 +175,36 @@ test("VPN route and DNS evidence is explicit, redacted and cleared on refresh",a
   expect(JSON.stringify(checks)).not.toMatch(/password|secret|address|route|dns/i);
   await pane.getByRole("button",{name:"Refresh VPNs"}).click();
   await expect(pane).toContainText("Not checked");
+});
+
+test("Linux VPN import is explicit and passes only a file path to native manager",async({page})=>{
+  const pane=await open(page);
+  const path=pane.getByLabel("Absolute file path");
+  await expect(path).toBeVisible();
+  await path.fill("/tmp/disposable-wireguard.conf");
+  page.once("dialog",dialog=>dialog.dismiss());
+  await pane.getByRole("button",{name:"Import profile"}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vpn_import"))).toHaveLength(0);
+  await path.fill("/tmp/disposable-wireguard.conf");
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Import profile"}).click();
+  await expect(pane).toContainText("Imported fixture");
+  await expect(path).toHaveValue("");
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vpn_import"));
+  expect(calls).toEqual([{cmd:"vpn_import",args:{kind:"WireGuard",
+    path:"/tmp/disposable-wireguard.conf"}}]);
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("disposable-wireguard.conf");
+});
+
+test("Linux VPN import cancellation waits for native worker and clears path",async({page})=>{
+  const pane=await open(page,{holdImport:true});
+  await pane.getByLabel("Absolute file path").fill("/tmp/disposable-openvpn.ovpn");
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Import profile"}).click();
+  await expect(pane.getByRole("button",{name:"Cancel import"})).toBeVisible();
+  await expect(pane.getByLabel("Absolute file path")).toHaveValue("");
+  await pane.getByRole("button",{name:"Cancel import"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Import cancelled");
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd.startsWith("vpn_")));
+  expect(calls.map(c=>c.cmd)).toContain("vpn_cancel_import");
 });

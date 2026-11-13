@@ -5,7 +5,7 @@ type VpnProfile = {id:string;name:string;kind:string;active:boolean;controlAllow
 type VpnHealth = {profileId:string;active:boolean;routeConfigured:boolean|null;dnsConfigured:boolean|null};
 
 /**
- * System VPN control only: never collects credentials or edits VPN profiles.
+ * System VPN control. Linux import passes only a local path to the native OS manager.
  * The OS remains authoritative for state, routes, DNS and authentication.
  */
 export function VpnWorkspace({language}:{language:"ru"|"en"}) {
@@ -17,6 +17,10 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
   const [message,setMessage]=useState("");
   const [health,setHealth]=useState<Record<string,VpnHealth>>({});
   const [healthBusy,setHealthBusy]=useState("");
+  const [importKind,setImportKind]=useState("WireGuard");
+  const source=useRef<HTMLInputElement>(null);
+  const importCancelled=useRef(false);
+  const linux=typeof navigator!=="undefined"&&/Linux/i.test(navigator.userAgent);
   const alive=useRef(true);
   useEffect(()=>{
     alive.current=true;
@@ -80,6 +84,30 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
       "Route and DNS check failed. Refresh the profile list.");}
     finally{if(alive.current)setHealthBusy("");}
   }
+  async function importProfile(){
+    if(!linux||loading||busy)return;
+    const path=source.current?.value.trim()??"";
+    if(source.current)source.current.value="";
+    if(!path){setError(ru?"Укажите абсолютный путь к VPN-файлу.":"Enter the VPN file's absolute path.");return;}
+    if(!window.confirm(ru?"Импортировать файл в NetworkManager? Система сохранит параметры и секреты профиля. NodeDesk не запрашивает подключение, но политика автоподключения ОС может действовать до ограничения профиля.":
+      "Import this file into NetworkManager? The OS will store its settings and secrets. NodeDesk does not request a connection, but OS auto-connect policy may act before the profile is restricted."))return;
+    importCancelled.current=false;
+    setBusy("__import__");setError("");setMessage("");
+    try{
+      const items=await invoke<VpnProfile[]>("vpn_import",{kind:importKind,path});
+      if(alive.current){setProfiles(items);setHealth({});setMessage(ru?"Профиль импортирован в NetworkManager.":
+        "Profile imported into NetworkManager.");}
+    }catch{if(alive.current)setError(importCancelled.current?(ru?"Импорт отменён. Обновите список профилей ОС.":
+      "Import cancelled. Refresh the OS profile list."):(ru?"Импорт отклонён. Проверьте файл и наличие нужного плагина NetworkManager.":
+      "Import was rejected. Check the file and NetworkManager plugin."));}
+    finally{if(alive.current)setBusy("");}
+  }
+  async function cancelImport(){
+    if(busy!=="__import__")return;
+    importCancelled.current=true;
+    try{await invoke("vpn_cancel_import");}catch{setError(ru?"Не удалось запросить отмену импорта.":
+      "Could not request import cancellation.");}
+  }
   const evidence=(value:boolean|null,active:boolean)=>!active?(ru?"нет подключения":"not connected"):
     value===null?(ru?"не определено":"unknown"):
       value?(ru?"есть":"present"):(ru?"нет":"absent");
@@ -91,6 +119,18 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
     <button type="button" onClick={()=>void refresh()} disabled={loading||!!busy}>
       {loading?(ru?"Загрузка…":"Loading…"):(ru?"Обновить VPN":"Refresh VPNs")}
     </button>
+    {linux&&<div>
+      <p className="ssh-help">{ru?"Импорт WireGuard (.conf) или OpenVPN (.ovpn) в NetworkManager. Введите абсолютный путь к локальному файлу; NodeDesk не читает его содержимое в WebView.":
+        "Import a WireGuard (.conf) or OpenVPN (.ovpn) file into NetworkManager. Enter its absolute local path; NodeDesk does not read its contents in the WebView."}</p>
+      <label>{ru?"Тип профиля":"Profile type"}<select value={importKind} disabled={loading||!!busy}
+        onChange={e=>setImportKind(e.target.value)}><option>WireGuard</option><option>OpenVPN</option></select></label>
+      <label>{ru?"Абсолютный путь к файлу":"Absolute file path"}<input ref={source} type="text"
+        autoComplete="off" spellCheck={false} disabled={loading||!!busy}/></label>
+      <button type="button" disabled={loading||!!busy} onClick={()=>void importProfile()}>
+        {busy==="__import__"?(ru?"Импорт…":"Importing…"):(ru?"Импортировать профиль":"Import profile")}</button>
+      {busy==="__import__"&&<button type="button" onClick={()=>void cancelImport()}>
+        {ru?"Отменить импорт":"Cancel import"}</button>}
+    </div>}
     {error && <p role="alert" className="error">{error}</p>}
     {message && <p role="status">{message}</p>}
     {(!loading && !error && !profiles.length) &&

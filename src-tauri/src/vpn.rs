@@ -35,20 +35,27 @@ pub struct VpnHealth {
 /// The worker owns this guard: cancelling an IPC call cannot unlock it while
 /// a blocking OS command is still running.
 #[derive(Default)]
-pub struct VpnActions { busy:Arc<AtomicBool> }
+pub struct VpnActions { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool> }
 
-struct VpnActionGuard { busy:Arc<AtomicBool> }
+struct VpnActionGuard { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool> }
 
 impl VpnActions {
     fn acquire(&self)->Result<VpnActionGuard,String> {
         self.busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire)
             .map_err(|_| "Another system VPN action is already in progress".to_string())?;
-        Ok(VpnActionGuard{busy:Arc::clone(&self.busy)})
+        self.cancel_import.store(false,Ordering::Release);
+        self.importing.store(false,Ordering::Release);
+        Ok(VpnActionGuard{busy:Arc::clone(&self.busy),importing:Arc::clone(&self.importing),
+            cancel_import:Arc::clone(&self.cancel_import)})
     }
 }
 
 impl Drop for VpnActionGuard {
-    fn drop(&mut self) { self.busy.store(false,Ordering::Release); }
+    fn drop(&mut self) {
+        self.cancel_import.store(false,Ordering::Release);
+        self.importing.store(false,Ordering::Release);
+        self.busy.store(false,Ordering::Release);
+    }
 }
 
 fn uuid_ok(id: &str) -> bool {
@@ -113,6 +120,10 @@ fn output(mut command:Command) -> Result<String,String> {
     output_with_timeout(&mut command,Duration::from_secs(35))
 }
 fn output_with_timeout(command:&mut Command,timeout:Duration)->Result<String,String> {
+    output_with_timeout_and_cancel(command,timeout,None)
+}
+fn output_with_timeout_and_cancel(command:&mut Command,timeout:Duration,
+    cancel:Option<&AtomicBool>)->Result<String,String> {
     const MAX_OUTPUT:u64=256*1024;
     let mut child=command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_|"System VPN manager not installed or unavailable".to_string())?;
@@ -126,6 +137,10 @@ fn output_with_timeout(command:&mut Command,timeout:Duration)->Result<String,Str
     let deadline=Instant::now()+timeout;
     let mut captured=None;
     let status=loop {
+        if cancel.is_some_and(|flag|flag.load(Ordering::Acquire)) {
+            let _=child.kill(); let _=child.wait(); let _=reader.join();
+            return Err("VPN import cancelled; refresh system profiles".into());
+        }
         if captured.is_none() {
             if let Ok(result)=rx.try_recv() {
                 match result {
@@ -173,6 +188,107 @@ fn nmcli_until(args:&[&str],deadline:Instant)->Result<String,String> {
     let mut cmd=Command::new("/usr/bin/nmcli");
     cmd.args(args);
     output_with_timeout(&mut cmd,remaining(deadline)?)
+}
+#[cfg(target_os="linux")]
+fn import_file(kind:&str,path:&str)->Result<std::path::PathBuf,String> {
+    let expected=match kind {"WireGuard"=>"conf","OpenVPN"=>"ovpn",
+        _=>return Err("Unsupported VPN import type".into())};
+    let source=std::path::Path::new(path);
+    if !source.is_absolute() || path.len()>4096 || path.chars().any(char::is_control)
+        || source.extension().and_then(|x|x.to_str())!=Some(expected) {
+        return Err("Invalid VPN import file".into());
+    }
+    let metadata=std::fs::symlink_metadata(source)
+        .map_err(|_|"VPN import file is unavailable".to_string())?;
+    if !metadata.file_type().is_file() || metadata.len()==0 || metadata.len()>256*1024 {
+        return Err("VPN import requires a regular file of at most 256 KiB".into());
+    }
+    let source=source.canonicalize().map_err(|_|"VPN import file is unavailable".to_string())?;
+    let parent=source.parent().ok_or("Invalid VPN import file")?;
+    let permissions=std::fs::metadata(parent)
+        .map_err(|_|"VPN import directory is unavailable".to_string())?;
+    if !permissions.is_dir() {return Err("Invalid VPN import directory".into());}
+    Ok(source)
+}
+#[cfg(target_os="linux")]
+fn import_with_tool(tool:&std::path::Path,kind:&str,source:&std::path::Path,
+    cancel:Option<&AtomicBool>)->Result<(),String> {
+    let plugin=match kind {"WireGuard"=>"wireguard","OpenVPN"=>"openvpn",
+        _=>return Err("Unsupported VPN import type".into())};
+    let mut command=Command::new(tool);
+    command.args(["-w","30","connection","import","--temporary","type",plugin,"file"]);
+    command.arg(source);
+    output_with_timeout_and_cancel(&mut command,Duration::from_secs(35),cancel).map(|_|())
+}
+#[cfg(target_os="linux")]
+fn imported_profile(before:&[VpnProfile],after:&[VpnProfile],kind:&str)
+    ->Result<VpnProfile,String> {
+    let added:Vec<_>=after.iter().filter(|profile| !before.iter()
+        .any(|old|old.id.eq_ignore_ascii_case(&profile.id))).collect();
+    if added.len()!=1 {return Err("VPN import did not produce exactly one visible profile; inspect NetworkManager".into());}
+    let profile=added[0];
+    if !uuid_ok(&profile.id) || profile.kind!=kind || profile.active || !profile.control_allowed
+        || before.iter().any(|old|old.name.eq_ignore_ascii_case(&profile.name)) {
+        return Err("Imported VPN profile conflicts with existing state or became active".into());
+    }
+    Ok((*profile).clone())
+}
+#[cfg(target_os="linux")]
+fn rollback_import(id:&str)->Result<(),String> {
+    if !uuid_ok(id) {return Err("Temporary VPN profile may remain; inspect NetworkManager".into());}
+    nmcli(&["-w","30","connection","delete","uuid",id])
+        .map(|_|()).map_err(|_|"Temporary VPN profile may remain; inspect NetworkManager".into())
+}
+#[cfg(target_os="linux")]
+fn import_impl(kind:&str,path:&str,cancel:&AtomicBool)->Result<Vec<VpnProfile>,String> {
+    let source=import_file(kind,path)?;
+    let username=std::env::var("USER").map_err(|_|"Current OS user unavailable")?;
+    if username.is_empty() || username.len()>64 || !username.bytes()
+        .all(|b|b.is_ascii_alphanumeric()||b"_.-".contains(&b)) {
+        return Err("Current OS user cannot be used for a private VPN profile".into());
+    }
+    if cancel.load(Ordering::Acquire) {return Err("VPN import cancelled".into());}
+    let before=list_impl()?;
+    let stem=source.file_stem().and_then(|s|s.to_str()).ok_or("Invalid VPN import file")?;
+    if before.iter().any(|profile|profile.name.eq_ignore_ascii_case(stem)) {
+        return Err("A VPN profile with this file name already exists".into());
+    }
+    if cancel.load(Ordering::Acquire) {return Err("VPN import cancelled".into());}
+    if let Err(error)=import_with_tool(std::path::Path::new("/usr/bin/nmcli"),kind,&source,Some(cancel)) {
+        // A cancellation can race with NetworkManager committing the import.
+        // Remove only one newly visible profile of the requested kind.
+        if let Ok(after)=list_impl() {
+            let added:Vec<_>=after.iter().filter(|profile|profile.kind==kind && !before.iter()
+                .any(|old|old.id.eq_ignore_ascii_case(&profile.id))).collect();
+            if added.len()==1 {rollback_import(&added[0].id)?;}
+        }
+        return Err(error);
+    }
+    // Import is temporary until the new UUID and access restrictions are checked.
+    let after=list_impl().map_err(|_|"VPN import may have completed; inspect NetworkManager".to_string())?;
+    let added:Vec<_>=after.iter().filter(|profile|!before.iter()
+        .any(|old|old.id.eq_ignore_ascii_case(&profile.id))).collect();
+    if added.len()!=1 {return Err("VPN import produced an ambiguous profile; inspect NetworkManager".into());}
+    let imported=added[0];
+    let valid=imported_profile(&before,&after,kind);
+    if valid.is_err() || cancel.load(Ordering::Acquire) {
+        rollback_import(&imported.id)?;
+        return Err(valid.err().unwrap_or_else(||"VPN import cancelled".into()));
+    }
+    let private=format!("user:{username}:");
+    if nmcli(&["-w","30","connection","modify","uuid",&imported.id,
+        "connection.autoconnect","no","connection.permissions",&private]).is_err() {
+        rollback_import(&imported.id)?;
+        return Err("Cannot restrict imported VPN profile; inspect NetworkManager".into());
+    }
+    let final_profiles=list_impl().map_err(|_|"VPN profile imported but status cannot be verified".to_string())?;
+    let final_profile=final_profiles.iter().find(|profile|profile.id.eq_ignore_ascii_case(&imported.id))
+        .ok_or("Imported VPN profile disappeared")?;
+    if final_profile.active || final_profile.kind!=kind || cancel.load(Ordering::Acquire) {
+        rollback_import(&imported.id)?;
+        return Err("Imported VPN profile changed or import was cancelled".into());
+    }
+    Ok(final_profiles)
 }
 /// Unknown NetworkManager VPN plugins are displayed read-only.
 #[cfg(target_os="linux")]
@@ -362,6 +478,26 @@ pub async fn vpn_list()->Result<Vec<VpnProfile>,String>{
         .map_err(|_|"VPN list worker failed".to_string())?
 }
 #[tauri::command]
+pub async fn vpn_import(actions:tauri::State<'_,VpnActions>,kind:String,path:String)
+    ->Result<Vec<VpnProfile>,String> {
+    let guard=actions.acquire()?;
+    guard.importing.store(true,Ordering::Release);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard=guard;
+        #[cfg(target_os="linux")]
+        {import_impl(&kind,&path,&_guard.cancel_import)}
+        #[cfg(not(target_os="linux"))]
+        {let _=(kind,path);Err("VPN file import is available only with Linux NetworkManager".into())}
+    }).await.map_err(|_|"VPN import worker failed".to_string())?
+}
+#[tauri::command]
+pub fn vpn_cancel_import(actions:tauri::State<'_,VpnActions>)->bool {
+    if actions.importing.load(Ordering::Acquire) {
+        actions.cancel_import.store(true,Ordering::Release);
+        true
+    } else {false}
+}
+#[tauri::command]
 pub async fn vpn_health(profile_id:String)->Result<VpnHealth,String>{
     if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
     tauri::async_runtime::spawn_blocking(move || {
@@ -396,6 +532,73 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os="linux")]
+    #[test]
+    fn disposable_vpn_import_validates_file_and_invokes_fixed_nmcli_shape() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let wg=dir.path().join("fixture.conf");
+        std::fs::write(&wg,"[Interface]\nPrivateKey = disposable-only\n").unwrap();
+        let wg_path=wg.to_str().unwrap();
+        assert_eq!(import_file("WireGuard",wg_path).unwrap(),wg);
+        assert!(import_file("OpenVPN",wg_path).is_err());
+        assert!(import_file("Other VPN",wg_path).is_err());
+        assert!(import_file("WireGuard","relative.conf").is_err());
+        let link=dir.path().join("link.conf");
+        std::os::unix::fs::symlink(&wg,&link).unwrap();
+        assert!(import_file("WireGuard",link.to_str().unwrap()).is_err());
+        let empty=dir.path().join("empty.conf");
+        std::fs::write(&empty,[]).unwrap();
+        assert!(import_file("WireGuard",empty.to_str().unwrap()).is_err());
+        let large=dir.path().join("large.conf");
+        std::fs::write(&large,vec![b'x';256*1024+1]).unwrap();
+        assert!(import_file("WireGuard",large.to_str().unwrap()).is_err());
+
+        let args_file=dir.path().join("args");
+        let tool=dir.path().join("nmcli-fixture");
+        std::fs::write(&tool,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' 'disposable-only'\n",args_file.display())).unwrap();
+        let mut permissions=std::fs::metadata(&tool).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&tool,permissions).unwrap();
+        import_with_tool(&tool,"WireGuard",&wg,None).unwrap();
+        let args=std::fs::read_to_string(args_file).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(),
+            ["-w","30","connection","import","--temporary","type","wireguard","file",wg_path]);
+        assert!(import_with_tool(&tool,"Other VPN",&wg,None).is_err());
+        assert!(import_with_tool(std::path::Path::new("/missing/nmcli"),"WireGuard",&wg,None).is_err());
+
+        let slow=dir.path().join("slow-nmcli");
+        std::fs::write(&slow,"#!/bin/sh\nexec sleep 30\n").unwrap();
+        let mut permissions=std::fs::metadata(&slow).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&slow,permissions).unwrap();
+        let cancel=Arc::new(AtomicBool::new(false));
+        let signal=Arc::clone(&cancel);
+        let file=wg.clone();
+        let worker=std::thread::spawn(move ||import_with_tool(&slow,"WireGuard",&file,Some(&signal)));
+        std::thread::sleep(Duration::from_millis(100));
+        cancel.store(true,Ordering::Release);
+        assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn import_conflicts_are_rejected_without_touching_existing_profiles() {
+        let before=vec![VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Existing".into(),kind:"WireGuard".into(),active:false,control_allowed:true}];
+        let added=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174001".into(),
+            name:"New fixture".into(),kind:"WireGuard".into(),active:false,control_allowed:true};
+        assert_eq!(imported_profile(&before,&[before[0].clone(),added.clone()],"WireGuard").unwrap(),added);
+        assert!(imported_profile(&before,&before,"WireGuard").is_err());
+        assert!(imported_profile(&before,&[before[0].clone(),added.clone(),
+            VpnProfile{id:"123e4567-e89b-12d3-a456-426614174002".into(),..added.clone()}],
+            "WireGuard").is_err());
+        for changed in [VpnProfile{name:"Existing".into(),..added.clone()},
+            VpnProfile{active:true,..added.clone()},
+            VpnProfile{kind:"OpenVPN".into(),..added.clone()},
+            VpnProfile{control_allowed:false,..added.clone()}] {
+            assert!(imported_profile(&before,&[before[0].clone(),changed],"WireGuard").is_err());
+        }
+    }
     #[test]
     fn inactive_health_never_claims_route_or_dns_evidence() {
         let profile=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),

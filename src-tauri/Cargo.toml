@@ -45,7 +45,7 @@ ironrdp-cliprdr-native = { git = "https://github.com/Devolutions/IronRDP.git", r
 serde_json = "1"
 rcgen = "0.14"
 tokio-rustls = "0.26"
-ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["server", "connector", "cliprdr"] }
+ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["server", "connector", "cliprdr", "core"] }
 tempfile = "3"
 async-trait = "0.1"
 rdp-pdu = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }

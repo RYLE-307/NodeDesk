@@ -8,22 +8,29 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ### 2026-11-13 RDP protocol fixtures and Arch package smoke test in progress
 
-- Current pushed code HEAD remains `a4b7ff5de593871f7b4610112755a558c04487ff`;
+- Fixture and package commits `c7f9894` and `309fe40` were pushed. Their
+  [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43440056652)
+  failed Rust compilation on Ubuntu and Windows because the test-only
+  `ironrdp::core` re-export was disabled by the explicit feature list.
+  Enabling IronRDP's `core` feature fixes the missing import, `AsAny` macro
+  and `IntoOwned` trait errors; this repair is pending exact-head CI.
+- Last verified parent HEAD `a4b7ff5de593871f7b4610112755a558c04487ff`;
   its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43391658978)
-  passed 6/6. PR #13 is Draft.
-- Uncommitted RDP work adds a pinned disposable hybrid/CredSSP server with
+  passed 6/6. Current pushed code HEAD is `309fe4026f172defe89a8a0357e38aece616c046`;
+  its Rust fixture CI failed as noted above. PR #13 is Draft.
+- RDP fixture work adds a pinned disposable hybrid/CredSSP server with
   an in-memory CLIPRDR text exchange in both directions and a separate
   transport-loss/reconnect fixture. NodeDesk-owned passwords are wiped on
   failed configuration validation and moved into IronRDP without an extra
   application clone. IronRDP's own retained/copying `String` lifecycle is
-  still open. These new fixtures are **NOT YET COMPILED OR RUN**; local MSVC
-  `link.exe` is absent. Exact-head Windows/Ubuntu/Arch CI is required.
-- The existing uncommitted packaging workflow change verifies Arch portable
+  still open. The fixtures have **NOT YET RUN** because the first Rust
+  compilation failed; local MSVC `link.exe` is absent. Exact-head
+  Windows/Ubuntu/Arch CI is required after the feature repair.
+- The packaging workflow change verifies Arch portable
   archive checksums and a disposable package install/uninstall in the CI
   container. It does not replace native Arch installation acceptance.
-- Resume: inspect `git status`; preserve these edits; run Rust syntax and
-  frontend tests; commit/push after the functional block; inspect only failed
-  CI logs and fix failures. Native Windows/Arch RDP GUI, clipboard, reconnect
+- Resume: inspect `git status`; commit/push the IronRDP feature repair;
+  inspect only failed CI logs and fix failures. Native Windows/Arch RDP GUI, clipboard, reconnect
   and package acceptance remain **NOT TESTED**.
 
 ### 2026-11-13 VPN import rollback provenance fix pending CI

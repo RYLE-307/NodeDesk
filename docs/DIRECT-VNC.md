@@ -43,5 +43,8 @@ acceptance remains **NOT TESTED**. The pinned upstream
 credential type uses ordinary `String` values. NodeDesk's vendored VNC layer
 now wipes the reconnect holder at teardown, the stored interactive answer at
 prompt teardown, the old answer before replacement, and the X509Plain local
-password and wire buffer after encoding. Other transient library copies still
+password and wire buffer after encoding. The native connection builder also
+wipes its input password when target or pin validation fails, before it can
+reach the VNC core. The credential prompt path clones a saved password only
+when that credential actually satisfies the selected security method. Other transient library copies still
 need review before guaranteed password zeroization can be claimed.

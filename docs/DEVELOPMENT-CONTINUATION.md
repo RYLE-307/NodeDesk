@@ -6,6 +6,40 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 VNC credential-copy reduction pending CI
+
+- Following the verified RDP code HEAD `a2044be`, the native VNC builder now
+  wipes the password on validation errors and moves it into the core without
+  an extra clone. The vendored prompt path avoids cloning a stored password
+  when it cannot satisfy the selected authentication method. Existing
+  disposable VNC tests and exact-head CI are required for these changes.
+- This does not establish complete VNC secret zeroization: the pinned
+  `remote-core` credentials and other transient library copies are ordinary
+  strings. Review them before claiming the memory-safety release gate.
+
+### 2026-11-13 RDP disposable handshake repair awaiting exact-head CI
+
+- RDP code HEAD `a2044becf3b29ada43d2132d2dfdddaedf114aa6` on
+  `feat/post-v0.9-roadmap`; PR #13 remains Draft. [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43444560444)
+  passed **6/6**: Windows/Ubuntu/Arch Rust and desktop builds, browser and
+  frontend, and Arch disposable package smoke. The prior [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43441413560)
+  compiled on Windows, Ubuntu and Arch, and frontend/browser jobs passed, but
+  two new RDP integration tests failed during capability negotiation.
+- The disposable server's no-display handler advertised a 0x0 desktop. The
+  client correctly rejected it before clipboard or reconnect could execute.
+  `a2044be` replaces that handler with a fixed 800x600 display producing no
+  image updates. The pinned CredSSP clipboard roundtrip and forced reconnect
+  fixture now pass on Windows, Ubuntu and Arch CI. Native OS clipboard and GUI
+  acceptance are still untested.
+- `c7f9894` added both disposable pinned CredSSP fixtures and reduced one
+  NodeDesk-owned password copy. `309fe40` added Arch portable integrity and
+  disposable install/uninstall smoke checks. `79df843` and `8fe529a` repaired
+  test feature and lockfile compilation. Local Rust execution remains blocked
+  by absent MSVC `link.exe`; Rust syntax and `git diff --check` passed.
+- Next: continue VNC transient credential cleanup, VPN lifecycle,
+  SSH/SFTP, packaging and P1. Native Windows/Arch GUI, RDP clipboard/reconnect
+  and package install acceptance remain **NOT TESTED**.
+
 ### 2026-11-13 RDP protocol fixtures and Arch package smoke test in progress
 
 - Fixture and package commits `c7f9894` and `309fe40` were pushed. Their

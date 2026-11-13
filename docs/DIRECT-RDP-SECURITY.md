@@ -18,8 +18,11 @@ callback does not expose the password or write certificate data to WebView.
 The disposable hybrid RDP fixture uses a generated self-signed certificate
 whose exact SHA256 pin is supplied to the client. It checks CredSSP login,
 framebuffer decoding and mouse input. A unit test rejects a different
-certificate and malformed pins. The callback change, frontend pin handoff,
-and native builds require exact-head CI on Windows, Ubuntu and Arch.
+certificate and malformed pins. A second disposable fixture exchanges
+CF_UNICODETEXT through CLIPRDR in both directions using in-memory backends.
+Another forces a server transport loss and checks IronRDP's reconnect events
+against the same pinned identity. These protocol fixtures do not prove the
+desktop clipboard integration or native GUI interaction.
 
 The direct RDP clipboard toggle is opt-in. On Windows, NodeDesk supplies
 IronRDP's native clipboard backend with file transfer disabled, because the

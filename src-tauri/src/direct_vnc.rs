@@ -76,6 +76,9 @@ fn options(
     password: String,
     spki_sha256: String,
 ) -> Result<ConnectOptions, String> {
+    // Validation may return before the credential is handed to the VNC core.
+    // Keep NodeDesk's owning copy guarded on every such exit path.
+    let mut password = zeroize::Zeroizing::new(password);
     if target.id.len() != 36
         || !target.id.bytes().enumerate().all(|(i, b)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -99,7 +102,8 @@ fn options(
         return Err("Disable TLS key logging before direct VNC".into());
     }
     let mut result = ConnectOptions::vnc(target.host.clone(), target.port);
-    result.credentials = Credentials::user_pass(target.username.clone(), password);
+    result.credentials =
+        Credentials::user_pass(target.username.clone(), std::mem::take(&mut *password));
     result.cert_pins.tls = Some(spki_sha256.to_ascii_uppercase());
     result.vnc_mut().security_pref = Some("vencrypt".into());
     result.vnc_mut().allow_insecure = false;

@@ -198,16 +198,16 @@ impl<'a> CredentialSource<'a> {
         opts: &ConnectOptions,
     ) -> Result<Credentials> {
         let stored_user = non_empty(opts.credentials.username.clone());
-        let stored_pass = opts.credentials.password.clone();
-
         let satisfied = match kind {
-            CredentialKind::PasswordOnly => stored_pass.is_some(),
-            CredentialKind::UsernameAndPassword => stored_pass.is_some() && stored_user.is_some(),
+            CredentialKind::PasswordOnly => opts.credentials.password.is_some(),
+            CredentialKind::UsernameAndPassword => {
+                opts.credentials.password.is_some() && stored_user.is_some()
+            }
         };
         if satisfied {
             return Ok(Credentials {
                 username: stored_user,
-                password: stored_pass,
+                password: opts.credentials.password.clone(),
                 domain: None,
             });
         }

@@ -2432,6 +2432,7 @@ source = "git+https://github.com/Devolutions/IronRDP.git?rev=b553ed4315655d9003e
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-server",

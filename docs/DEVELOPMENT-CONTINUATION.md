@@ -6,6 +6,40 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 Linux VPN import, exact-head CI in progress
+
+- Current pushed code HEAD: `004f6ed3aed2a752fe4e9f859afbc10204341b74`
+  on `feat/post-v0.9-roadmap`; PR #13 remains Draft. Import commits are
+  `37d48a7`, `4551288` and the Rust test ownership fix `004f6ed`.
+  [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43387378022)
+  is in progress. The previous run `43385204338` failed Ubuntu/Arch Rust
+  compilation because a disposable test moved `args_file` before reusing it;
+  `004f6ed` fixes that compile error. Windows/Ubuntu/Arch Rust and Playwright
+  passed; Windows desktop packaging is still running. Do not claim 6/6 until
+  that last job passes.
+- The initial import [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43384419463)
+  passed 6/6. On `004f6ed`, five jobs including Arch packaging passed;
+  Windows desktop packaging is still running.
+- Linux NetworkManager WireGuard/OpenVPN import uses private local files,
+  temporary import, exact UUID verification, user-only access restriction,
+  autoconnect disable, shared action serialization, cancellation and
+  best-effort rollback. Rust mock CLI tests cover validation, argument shape,
+  conflicts, cancellation and unavailable manager. Frontend unit/build and
+  Playwright passed before the test fix; repeat exact-head CI for all platforms.
+  See `docs/VPN-IMPORT.md`.
+- Native Arch import/rollback, secret-agent behavior, brief pre-restriction
+  autoactivation, route/DNS, and Windows VPN creation remain **NOT TESTED** or
+  open. RDP clipboard roundtrip/reconnect/password lifecycle, VNC password
+  cleanup, SSH/SFTP native acceptance, packaging native acceptance and P1
+  remain open. IronRDP's built-in Windows clipboard backend enables file
+  transfer when the clipboard toggle is on; direct RDP needs an explicit
+  text-only clipboard policy or separate file-transfer consent before that
+  path can be accepted. Next: finish exact-head CI, fix failures, then direct
+  RDP clipboard/reconnect and credential lifecycle.
+- Resume: `git status --short --branch`; fetch CI jobs for run `43387378022`;
+  inspect only failed logs. Commit this checkpoint after a verified outcome,
+  push, then continue direct RDP work without repeating the repository audit.
+
 ### 2026-11-13 Linux VPN import security follow-up awaiting exact-head CI
 
 - Import implementation commit `37d48a7a96dbc3f7cbb7c7136c72c25add513b40`

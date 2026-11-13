@@ -6,8 +6,34 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 RDP protocol fixtures and Arch package smoke test in progress
+
+- Current pushed code HEAD remains `a4b7ff5de593871f7b4610112755a558c04487ff`;
+  its [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43391658978)
+  passed 6/6. PR #13 is Draft.
+- Uncommitted RDP work adds a pinned disposable hybrid/CredSSP server with
+  an in-memory CLIPRDR text exchange in both directions and a separate
+  transport-loss/reconnect fixture. NodeDesk-owned passwords are wiped on
+  failed configuration validation and moved into IronRDP without an extra
+  application clone. IronRDP's own retained/copying `String` lifecycle is
+  still open. These new fixtures are **NOT YET COMPILED OR RUN**; local MSVC
+  `link.exe` is absent. Exact-head Windows/Ubuntu/Arch CI is required.
+- The existing uncommitted packaging workflow change verifies Arch portable
+  archive checksums and a disposable package install/uninstall in the CI
+  container. It does not replace native Arch installation acceptance.
+- Resume: inspect `git status`; preserve these edits; run Rust syntax and
+  frontend tests; commit/push after the functional block; inspect only failed
+  CI logs and fix failures. Native Windows/Arch RDP GUI, clipboard, reconnect
+  and package acceptance remain **NOT TESTED**.
+
 ### 2026-11-13 VPN import rollback provenance fix pending CI
 
+- Current code HEAD `a4b7ff5de593871f7b4610112755a558c04487ff`
+  on `feat/post-v0.9-roadmap`; PR #13 remains Draft. Its
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43391658978)
+  is in progress. The prior RDP clipboard policy [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43390076840)
+  passed 6/6. The VPN import test fix [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43387378022)
+  also passed 6/6. No native Windows/Arch GUI or installation acceptance was run.
 - A before/after profile diff can include a profile created concurrently by
   another application. The import now parses NetworkManager's returned UUID
   under a fixed C locale and requires it to match the one new profile.
@@ -512,10 +538,13 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Next action
 
-1. Verify the exact-head direct RDP workflow; fix all compiler and browser
-   failures and repeat CI. Then add direct clipboard and disposable protocol
-   coverage; native Windows/Arch RDP remains NOT TESTED.
-2. Continue P0 direct VNC, vault binding and VPN lifecycle in that order.
+1. Verify exact-head [CI for VPN rollback provenance](https://github.com/RYLE-307/NodeDesk/actions/runs/43391658978)
+   on code HEAD `a4b7ff5de593871f7b4610112755a558c04487ff`;
+   fix any compiler or test failure before treating that change as verified.
+2. Complete direct RDP clipboard roundtrip, reconnect fixture and password
+   lifecycle; complete VNC transient credential cleanup. Continue VPN native
+   lifecycle/route/DNS evidence, SSH/SFTP, packaging and the remaining P1.
+   Native Windows/Arch GUI and installation acceptance remain NOT TESTED.
 
 ## Commands
 

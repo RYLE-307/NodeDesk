@@ -37,6 +37,21 @@ jobs:
           runuser -u nodedesk-builder -- env NODEDESK_SOURCE_ROOT="$GITHUB_WORKSPACE" \
             bash -c 'cd "$NODEDESK_SOURCE_ROOT/ops/packaging/arch" && makepkg --noconfirm'
           sha256sum ops/packaging/arch/*.pkg.tar.zst > SHA256SUMS-arch-package.txt
+      - name: Disposable Arch package and portable install checks
+        run: |
+          sha256sum -c SHA256SUMS-arch.txt
+          sha256sum -c SHA256SUMS-arch-package.txt
+          portable_dir="$(mktemp -d)"
+          tar -xzf nodedesk-arch-portable-preview.tar.gz -C "$portable_dir"
+          test -x "$portable_dir/nodedesk"
+          test -f "$portable_dir/LICENSE"
+          pacman -U --noconfirm ops/packaging/arch/*.pkg.tar.zst
+          pacman -Qkk nodedesk-preview
+          test -x /usr/bin/nodedesk
+          desktop-file-validate /usr/share/applications/nodedesk.desktop
+          pacman -R --noconfirm nodedesk-preview
+          test ! -e /usr/bin/nodedesk
+          test ! -e /usr/share/applications/nodedesk.desktop
       - uses: actions/upload-artifact@v4
         with:
           name: nodedesk-arch-portable-preview

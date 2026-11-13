@@ -343,6 +343,11 @@ pub async fn rdp_direct_connect(
                 });
                 let mut last_frame = Instant::now() - Duration::from_secs(1);
                 while let Some(event) = receiver.recv().await {
+                    let terminal_error = matches!(
+                        &event,
+                        RdpOutputEvent::ConnectionFailure(_)
+                            | RdpOutputEvent::Terminated(Err(_))
+                    );
                     let result = match event {
                         RdpOutputEvent::Connected | RdpOutputEvent::AutoReconnected => {
                             events.send(Event::Status { phase: "connected" })
@@ -386,7 +391,7 @@ pub async fn rdp_direct_connect(
                         }
                         _ => continue,
                     };
-                    if result.is_err() {
+                    if result.is_err() || terminal_error {
                         session.sender.request_close();
                         break;
                     }

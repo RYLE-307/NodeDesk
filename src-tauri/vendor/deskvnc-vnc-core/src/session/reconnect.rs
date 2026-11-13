@@ -85,6 +85,21 @@ pub(crate) struct VncConnect {
     settings: SessionSettings,
 }
 
+impl Drop for VncConnect {
+    fn drop(&mut self) {
+        self.wipe_credentials();
+    }
+}
+
+impl VncConnect {
+    fn wipe_credentials(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(password) = self.options.credentials.password.as_mut() {
+            password.zeroize();
+        }
+    }
+}
+
 impl VncConnect {
     pub(crate) fn new(options: ConnectOptions) -> Self {
         let settings = SessionSettings::from_options(&options);
@@ -156,6 +171,15 @@ mod tests {
 
     fn policy() -> ReconnectPolicy {
         ReconnectPolicy::default()
+    }
+
+    #[test]
+    fn session_password_is_wiped_on_teardown() {
+        let mut options = ConnectOptions::vnc("fixture.invalid", 5900);
+        options.credentials.password = Some("disposable-secret".into());
+        let mut connection = VncConnect::new(options);
+        connection.wipe_credentials();
+        assert_eq!(connection.options.credentials.password.as_deref(), Some(""));
     }
 
     // ---- transient vs fatal classification -------------------------------

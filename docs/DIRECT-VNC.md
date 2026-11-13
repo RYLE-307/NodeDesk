@@ -40,5 +40,8 @@ checks a SetDesktopSize request. A separate fixture drops the first connection
 and checks that the client reconnects to the same pinned server. The resize
 extension requires exact-head CI confirmation. Native Windows and Arch GUI
 acceptance remains **NOT TESTED**. The pinned upstream
-credential type uses ordinary `String` values, so guaranteed password
-zeroization in all library copies is also an open security gate.
+credential type uses ordinary `String` values. NodeDesk's vendored VNC layer
+now wipes the reconnect holder at teardown, the stored interactive answer at
+prompt teardown, the old answer before replacement, and the X509Plain local
+password and wire buffer after encoding. Other transient library copies still
+need review before guaranteed password zeroization can be claimed.

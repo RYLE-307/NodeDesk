@@ -72,6 +72,17 @@ pub struct CredentialSource<'a> {
     authenticated: AtomicBool,
 }
 
+impl Drop for CredentialSource<'_> {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Ok(supplied) = self.supplied.get_mut() {
+            if let Some(password) = supplied.as_mut().and_then(|value| value.password.as_mut()) {
+                password.zeroize();
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for CredentialSource<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CredentialSource")

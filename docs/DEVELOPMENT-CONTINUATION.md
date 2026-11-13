@@ -6,8 +6,24 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 Direct VNC credential lifetime follow-up pending CI
+
+- Vendored VNC layer wipes the reconnect-held password on teardown, the
+  interactive answer held for retry on prompt teardown, the prior saved answer
+  before replacement, and the X509Plain local password after making the
+  already-wiped wire buffer. A unit test checks that the reconnect holder is
+  emptied. This reduces retained copies but does **not** prove every transient
+  `String` in the VNC library is wiped; that release gate remains open.
+- Local Rust formatting parser and diff checks pass; semantic compilation and
+  disposable protocol tests require exact-head CI because MSVC `link.exe` is
+  unavailable here. Native Windows/Arch clipboard and GUI remain **NOT TESTED**.
+- Also pending in the next push: direct RDP terminal error cleanup. Do not
+  claim RDP clipboard/reconnect or VNC memory cleanup complete from compilation.
+
 ### 2026-11-13 Direct RDP Windows clipboard policy awaiting CI
 
+- Pushed HEAD `97e6442ecc589c8c60a0da574fbf7463fb95579f`; [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43390076840)
+  is running. The checkpoint commit `6d51f5c` preceded the RDP code commit.
 - The code after VPN import configures IronRDP's native Windows clipboard with
   file transfer disabled when the user enables clipboard. The upstream default
   enables file streaming with the same toggle. Linux's native clipboard path

@@ -473,6 +473,10 @@ async fn establish_interactive(
         // before the result is looked at because the attempt can fail after
         // the security handshake succeeded, and the answer is still proven.
         if let Some(accepted) = source.accepted() {
+            use zeroize::Zeroize;
+            if let Some(password) = options.credentials.password.as_mut() {
+                password.zeroize();
+            }
             options.credentials = accepted;
         }
 

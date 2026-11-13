@@ -27,6 +27,8 @@ upstream default enables clipboard file streaming. The clipboard switch grants
 text synchronization only; no remote file transfer is implied. This path still
 needs a native Windows text round-trip and clipboard teardown test. Linux uses
 IronRDP's native clipboard backend and requires a native Arch round-trip test.
+Terminal connection/authentication failures close the input channel and remove
+the session from NodeDesk's registry so a failed connection can be retried.
 
 Native Windows and Arch GUI acceptance, clipboard round-trip, reconnect
 acceptance, and guaranteed zeroization of all IronRDP password copies remain

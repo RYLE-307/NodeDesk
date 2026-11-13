@@ -384,7 +384,7 @@ async fn plain_auth(
         .obtain(method, CredentialKind::UsernameAndPassword, false, opts)
         .await?;
     let user = supplied.username.unwrap_or_default();
-    let password = supplied.password.unwrap_or_default();
+    let password = zeroize::Zeroizing::new(supplied.password.unwrap_or_default());
     if user.is_empty() {
         return Err(VncError::CredentialsRequired(
             "this server requires a username and password".into(),

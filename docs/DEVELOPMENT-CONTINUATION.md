@@ -8,14 +8,21 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ### 2026-11-13 Packaging smoke work pending exact-head CI
 
+- Current pushed HEAD `68e52752a82fb9e404a10947f4f2b777ee0295af`
+  on `feat/post-v0.9-roadmap`; PR #13 remains Draft.
+  [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43447421986)
+  passed **6/6**: Windows/Ubuntu/Arch Rust and desktop jobs, browser and
+  frontend. Windows NSIS and Arch package/portable disposable smoke checks
+  passed. No native GUI or installer acceptance was performed.
 - Windows preview CI now verifies the NSIS checksum and runs a silent install
   and uninstall in a unique disposable runner directory, checking executable
   placement and removal. Arch CI already has package/portable checks. This
-  Windows gate has **not yet run** and may need adjustment for Tauri's actual
-  NSIS layout. Native Windows/Arch installation remains **NOT TESTED**.
+  Windows gate passed on a disposable runner. Native Windows/Arch installation
+  remains **NOT TESTED**.
 - VNC credential-copy change HEAD `b6cc9e7ba3db213402818169cc50c0dd7cd47ecd`;
-  [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446814706) is
-  running. The previous `bc9adb6` [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446339054)
+  [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446814706) passed
+  **6/6**, including Windows/Ubuntu/Arch Rust and the disposable VNC fixtures.
+  The previous `bc9adb6` [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446339054)
   failed compilation because the interactive credential path still referenced
   a removed local variable; `b6cc9e7` repairs that path.
 

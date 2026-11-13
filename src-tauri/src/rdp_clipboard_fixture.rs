@@ -7,11 +7,43 @@ use ironrdp::cliprdr::pdu::{
 };
 use ironrdp::core::{impl_as_any, IntoOwned};
 use ironrdp::server::{
-    CliprdrServerFactory, Credentials, RdpServer, ServerEvent, ServerEventSender, TlsIdentityCtx,
+    CliprdrServerFactory, Credentials, DesktopSize, DisplayContext, DisplayUpdate, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, ServerEvent, ServerEventSender, ServerResult,
+    TlsIdentityCtx,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 const TEXT: &str = "NodeDesk disposable clipboard";
+
+// The server's built-in no-display handler reports 0x0, which a real RDP
+// client must reject during capability negotiation. Give this fixture a valid
+// fixed framebuffer while still producing no image updates.
+struct FixtureDisplay;
+struct FixtureDisplayUpdates;
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for FixtureDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: 800,
+            height: 600,
+        }
+    }
+
+    async fn updates(
+        &mut self,
+        _: DisplayContext,
+    ) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(FixtureDisplayUpdates))
+    }
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for FixtureDisplayUpdates {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
+        std::future::pending().await
+    }
+}
 
 #[derive(Default)]
 struct Observed {
@@ -188,7 +220,7 @@ fn disposable_hybrid_clipboard_text_roundtrip() {
             .with_addr(address)
             .with_hybrid(acceptor, identity.pub_key)
             .with_no_input()
-            .with_no_display()
+            .with_display_handler(FixtureDisplay)
             .with_cliprdr_factory(Some(Box::new(ServerFactory {
                 sender: Arc::new(Mutex::new(None)), observed: observed.clone(),
             })))
@@ -260,7 +292,7 @@ fn disposable_hybrid_reconnects_after_transport_loss() {
                 .with_addr(address)
                 .with_hybrid(acceptor, identity.pub_key)
                 .with_no_input()
-                .with_no_display()
+                .with_display_handler(FixtureDisplay)
                 .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
                     logon_id: 7,
                     random_bits: [0x5a; 16],

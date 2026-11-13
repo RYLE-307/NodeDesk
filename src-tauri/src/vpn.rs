@@ -593,7 +593,7 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&tool,permissions).unwrap();
         import_with_tool(&tool,"WireGuard",&wg,None).unwrap();
-        let args=std::fs::read_to_string(args_file).unwrap();
+        let args=std::fs::read_to_string(&args_file).unwrap();
         assert_eq!(args.lines().collect::<Vec<_>>(),
             ["-w","30","connection","import","--temporary","type","wireguard","file",wg_path]);
         assert!(import_with_tool(&tool,"Other VPN",&wg,None).is_err());

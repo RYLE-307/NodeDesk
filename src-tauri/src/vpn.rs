@@ -216,13 +216,25 @@ fn import_file(kind:&str,path:&str)->Result<std::path::PathBuf,String> {
 }
 #[cfg(target_os="linux")]
 fn import_with_tool(tool:&std::path::Path,kind:&str,source:&std::path::Path,
-    cancel:Option<&AtomicBool>)->Result<(),String> {
+    cancel:Option<&AtomicBool>)->Result<String,String> {
     let plugin=match kind {"WireGuard"=>"wireguard","OpenVPN"=>"openvpn",
         _=>return Err("Unsupported VPN import type".into())};
     let mut command=Command::new(tool);
     command.args(["-w","30","connection","import","--temporary","type",plugin,"file"]);
     command.arg(source);
-    output_with_timeout_and_cancel(&mut command,Duration::from_secs(35),cancel).map(|_|())
+    command.env("LC_ALL","C");
+    let output=output_with_timeout_and_cancel(&mut command,Duration::from_secs(35),cancel)?;
+    imported_uuid(&output)
+}
+#[cfg(target_os="linux")]
+fn imported_uuid(output:&str)->Result<String,String> {
+    let ids:Vec<_>=output.lines().filter_map(|line|line.trim_end()
+        .strip_suffix(") successfully added.")
+        .and_then(|prefix|prefix.strip_prefix("Connection '"))
+        .and_then(|prefix|prefix.rsplit_once(" (").map(|(_,id)|id))
+        .filter(|id|uuid_ok(id))).collect();
+    if ids.len()!=1 {return Err("VPN import identity unavailable; inspect NetworkManager".into());}
+    Ok(ids[0].to_ascii_lowercase())
 }
 #[cfg(target_os="linux")]
 fn imported_profile(before:&[VpnProfile],after:&[VpnProfile],kind:&str)
@@ -278,21 +290,23 @@ fn import_impl(kind:&str,path:&str,cancel:&AtomicBool)->Result<Vec<VpnProfile>,S
         return Err("A VPN profile with this file name already exists".into());
     }
     if cancel.load(Ordering::Acquire) {return Err("VPN import cancelled".into());}
-    if let Err(error)=import_with_tool(std::path::Path::new("/usr/bin/nmcli"),kind,&source,Some(cancel)) {
-        // A cancellation can race with NetworkManager committing the import.
-        // Remove only one newly visible profile of the requested kind.
-        if let Ok(after)=list_impl() {
-            let added:Vec<_>=after.iter().filter(|profile|profile.kind==kind && !before.iter()
-                .any(|old|old.id.eq_ignore_ascii_case(&profile.id))).collect();
-            if added.len()==1 {rollback_import(&added[0].id)?;}
-        }
-        return Err(error);
+    // Only the UUID returned by this invocation may be restricted or rolled
+    // back. A concurrent external import can appear in the before/after diff.
+    let imported_id=import_with_tool(std::path::Path::new("/usr/bin/nmcli"),kind,&source,Some(cancel))?;
+    if before.iter().any(|profile|profile.id.eq_ignore_ascii_case(&imported_id)) {
+        return Err("VPN import identity conflicts with existing state; inspect NetworkManager".into());
     }
     // Import is temporary until the new UUID and access restrictions are checked.
-    let after=list_impl().map_err(|_|"VPN import may have completed; inspect NetworkManager".to_string())?;
+    let after=list_impl().map_err(|_|{
+        let _=rollback_import(&imported_id);
+        "VPN import may have completed; inspect NetworkManager".to_string()
+    })?;
     let added:Vec<_>=after.iter().filter(|profile|!before.iter()
         .any(|old|old.id.eq_ignore_ascii_case(&profile.id))).collect();
-    if added.len()!=1 {return Err("VPN import produced an ambiguous profile; inspect NetworkManager".into());}
+    if added.len()!=1 || !added[0].id.eq_ignore_ascii_case(&imported_id) {
+        rollback_import(&imported_id)?;
+        return Err("VPN import produced an ambiguous profile; inspect NetworkManager".into());
+    }
     let imported=added[0];
     let valid=imported_profile(&before,&after,kind);
     if valid.is_err() || cancel.load(Ordering::Acquire) {
@@ -588,17 +602,19 @@ mod tests {
 
         let args_file=dir.path().join("args");
         let tool=dir.path().join("nmcli-fixture");
-        std::fs::write(&tool,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' 'disposable-only'\n",args_file.display())).unwrap();
+        let id="123e4567-e89b-12d3-a456-426614174001";
+        std::fs::write(&tool,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' \"Connection 'fixture' ({id}) successfully added.\"\n",args_file.display())).unwrap();
         let mut permissions=std::fs::metadata(&tool).unwrap().permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&tool,permissions).unwrap();
-        import_with_tool(&tool,"WireGuard",&wg,None).unwrap();
+        assert_eq!(import_with_tool(&tool,"WireGuard",&wg,None).unwrap(),id);
         let args=std::fs::read_to_string(&args_file).unwrap();
         assert_eq!(args.lines().collect::<Vec<_>>(),
             ["-w","30","connection","import","--temporary","type","wireguard","file",wg_path]);
         assert!(import_with_tool(&tool,"Other VPN",&wg,None).is_err());
         assert!(import_with_tool(std::path::Path::new("/missing/nmcli"),"WireGuard",&wg,None).is_err());
-        let id="123e4567-e89b-12d3-a456-426614174001";
+        assert!(imported_uuid("Connection 'fixture' (bad) successfully added.").is_err());
+        assert!(imported_uuid("Connection 'fixture' (123e4567-e89b-12d3-a456-426614174001) successfully added.\nConnection 'other' (123e4567-e89b-12d3-a456-426614174002) successfully added.").is_err());
         restrict_import_with_tool(&tool,id,"fixture").unwrap();
         let args=std::fs::read_to_string(&args_file).unwrap();
         assert_eq!(args.lines().collect::<Vec<_>>(),["-w","30","connection","modify","uuid",id,

@@ -6,6 +6,18 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 VPN import rollback provenance fix pending CI
+
+- A before/after profile diff can include a profile created concurrently by
+  another application. The import now parses NetworkManager's returned UUID
+  under a fixed C locale and requires it to match the one new profile.
+  Restriction and rollback use only that UUID. A cancelled or failed importer
+  without a trustworthy UUID leaves any uncertain temporary profile for manual
+  OS review; NodeDesk must never delete an unrelated system profile.
+- Disposable mock `nmcli` now returns the import UUID; malformed and ambiguous
+  outputs are rejected. Exact-head CI and native Arch race acceptance are
+  pending. See `docs/VPN-IMPORT.md`.
+
 ### 2026-11-13 Direct VNC credential lifetime follow-up pending CI
 
 - Vendored VNC layer wipes the reconnect-held password on teardown, the

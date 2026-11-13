@@ -247,7 +247,9 @@ impl<'a> CredentialSource<'a> {
         self.used.store(true, Ordering::Relaxed);
 
         let mut username = non_empty(supplied.username).or(stored_user);
-        let password = supplied.password.or(stored_pass);
+        let password = supplied
+            .password
+            .or_else(|| opts.credentials.password.clone());
 
         if matches!(kind, CredentialKind::UsernameAndPassword) {
             // Never send an empty user name for a method that needs one: fall

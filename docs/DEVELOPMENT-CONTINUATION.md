@@ -6,9 +6,22 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 Direct RDP Windows clipboard policy awaiting CI
+
+- The code after VPN import configures IronRDP's native Windows clipboard with
+  file transfer disabled when the user enables clipboard. The upstream default
+  enables file streaming with the same toggle. Linux's native clipboard path
+  is unchanged. See `docs/DIRECT-RDP-SECURITY.md`.
+- Rust syntax and diff checks passed; local Windows semantic compilation is
+  blocked by missing MSVC `link.exe`. Windows/Ubuntu/Arch exact-head CI is
+  required. This closes only the Windows clipboard file-transfer consent gap;
+  text roundtrip, reconnect, all password-copy wiping, and native Windows/Arch
+  GUI acceptance remain **NOT TESTED**. Resume by checking CI on the pushed
+  RDP HEAD and fixing any failure before continuing those gates.
+
 ### 2026-11-13 Linux VPN import, exact-head CI in progress
 
-- Current pushed code HEAD: `004f6ed3aed2a752fe4e9f859afbc10204341b74`
+- VPN import code HEAD: `004f6ed3aed2a752fe4e9f859afbc10204341b74`
   on `feat/post-v0.9-roadmap`; PR #13 remains Draft. Import commits are
   `37d48a7`, `4551288` and the Rust test ownership fix `004f6ed`.
   [Exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43387378022)
@@ -31,11 +44,9 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   autoactivation, route/DNS, and Windows VPN creation remain **NOT TESTED** or
   open. RDP clipboard roundtrip/reconnect/password lifecycle, VNC password
   cleanup, SSH/SFTP native acceptance, packaging native acceptance and P1
-  remain open. IronRDP's built-in Windows clipboard backend enables file
-  transfer when the clipboard toggle is on; direct RDP needs an explicit
-  text-only clipboard policy or separate file-transfer consent before that
-  path can be accepted. Next: finish exact-head CI, fix failures, then direct
-  RDP clipboard/reconnect and credential lifecycle.
+  remain open. The subsequent RDP change disables Windows clipboard file
+  transfer pending exact-head CI. Next: finish exact-head CI, fix failures,
+  then direct RDP clipboard/reconnect and credential lifecycle.
 - Resume: `git status --short --branch`; fetch CI jobs for run `43387378022`;
   inspect only failed logs. Commit this checkpoint after a verified outcome,
   push, then continue direct RDP work without repeating the repository audit.

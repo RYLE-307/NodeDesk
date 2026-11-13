@@ -18,6 +18,18 @@ use std::{
 };
 use tauri::{ipc::Channel, State};
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct TextClipboardProxy(RdpInputSender);
+
+#[cfg(windows)]
+impl ironrdp_cliprdr::backend::ClipboardMessageProxy for TextClipboardProxy {
+    fn send_clipboard_message(&self, message: ironrdp_cliprdr::backend::ClipboardMessage) {
+        // The clipboard channel can outlive the RDP input queue during shutdown.
+        let _ = self.0.send_clipboard(message);
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
@@ -293,8 +305,38 @@ pub async fn rdp_direct_connect(
                     return;
                 }
             };
+            // IronRDP's default Windows clipboard enables file transfer. NodeDesk's
+            // clipboard switch grants text synchronization only, so supply the
+            // native backend with file transfer explicitly disabled.
+            #[cfg(windows)]
+            let native_clipboard = if clipboard {
+                match ironrdp_cliprdr_native::WinClipboard::new(TextClipboardProxy(
+                    session.sender.clone(),
+                )) {
+                    Ok(clipboard) => Some(clipboard),
+                    Err(_) => {
+                        let _ = events.send(Event::Error {
+                            message: "RDP clipboard unavailable",
+                        });
+                        if let Ok(mut all) = registry.lock() {
+                            all.remove(&id);
+                        }
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(windows)]
+            let client = if let Some(ref native) = native_clipboard {
+                client.with_cliprdr_backend_factory(native.backend_factory())
+            } else {
+                client
+            };
             let local = tokio::task::LocalSet::new();
             runtime.block_on(local.run_until(async move {
+                #[cfg(windows)]
+                let _native_clipboard = native_clipboard;
                 tokio::task::spawn_local(client.run());
                 let _ = events.send(Event::Status {
                     phase: "connecting",

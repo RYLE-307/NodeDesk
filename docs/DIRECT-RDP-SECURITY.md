@@ -21,6 +21,13 @@ framebuffer decoding and mouse input. A unit test rejects a different
 certificate and malformed pins. The callback change, frontend pin handoff,
 and native builds require exact-head CI on Windows, Ubuntu and Arch.
 
+The direct RDP clipboard toggle is opt-in. On Windows, NodeDesk supplies
+IronRDP's native clipboard backend with file transfer disabled, because the
+upstream default enables clipboard file streaming. The clipboard switch grants
+text synchronization only; no remote file transfer is implied. This path still
+needs a native Windows text round-trip and clipboard teardown test. Linux uses
+IronRDP's native clipboard backend and requires a native Arch round-trip test.
+
 Native Windows and Arch GUI acceptance, clipboard round-trip, reconnect
 acceptance, and guaranteed zeroization of all IronRDP password copies remain
 **NOT TESTED**. No release may claim these gates as complete based only on CI.

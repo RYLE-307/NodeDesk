@@ -120,8 +120,8 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
       {loading?(ru?"Загрузка…":"Loading…"):(ru?"Обновить VPN":"Refresh VPNs")}
     </button>
     {linux&&<div>
-      <p className="ssh-help">{ru?"Импорт WireGuard (.conf) или OpenVPN (.ovpn) в NetworkManager. Введите абсолютный путь к локальному файлу; NodeDesk не читает его содержимое в WebView.":
-        "Import a WireGuard (.conf) or OpenVPN (.ovpn) file into NetworkManager. Enter its absolute local path; NodeDesk does not read its contents in the WebView."}</p>
+      <p className="ssh-help">{ru?"Импорт WireGuard (.conf) или OpenVPN (.ovpn) в NetworkManager. Требуется абсолютный путь к файлу с правами 0600; NodeDesk не читает содержимое в WebView.":
+        "Import a WireGuard (.conf) or OpenVPN (.ovpn) file into NetworkManager. Use an absolute path to a mode-0600 file; NodeDesk does not read its contents in the WebView."}</p>
       <label>{ru?"Тип профиля":"Profile type"}<select value={importKind} disabled={loading||!!busy}
         onChange={e=>setImportKind(e.target.value)}><option>WireGuard</option><option>OpenVPN</option></select></label>
       <label>{ru?"Абсолютный путь к файлу":"Absolute file path"}<input ref={source} type="text"

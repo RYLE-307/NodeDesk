@@ -191,6 +191,7 @@ fn nmcli_until(args:&[&str],deadline:Instant)->Result<String,String> {
 }
 #[cfg(target_os="linux")]
 fn import_file(kind:&str,path:&str)->Result<std::path::PathBuf,String> {
+    use std::os::unix::fs::PermissionsExt;
     let expected=match kind {"WireGuard"=>"conf","OpenVPN"=>"ovpn",
         _=>return Err("Unsupported VPN import type".into())};
     let source=std::path::Path::new(path);
@@ -202,6 +203,9 @@ fn import_file(kind:&str,path:&str)->Result<std::path::PathBuf,String> {
         .map_err(|_|"VPN import file is unavailable".to_string())?;
     if !metadata.file_type().is_file() || metadata.len()==0 || metadata.len()>256*1024 {
         return Err("VPN import requires a regular file of at most 256 KiB".into());
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err("VPN import file must be private to its owner (mode 0600)".into());
     }
     let source=source.canonicalize().map_err(|_|"VPN import file is unavailable".to_string())?;
     let parent=source.parent().ok_or("Invalid VPN import file")?;
@@ -234,10 +238,30 @@ fn imported_profile(before:&[VpnProfile],after:&[VpnProfile],kind:&str)
     Ok((*profile).clone())
 }
 #[cfg(target_os="linux")]
-fn rollback_import(id:&str)->Result<(),String> {
+fn run_nmcli_tool(tool:&std::path::Path,args:&[&str])->Result<(),String> {
+    let mut command=Command::new(tool);
+    command.args(args);
+    output(command).map(|_|())
+}
+#[cfg(target_os="linux")]
+fn rollback_import_with_tool(tool:&std::path::Path,id:&str)->Result<(),String> {
     if !uuid_ok(id) {return Err("Temporary VPN profile may remain; inspect NetworkManager".into());}
-    nmcli(&["-w","30","connection","delete","uuid",id])
-        .map(|_|()).map_err(|_|"Temporary VPN profile may remain; inspect NetworkManager".into())
+    run_nmcli_tool(tool,&["-w","30","connection","delete","uuid",id])
+        .map_err(|_|"Temporary VPN profile may remain; inspect NetworkManager".into())
+}
+#[cfg(target_os="linux")]
+fn rollback_import(id:&str)->Result<(),String> {
+    rollback_import_with_tool(std::path::Path::new("/usr/bin/nmcli"),id)
+}
+#[cfg(target_os="linux")]
+fn restrict_import_with_tool(tool:&std::path::Path,id:&str,username:&str)->Result<(),String> {
+    if !uuid_ok(id) || username.is_empty() || username.len()>64 || !username.bytes()
+        .all(|b|b.is_ascii_alphanumeric()||b"_.-".contains(&b)) {
+        return Err("Invalid VPN profile restriction".into());
+    }
+    let private=format!("user:{username}:");
+    run_nmcli_tool(tool,&["-w","30","connection","modify","uuid",id,
+        "connection.autoconnect","no","connection.permissions",&private])
 }
 #[cfg(target_os="linux")]
 fn import_impl(kind:&str,path:&str,cancel:&AtomicBool)->Result<Vec<VpnProfile>,String> {
@@ -275,9 +299,7 @@ fn import_impl(kind:&str,path:&str,cancel:&AtomicBool)->Result<Vec<VpnProfile>,S
         rollback_import(&imported.id)?;
         return Err(valid.err().unwrap_or_else(||"VPN import cancelled".into()));
     }
-    let private=format!("user:{username}:");
-    if nmcli(&["-w","30","connection","modify","uuid",&imported.id,
-        "connection.autoconnect","no","connection.permissions",&private]).is_err() {
+    if restrict_import_with_tool(std::path::Path::new("/usr/bin/nmcli"),&imported.id,&username).is_err() {
         rollback_import(&imported.id)?;
         return Err("Cannot restrict imported VPN profile; inspect NetworkManager".into());
     }
@@ -539,8 +561,18 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();
         let wg=dir.path().join("fixture.conf");
         std::fs::write(&wg,"[Interface]\nPrivateKey = disposable-only\n").unwrap();
+        let mut private=std::fs::metadata(&wg).unwrap().permissions();
+        private.set_mode(0o600);
+        std::fs::set_permissions(&wg,private).unwrap();
         let wg_path=wg.to_str().unwrap();
         assert_eq!(import_file("WireGuard",wg_path).unwrap(),wg);
+        let mut public=std::fs::metadata(&wg).unwrap().permissions();
+        public.set_mode(0o644);
+        std::fs::set_permissions(&wg,public).unwrap();
+        assert!(import_file("WireGuard",wg_path).is_err());
+        let mut private=std::fs::metadata(&wg).unwrap().permissions();
+        private.set_mode(0o600);
+        std::fs::set_permissions(&wg,private).unwrap();
         assert!(import_file("OpenVPN",wg_path).is_err());
         assert!(import_file("Other VPN",wg_path).is_err());
         assert!(import_file("WireGuard","relative.conf").is_err());
@@ -566,6 +598,16 @@ mod tests {
             ["-w","30","connection","import","--temporary","type","wireguard","file",wg_path]);
         assert!(import_with_tool(&tool,"Other VPN",&wg,None).is_err());
         assert!(import_with_tool(std::path::Path::new("/missing/nmcli"),"WireGuard",&wg,None).is_err());
+        let id="123e4567-e89b-12d3-a456-426614174001";
+        restrict_import_with_tool(&tool,id,"fixture").unwrap();
+        let args=std::fs::read_to_string(&args_file).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(),["-w","30","connection","modify","uuid",id,
+            "connection.autoconnect","no","connection.permissions","user:fixture:"]);
+        assert!(restrict_import_with_tool(&tool,id,"other:user").is_err());
+        rollback_import_with_tool(&tool,id).unwrap();
+        let args=std::fs::read_to_string(&args_file).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(),["-w","30","connection","delete","uuid",id]);
+        assert!(rollback_import_with_tool(&tool,"bad").is_err());
 
         let slow=dir.path().join("slow-nmcli");
         std::fs::write(&slow,"#!/bin/sh\nexec sleep 30\n").unwrap();

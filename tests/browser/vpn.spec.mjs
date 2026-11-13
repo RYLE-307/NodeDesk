@@ -208,3 +208,17 @@ test("Linux VPN import cancellation waits for native worker and clears path",asy
   const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd.startsWith("vpn_")));
   expect(calls.map(c=>c.cmd)).toContain("vpn_cancel_import");
 });
+
+test("Linux VPN import failure cannot invent a profile or retain a file path",async({page})=>{
+  const pane=await open(page,{fail:true});
+  await pane.getByLabel("Absolute file path").fill("/tmp/disposable-openvpn.ovpn");
+  await pane.getByLabel("Profile type").selectOption("OpenVPN");
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Import profile"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Import was rejected");
+  await expect(pane.getByText("Imported fixture")).toHaveCount(0);
+  await expect(pane.getByLabel("Absolute file path")).toHaveValue("");
+  expect(await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="vpn_import"))).toEqual([
+    {cmd:"vpn_import",args:{kind:"OpenVPN",path:"/tmp/disposable-openvpn.ovpn"}}
+  ]);
+});

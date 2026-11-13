@@ -1,10 +1,26 @@
 # NodeDesk development continuation
 
-Updated: 2026-11-09. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
+Updated: 2026-11-13. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
 The branch was fetched into the isolated `NodeDesk-rc` worktree because the
 existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
+
+### 2026-11-13 Linux VPN import security follow-up awaiting exact-head CI
+
+- Import implementation commit `37d48a7a96dbc3f7cbb7c7136c72c25add513b40`
+  pushed on `feat/post-v0.9-roadmap`. Its [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43384419463)
+  passed frontend/browser and Arch Rust tests at this update; Windows/Ubuntu
+  Rust and desktop packaging were still running. Do not call this 6/6 yet.
+- Local follow-up requires the source file to be private to its owner,
+  exercises fixed `nmcli` modify/delete arguments and invalid-user/UUID
+  rejection with a disposable executable, and adds a browser error case.
+  Local frontend production build, Rust syntax parsing and diff check passed.
+  Rust semantic compilation remains CI-only because MSVC `link.exe` is absent.
+- Next: commit/push follow-up, verify exact-head CI, fix failures. Native Arch
+  import, secret-agent behavior, auto-activation, route/DNS and rollback under
+  OS races remain **NOT TESTED**. Then return to RDP clipboard/reconnect and
+  password lifecycle, VNC cleanup, remaining VPN/SSH/SFTP/packaging P0.
 
 ### 2026-11-10 Linux VPN file import awaiting verification
 

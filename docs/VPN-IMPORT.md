@@ -3,7 +3,8 @@
 NodeDesk can import an existing WireGuard `.conf` or OpenVPN `.ovpn` file on
 Linux with an explicit user click and confirmation. The user supplies an
 absolute local path. The native backend verifies a regular, non-symlink file
-of 1–262144 bytes, checks for a same-name profile, and invokes
+of 1–262144 bytes with owner-only permissions (mode 0600), checks for a
+same-name profile, and invokes
 `/usr/bin/nmcli connection import --temporary type ... file` with a fixed
 argument list and no shell. It then requires exactly one new, inactive profile
 of the requested kind, disables autoconnect, restricts access to the current

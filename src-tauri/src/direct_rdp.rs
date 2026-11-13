@@ -17,6 +17,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, State};
+use zeroize::Zeroizing;
+
+#[cfg(test)]
+#[path = "rdp_clipboard_fixture.rs"]
+mod clipboard_fixture;
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -104,6 +109,7 @@ fn config_pinned(
     clipboard: bool,
     certificate_sha256: Option<String>,
 ) -> Result<ironrdp_client::config::Config, String> {
+    let mut password = Zeroizing::new(password);
     let callback: Option<ironrdp_tls::CertificateValidationCallback> = if let Some(fingerprint) =
         certificate_sha256
     {
@@ -118,7 +124,7 @@ fn config_pinned(
     } else {
         None
     };
-    config_inner(target, password, width, height, clipboard, callback)
+    config_inner(target, std::mem::take(&mut *password), width, height, clipboard, callback)
 }
 
 fn config_inner(
@@ -129,6 +135,7 @@ fn config_inner(
     clipboard: bool,
     certificate_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 ) -> Result<ironrdp_client::config::Config, String> {
+    let mut password = Zeroizing::new(password);
     if !valid_target(target)
         || password.is_empty()
         || password.len() > 1024
@@ -152,7 +159,7 @@ fn config_inner(
     let builder = ConfigBuilder::new()
         .with_destination(destination)
         .with_username(target.username.clone())
-        .with_password(password)
+        .with_password(std::mem::take(&mut *password))
         .with_client_build(2600)
         .with_client_name("NodeDesk")
         .with_client_dir("C:\\Windows\\System32\\mstscax.dll")

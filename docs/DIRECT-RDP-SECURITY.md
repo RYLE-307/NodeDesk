@@ -29,6 +29,10 @@ needs a native Windows text round-trip and clipboard teardown test. Linux uses
 IronRDP's native clipboard backend and requires a native Arch round-trip test.
 Terminal connection/authentication failures close the input channel and remove
 the session from NodeDesk's registry so a failed connection can be retried.
+Passwords are wrapped for wiping while NodeDesk validates the target and pin;
+ownership then moves into IronRDP without an extra application-side clone.
+IronRDP still holds and clones ordinary `String` credentials for reconnect,
+so this does not establish complete password zeroization.
 
 Native Windows and Arch GUI acceptance, clipboard round-trip, reconnect
 acceptance, and guaranteed zeroization of all IronRDP password copies remain

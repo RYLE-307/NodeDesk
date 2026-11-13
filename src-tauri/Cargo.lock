@@ -2430,6 +2430,7 @@ name = "ironrdp"
 version = "0.17.0"
 source = "git+https://github.com/Devolutions/IronRDP.git?rev=b553ed4315655d9003e37d7bcae13a029405b845#b553ed4315655d9003e37d7bcae13a029405b845"
 dependencies = [
+ "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-input",
  "ironrdp-pdu",

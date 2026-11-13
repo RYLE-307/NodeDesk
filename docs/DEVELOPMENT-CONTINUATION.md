@@ -6,6 +6,19 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-13 Packaging smoke work pending exact-head CI
+
+- Windows preview CI now verifies the NSIS checksum and runs a silent install
+  and uninstall in a unique disposable runner directory, checking executable
+  placement and removal. Arch CI already has package/portable checks. This
+  Windows gate has **not yet run** and may need adjustment for Tauri's actual
+  NSIS layout. Native Windows/Arch installation remains **NOT TESTED**.
+- VNC credential-copy change HEAD `b6cc9e7ba3db213402818169cc50c0dd7cd47ecd`;
+  [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446814706) is
+  running. The previous `bc9adb6` [CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43446339054)
+  failed compilation because the interactive credential path still referenced
+  a removed local variable; `b6cc9e7` repairs that path.
+
 ### 2026-11-13 VNC credential-copy reduction pending CI
 
 - Following the verified RDP code HEAD `a2044be`, the native VNC builder now

@@ -165,6 +165,11 @@ jobs:
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content -LiteralPath "$folder/SHA256SUMS.txt"
+      - name: Disposable Windows NSIS install and uninstall smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./ops/packaging/test-nsis.ps1
       - name: Checksum Linux package
         if: runner.os == 'Linux'
         run: cd src-tauri/target/release/bundle/deb && sha256sum ./*.deb > SHA256SUMS.txt

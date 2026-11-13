@@ -18,6 +18,13 @@ release asset API and checks their upstream SHA-1 values before bundling. This
 avoids a repeatedly observed 504 from the public release download URL; Tauri
 also verifies the tool files in its local cache. No third-party binary is
 committed to this repository.
+The CI packaging gate now attempts a silent Windows install and uninstall in
+a unique disposable runner directory after verifying the installer SHA256.
+It checks that the executable and uninstaller are present and that uninstall
+removes the executable. This smoke gate requires exact-head CI confirmation;
+it does not replace a visible installation on a clean Windows machine. The
+Arch CI likewise checks portable archive integrity and a disposable package
+install/uninstall inside its container.
 Optional Linux ping, traceroute, desktop viewers and system VPN tooling remain
 separate OS dependencies; the UI reports unavailable tools instead of silently
 installing them.

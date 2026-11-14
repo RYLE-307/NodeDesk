@@ -1,0 +1,213 @@
+# Functional RC worklist — 2026-11-08
+
+Baseline: `main` 3146142, draft #12 01305fd, draft #13 cf624c3. This branch
+is **not** a feature-complete RC. A checked box requires code, failing and
+successful disposable fixture coverage, Windows/Linux CI, and a documented
+native acceptance result. Automated passes alone do not close a row.
+
+## P0
+
+- [ ] SSH/SFTP: direct private-key selection (console and GUI Files implementation
+  in this branch; native Windows/Arch acceptance pending), safe multi-hop, authentication
+  failure/cancellation, gateway GUI Files, Windows/Arch acceptance.
+- [ ] Desktop: decide supported direct versus gateway topology; verify RDP
+  target certificate identity, clipboard, resize, reconnect and VNC auth/trust.
+- [ ] Secrets: design and audit OS keychain or master-password vault, explicit
+  unlock/lock, migration, export/backup policy and secret-free WebView storage.
+- [ ] VPN: supported WireGuard/OpenVPN/OpenConnect profile lifecycle on each
+  OS, status/errors and isolated route/DNS verification.
+- [ ] Packaging: installable and portable Windows/Arch artifacts, dependency
+  notices, update signing policy, native install/uninstall and permissions.
+
+## P1
+
+- [ ] SCP, rsync, FTP/FTPS: bounded transfers, collision handling, TLS trust,
+  cancellation and disposable protocol fixtures.
+- [ ] SSH: local and dynamic loopback tunnels implemented (dynamic fixture and
+  native acceptance pending); remote tunnels, X11, safe gateway chains, agent-forwarding trust
+  decision and exact identity-file behaviour.
+- [ ] Telnet, serial, Mosh, X11/XDMCP: platform capabilities and permissions;
+  decide whether insecure Rlogin/Rsh can be supported safely.
+- [ ] Catalog and terminal: migrations, MobaXterm import, backup/restore,
+  clipboard/link/log controls, background transfers and accessibility review.
+- [ ] Network: diagnostic cancellation and manual JSON report export implemented,
+  pending CI/native acceptance. DNS resolution and active TCP connect calls are
+  blocking OS operations; cancellation takes effect after they return. Proxmox,
+  Zabbix and MikroTik scoped API
+  credentials, opt-in polling and isolated mock services.
+- [ ] Monitoring: remote sampling and alerting with opt-in lifecycle.
+
+## Verification and release state
+
+- Local frontend unit tests: 43 passed after this change.
+- Local frontend production build: passed after this change.
+- Local Rust tests: **not run** here; MSVC `link.exe` is unavailable.
+- Local browser tests: **not run** here; Playwright Chromium launch returned
+  `spawn UNKNOWN` before any test body ran.
+- Fresh GitHub CI for this change: **not run** until this branch is pushed.
+- Native Windows/Arch GUI and live protocol acceptance: **not tested**.
+- Windows NSIS and Ubuntu DEB preview packaging is configured in CI, with
+  SHA256 manifests. Exact-head bundle results and native install/uninstall
+  remain pending; see [PACKAGE-PREVIEW.md](PACKAGE-PREVIEW.md).
+- Arch container build, portable binary archive and installable package are
+  configured; exact-head CI and native Arch install/execution remain pending.
+- GUI Files key selection uses one transient absolute regular-file path, the
+  existing strict OpenSSH host-key policy and key-only SFTP transport. Encrypted
+  keys must already be loaded into an SSH agent; Files cannot prompt for a key
+  passphrase. It cannot be combined with password/PAM login. Disposable Linux
+  fixture coverage and Windows/Linux CI for this increment are pending.
+- Production-stable release: prohibited while the above gates remain open.
+
+## Terminal paste guard (2026-11-08, review increment)
+- The shared SSH/SFTP/local xterm paste handler rejects pasted control/escape
+  bytes, bidi direction overrides and payloads above 16 KiB UTF-8. CR/LF
+  pastes still require explicit confirmation. Ordinary typing is unchanged.
+- New pure unit cases and a Playwright browser scenario cover ordinary text,
+  multiline consent, escape sequences, and bounded Unicode payloads.
+- This code is **not native Windows/Arch accepted**. Exact-head automated CI
+  must pass before treating the increment as verified.
+
+## Terminal clipboard copy (2026-11-08, review increment)
+- An explicit **Copy selection** button copies only xterm's actively selected text,
+  not the full scrollback. Empty selections, OS clipboard denial and unavailable
+  clipboard APIs have visible errors; copying is bounded to 64 KiB UTF-8.
+- Clipboard access is never initiated by opening or connecting a session.
+  Browser coverage checks no-selection behavior; native clipboard success on
+  Windows/Arch and large-output acceptance remain **NOT TESTED**.
+
+## Network report privacy (2026-11-08, review increment)
+- JSON report schema v2 redacts hostname, IP addresses, traceroute hops and raw
+  diagnostic command output by default. Durations, statuses and up to 12
+  explicit TCP port numbers remain. Detailed export requires opt-in checkbox
+  and a separate confirmation; target edits clear the opt-in.
+- Pure unit tests verify absence of sensitive fields; browser tests cover
+  redacted download and opt-in full download. Native Windows/Arch acceptance
+  and exact-head CI validation are still pending.
+
+
+## P0 Files single-hop SSH gateway (2026-11-08, review increment)
+- Transient single OpenSSH ProxyJump host, user and port added to graphical
+  Files, using agent-only key authentication. Binary SFTP operations, transfer
+  cancellation, no-overwrite and strict target known-host checking remain.
+- Backend refuses mixing a gateway with interactive login or an identical
+  gateway/target endpoint. An optional explicitly selected identity file is
+  validated and passed to the **target only**; the gateway independently uses
+  the SSH agent or default OpenSSH key files. Changes to the gateway
+  discard loaded remote listings and cancel pending operations.
+- Local OpenSSH configuration may affect the gateway's own connection despite
+  target -F none; audit gateway ssh_config separately. Both host keys must be
+  trusted already. Neither gateway settings nor secrets are stored by default.
+- Rust argument/negative tests and Playwright destination/route invalidation
+  added. Real two-hop fixture, Windows/Arch manual acceptance and gateway
+  host-key/agent failure cases remain NOT TESTED; P0 still open.
+
+
+## Disposable Files gateway fixture (2026-11-08)
+A Unix-only Rust integration test launches OpenSSH ProxyJump to the real
+disposable sshd fixture, authenticates both hops using the fixture key and
+reads a structured SFTP directory. It also checks unknown target host key
+rejection while gateway trust remains valid. A per-test OpenSSH config supplies trusted host keys and a disposable identity
+to both SSH processes. The production transport still passes -F none, and
+the test never edits a developer's known_hosts. Windows/Arch native acceptance and multi-host/corporate
+topologies are still NOT TESTED.
+
+
+## P1 SSH remote forwarding (2026-11-08, review increment)
+- Manual remote -R forwarding added to the tunnel manager. The remote SSH
+  server is requested to bind to 127.0.0.1 on a nonprivileged port and forward
+  only to the local machine's 127.0.0.1 target port. No arbitrary destination
+  host, public bind option, password, shell or automatic connection is allowed.
+- A separate UI confirmation warns that sshd GatewayPorts can override the
+  requested bind; verify actual remote listener and firewall. No support for
+  public exposure or remote forwarding rules across disconnected sessions.
+- Rust validation and a real disposable SSH reverse-forward fixture exercise
+  target-local bytes. Playwright verifies consent and exact restricted spec.
+  Native Arch/Windows acceptance remains NOT TESTED.
+
+
+## Console ProxyJump target identity (2026-11-08)
+- SSH/SFTP consoles now allow the transient, explicitly chosen target SSH
+  identity path together with one validated ProxyJump hop. Target identity
+  insertion uses the existing regular-file/absolute-path checks and
+  OpenSSH's -i; the jump child independently uses the agent/default keys.
+- No agent forwarding, credentials in WebView storage, automatic connections,
+  arbitrary ProxyCommand or multi-hop chains. Backend Rust validation and
+  browser IPC checks are included; native Windows/Arch acceptance is pending.
+
+
+## Linux VPN allowlist (2026-11-08)
+- NodeDesk now permits explicit control only for NetworkManager WireGuard,
+  OpenVPN and OpenConnect profiles. Unknown or legacy plugins (e.g. PPTP)
+  are displayed read-only. Unknown service types fail closed.
+- Only NetworkManager service type metadata is retrieved, never credentials,
+  endpoints, routes or private keys. No automatic connect.
+- Pure Rust tests cover supported/unsupported plugin IDs. Actual route/DNS
+  verification, profile import and native Arch acceptance are NOT TESTED.
+
+## P0 VPN observed-state confirmation (2026-11-08)
+- After an explicit connect/disconnect action, the backend polls the OS profile
+  list for at most five seconds. It reports success only if the same profile ID,
+  name and supported protocol still exist and the requested active state is
+  observed. A rejected, missing, changed or unconfirmed profile reports an
+  error; the user can refresh to inspect the OS state.
+- Pure Rust cases cover connected/disconnected, unchanged, disappeared and
+  changed disposable profile snapshots. No real VPN, route, DNS or credentials
+  were used. Native Windows/Arch behavior and isolated route/DNS verification
+  remain NOT TESTED; the VPN P0 row stays open.
+
+ 
+## P0 VPN process-wide single-flight guard (2026-11-08)
+- Native Rust backend permits only one connect/disconnect operation at a
+  time across all WebViews and IPC callers. Competing requests fail without
+  mutating OS profiles. Read-only list/refresh remains available.
+- The guard lives with the spawned blocking worker, so an abandoned IPC
+  request cannot release it before an OS command and five-second
+  state-verification poll finish. A worker error also releases the guard.
+- Rust isolated-thread tests cover exclusion and guard ownership; a
+  Playwright fixture checks that UI controls remain disabled until the
+  operation resolves. Actual VPN route/DNS and Windows/Arch native
+  acceptance remain NOT TESTED. This does not close VPN P0.
+
+
+## P0 VPN action stale-profile rejection (2026-11-08)
+- The WebView supplies the displayed, non-secret name, protocol and active state
+  alongside the OS UUID. The native command re-enumerates the profile immediately
+  before any OS mutation, and rejects changed names, kinds or active states.
+- This prevents a stale list, profile reuse or an outside VPN manager's changes
+  from silently triggering actions on a different profile. Operator must refresh.
+- A pure Rust negative matrix covers changed/replaced snapshots and invalid
+  names, and browser tests verify exact bounded IPC arguments. These
+  confirmations are not evidence of VPN routing or DNS leak safety.
+
+
+## P0 bounded two-hop SSH/SFTP ProxyJump (2026-11-08)
+- SSH/SFTP consoles and graphical Files now accept one or two explicitly
+  configured, ordered SSH gateways (literal host, user, port). Each hop is
+  validated before constructing OpenSSH's single -J argument; no arbitrary
+  ProxyCommand, wildcard/alias, recursion, third hop or repeated endpoint.
+- OpenSSH performs host-key checks at each hop. The selected target identity
+  file is only used for the last endpoint. No connection is started
+  automatically; credentials and gateway fields are transient, not persisted.
+- Backend Rust argument and negative tests plus Playwright console/Files
+  destination checks are added. A separate real two-host or three-host
+  network fixture, cross-hop auth failures and native Windows/Arch
+  acceptance remain NOT TESTED. This is not a completed P0 row.
+
+
+## Disposable real two-hop SFTP integration (2026-11-08)
+The Linux CI fixture now starts three separate OpenSSH sshd listeners,
+each bound to 127.0.0.1 only, on distinct ports. A Rust integration case
+opens structured SFTP through both -J intermediate listeners, checks a
+realpath/list response and rejects a second hop with an unknown host key.
+The test injects a private ssh_config only into the disposable test command,
+never modifies real known_hosts, and preserves -F none in production.
+Real independent network hosts, MFA/agent failures and Windows/Arch operator
+acceptance remain NOT TESTED.
+
+
+## Independent keys for each disposable SSH hop (2026-11-08)
+The three loopback sshd listeners now use **three distinct, ephemeral host
+keys** rather than sharing one key. The two-hop integration test pins each
+literal host-and-port identity independently. Its negative case deliberately
+omits only the second jump's key while trusting the first jump and target.
+All trust files and keys remain inside the disposable fixture.

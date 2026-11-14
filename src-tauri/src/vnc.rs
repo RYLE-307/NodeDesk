@@ -12,7 +12,7 @@ pub struct VncTarget { pub host: String, pub port: u16 }
 #[serde(rename_all="camelCase")]
 pub struct VncLaunchInfo { pub client: &'static str, pub external_window: bool, pub security: &'static str }
 
-fn endpoint(host: &str, port: u16) -> Result<String,String> {
+pub(crate) fn endpoint(host: &str, port: u16) -> Result<String,String> {
     if port == 0 || host.is_empty() || host.len() > 253 || host.trim() != host ||
         !host.is_ascii() || host.starts_with('-') ||
         host.chars().any(|c| matches!(c, '['|']'|':'|'/'|'\\'|'@'|'?'|'#'|'%'|';'|'='|' ')) {

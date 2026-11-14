@@ -7,8 +7,12 @@ use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(default)] identity: Option<String>, #[serde(default)] jump: Option<ssh::JumpHost>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
 fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if d.jump.is_some() && d.auth_session.is_some() { return Err("Gateway Files requires agent-only, not interactive login".into()); }
+    if d.identity.is_some() && d.auth_session.is_some() {
+        return Err("Identity file cannot be combined with interactive Files login".into());
+    }
     if let Some(id)=&d.auth_session {
         #[cfg(windows)] {d.native=Some(app.state::<crate::native_auth::Logins>().get(id,&d.host,d.port,&d.username)?);}
         #[cfg(not(windows))] {d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?);}
@@ -97,11 +101,21 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
     // Insert before destination/options end. First value wins in OpenSSH.
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
-    strict.extend(args); strict.push("sftp".into()); Ok(strict)
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
+    let args=ssh::with_jump(args,d.jump.as_ref(),&d.host,d.port,&d.username)?;
+    strict.extend(ssh::with_identity(args,d.identity.as_deref())?); strict.push("sftp".into()); Ok(strict)
 }
 type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
+    if d.identity.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Identity file requires direct key-only Files connection".into());
+    }
     if let Some(login)=&d.native {
         *op.native.lock().map_err(|_|"Operation lock failed")?=Some(login.clone());
         op.check()?;
@@ -857,7 +871,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
 }
 #[cfg(all(test,unix))]
 pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into()),native:None};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:Some(socket.into()),native:None};
     let op=Arc::new(Operation::default());
     let result=(|| -> Result<()> {
         // Exercise the production connect/list/copy functions, not a parallel
@@ -888,7 +902,7 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
 }
 #[cfg(test)]
 pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:None,native:Some(login)};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:None,native:Some(login)};
     let op=Arc::new(Operation::default());
     let mut c=connect(&d,&op).unwrap();
     let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
@@ -958,12 +972,198 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 mod tests {
     use super::*;
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None,native:None };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,jump:None,control:None,native:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
         assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
+    }
+    #[test] fn direct_identity_is_explicit_and_preserves_strict_transport() {
+        let path=std::env::temp_dir().join(format!("nodedesk-files-key-{}",std::process::id()));
+        fs::write(&path,b"fixture key").unwrap();
+        let raw=path.to_str().unwrap().to_string();
+        let d=Destination {host:"localhost".into(),port:22,username:"user".into(),auth_session:None,
+            identity:Some(raw.clone()),jump:None,control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-i",raw.as_str()]));
+        for required in ["-oIdentitiesOnly=yes","-oBatchMode=yes","-oStrictHostKeyChecking=yes",
+            "-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert_eq!(args.last().unwrap(),"sftp");
+        assert!(transport_args(&Destination {identity:Some("relative-key".into()),..d.clone()}).is_err());
+        assert!(connect(&Destination {auth_session:Some("login".into()),..d.clone()},&Operation::default()).is_err());
+        fs::remove_file(path).unwrap();
+        assert!(transport_args(&d).is_err());
+    }
+    #[test] fn single_hop_files_gateway_validates_key_agent_transport() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"operator"
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let j=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[j+1],"operator@bastion.example.org:2201");
+        assert_eq!(args.last().unwrap(),"sftp");
+        for required in ["-F","-oStrictHostKeyChecking=yes","-oBatchMode=yes",
+            "-oForwardAgent=no","-oPasswordAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(connect(&Destination{auth_session:Some("interactive".into()),..d.clone()},
+            &Operation::default()).is_err());
+        // Selected identity applies to the destination, never the separate
+        // OpenSSH -J child. The jump uses the SSH agent/default keys.
+        let key=std::env::temp_dir().join(format!("nodedesk-target-key-{}",std::process::id()));
+        fs::write(&key,b"fixture-only").unwrap();
+        let key_path=key.to_string_lossy().to_string();
+        let with_key=transport_args(&Destination{identity:Some(key_path.clone()),..d.clone()}).unwrap();
+        let pos=with_key.iter().position(|arg|arg=="-i").unwrap();
+        assert_eq!(with_key[pos+1],key_path);
+        assert!(with_key.contains(&"-oIdentitiesOnly=yes".into()));
+        fs::remove_file(&key).unwrap();
+        assert!(transport_args(&Destination{identity:Some(key_path),..d.clone()}).is_err());
+        for invalid in ["bad;sh","-ProxyCommand=evil","a b","bad\nhost"] {
+            let jump=serde_json::from_value(serde_json::json!({
+                "host":invalid,"port":2201,"username":"operator"
+            })).unwrap();
+            assert!(transport_args(&Destination{jump:Some(jump),..d.clone()}).is_err());
+        }
+        let same:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"target.example.org","port":22,"username":"admin"
+        })).unwrap();
+        assert!(transport_args(&Destination{jump:Some(same),..d}).is_err());
+    }
+    #[test] fn files_two_hop_gateway_uses_only_explicit_validated_ssh_arguments() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2"}
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let index=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[index+1],"jump1@bastion.example.org:2201,jump2@edge.example.org:2202");
+        for required in ["-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no"]{
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(transport_args(&Destination{auth_session:Some("login".into()),..d.clone()}).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn real_files_gateway_uses_disposable_sshd_and_rejects_untrusted_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let user=std::env::var("USER").unwrap();
+        let root=PathBuf::from(&dir);
+        // Use a disposable config only inside this fixture: the real Files
+        // transport always keeps -F none. ProxyJump launches a separate ssh
+        // process, and OpenSSH forwards the -F argument to that child.
+        let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let known=root.join("gateway-known");
+        fs::write(&known,format!("[127.0.0.1]:22229 {host_key}[localhost]:22229 {host_key}")).unwrap();
+        let config=root.join("gateway-ssh-config");
+        fs::write(&config,format!(
+            "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+            known.display(),root.join("client").display())).unwrap();
+        fs::set_permissions(&config,fs::Permissions::from_mode(0o600)).unwrap();
+        // One disposable sshd represents both SSH hops using different host
+        // names. Each hop must authenticate and validate its host key.
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22229,"username":user
+        })).unwrap();
+        let d=Destination{host:"localhost".into(),port:22229,username:user,
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|trusted_hosts:&std::path::Path| {
+            let mut cmd=Command::new("/usr/bin/ssh");
+            // The outer target's trust is explicitly selected, separately
+            // from the gateway's trust in the fixture-only config.
+            cmd.arg(format!("-oUserKnownHostsFile={}",trusted_hosts.display()));
+            cmd.arg("-oGlobalKnownHostsFile=/dev/null");
+            let mut args=transport_args(&d).unwrap();
+            let pos=args.iter().position(|arg|arg=="-F").unwrap();
+            assert_eq!(args[pos+1],"none");
+            args[pos+1]=config.to_string_lossy().into_owned();
+            cmd.args(args);
+            cmd
+        };
+        let op=Operation::default();
+        let mut client=spawn_transport(make_command(&known),&op).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        let listing=client.list(&home).unwrap();
+        assert!(listing.len()<=wire::MAX_ENTRIES);
+        drop(client);op.stop();
+        // Gateway remains trusted, but target becomes untrusted. No prompt,
+        // automatic acceptance or successful SFTP handshake is permitted.
+        let unknown=root.join("gateway-unknown-target");
+        fs::write(&unknown,"").unwrap();
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&unknown),&bad).is_err());
+        bad.stop();
+    }
+    #[cfg(unix)]
+    #[test] fn real_two_hop_sftp_via_three_disposable_sshd_listeners() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let root=PathBuf::from(dir);
+        let user=std::env::var("USER").unwrap();
+        // All three listeners have different, disposable host keys.
+        let target_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let first_key=fs::read_to_string(root.join("host-22230.pub")).unwrap();
+        let second_key=fs::read_to_string(root.join("host-22231.pub")).unwrap();
+        let known=root.join("twohop-known");
+        let lines=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}[127.0.0.1]:22231 {second_key}");
+        fs::write(&known,lines).unwrap();
+        let known_without_second=root.join("twohop-missing-second");
+        let partial=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}");
+        fs::write(&known_without_second,partial).unwrap();
+        let make_config=|path:&std::path::Path,trust:&std::path::Path,identity:&std::path::Path| {
+            fs::write(path,format!(
+                "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+                trust.display(),identity.display())).unwrap();
+            fs::set_permissions(path,fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        let full_config=root.join("twohop-ssh-config");
+        let missing_config=root.join("twohop-second-untrusted-config");
+        make_config(&full_config,&known,&root.join("client"));
+        make_config(&missing_config,&known_without_second,&root.join("client"));
+        let rejected_identity_config=root.join("twohop-wrong-identity-config");
+        make_config(&rejected_identity_config,&known,&root.join("other"));
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22230,"username":user,
+            "next":{"host":"127.0.0.1","port":22231,"username":user}
+        })).unwrap();
+        let d=Destination{host:"127.0.0.1".into(),port:22229,username:user,
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|config:&std::path::Path| {
+            let mut args=transport_args(&d).unwrap();
+            let at=args.iter().position(|v|v=="-F").unwrap();
+            assert_eq!(args[at+1],"none"); // production remains fail-closed
+            args[at+1]=config.to_string_lossy().into_owned();
+            let mut command=Command::new("/usr/bin/ssh");
+            command.arg(format!("-oUserKnownHostsFile={}",known.display()));
+            command.arg("-oGlobalKnownHostsFile=/dev/null");
+            command.args(args);
+            command
+        };
+        let good=Operation::default();
+        let mut client=spawn_transport(make_command(&full_config),&good).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        assert!(client.list(&home).unwrap().len()<=wire::MAX_ENTRIES);
+        drop(client);good.stop();
+        // The target and first hop remain trusted. The second is untrusted.
+        // A noninteractive client must refuse before reaching SFTP.
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&missing_config),&bad).is_err());
+        bad.stop();
+        // All host keys are trusted, but none of the disposable listeners
+        // accepts this unrelated private key. A failed first-hop login must
+        // not open an SFTP stream or request an interactive fallback.
+        let denied=Operation::default();
+        assert!(spawn_transport(make_command(&rejected_identity_config),&denied).is_err());
+        denied.stop();
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
@@ -1041,10 +1241,11 @@ mod tests {
     #[test]
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
-        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None,native:None};
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,
+            identity:Some(format!("{dir}/client")),jump:None,control:None,native:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
-            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into()]);
             cmd.args(transport_args(&d).unwrap()); spawn_transport(cmd,op)
         };
         for known in ["unknown-gui","changed","revoked"] {
@@ -1258,7 +1459,7 @@ mod tests {
         let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
         let chmod=ChangePermissions {
             destination:Destination{host:String::new(),port:0,username:String::new(),
-                auth_session:None,control:None,native:None},
+                auth_session:None,identity:None,jump:None,control:None,native:None},
             directory:remote_path.to_string(),name:filename.to_string(),
             expected_kind:"file".into(),expected_permissions:original_mode,
             expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),

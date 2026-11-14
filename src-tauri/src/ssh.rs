@@ -211,30 +211,66 @@ pub(crate) fn arguments(host: &str, port: u16, username: &str, auth: AuthMode) -
 }
 
 #[derive(Clone,Debug,Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct JumpHost {host:String,port:u16,username:String}
-fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,target_user:&str)->Result<String,String>{
-    // The jump is a single literal host, never a config alias, URI or chain.
-    // Reject all metacharacters before handing a single -J argument to OpenSSH.
-    arguments(&jump.host,jump.port,&jump.username,AuthMode::Key)?;
-    if jump.host==target_host && jump.port==target_port && jump.username==target_user{
-        return Err("A jump host must not be identical to the target".into());
-    }
-    let host=if jump.host.contains(':')&&!jump.host.starts_with('['){
-        format!("[{}]",jump.host)
-    }else{jump.host.clone()};
-    Ok(format!("{}@{}:{}",jump.username,host,jump.port))
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct JumpHop {host:String,port:u16,username:String}
+
+/// At most two explicit, validated OpenSSH -J hops. A separate non-recursive
+/// type for the second hop makes a third hop impossible to deserialize.
+#[derive(Clone,Debug,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct JumpHost {
+    host:String,port:u16,username:String,
+    #[serde(default)] next:Option<JumpHop>,
 }
-fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
+fn jump_part(host:&str,port:u16,username:&str,target_host:&str,target_port:u16)->Result<String,String>{
+    // No aliases, commas, URLs or OpenSSH options; each component is checked
+    // independently and passed as one -J argv value without a shell.
+    arguments(host,port,username,AuthMode::Key)?;
+    if host.eq_ignore_ascii_case(target_host) && port==target_port {
+        return Err("A jump endpoint must not be identical to the target".into());
+    }
+    let address=if host.contains(':')&&!host.starts_with('[') {
+        format!("[{host}]")
+    }else{host.to_string()};
+    Ok(format!("{username}@{address}:{port}"))
+}
+fn jump_destination(jump:&JumpHost,target_host:&str,target_port:u16,_target_user:&str)->Result<String,String>{
+    let first=jump_part(&jump.host,jump.port,&jump.username,target_host,target_port)?;
+    if let Some(second)=&jump.next {
+        if jump.host.eq_ignore_ascii_case(&second.host) && jump.port==second.port {
+            return Err("A jump chain cannot repeat an endpoint".into());
+        }
+        let second=jump_part(&second.host,second.port,&second.username,target_host,target_port)?;
+        Ok(format!("{first},{second}"))
+    }else{Ok(first)}
+}
+pub(crate) fn with_jump(mut args:Vec<String>,jump:Option<&JumpHost>,
     host:&str,port:u16,username:&str)->Result<Vec<String>,String>{
     if let Some(jump)=jump{
         let spec=jump_destination(jump,host,port,username)?;
-        // Options are passed as separate argv entries. No shell and no
-        // ProxyCommand string constructed by NodeDesk. OpenSSH itself
-        // handles -J; the jump's own ssh_config differs from the target.
+        // Options are passed as separate argv entries; no shell or arbitrary
+        // ProxyCommand. OpenSSH handles the one/two-hop -J chain, and each
+        // child may consult its own ssh_config/known_hosts.
         let index=args.len().checked_sub(1).ok_or("Missing SSH target")?;
         args.splice(index..index,["-J".to_string(),spec]);
     }
+    Ok(args)
+}
+pub(crate) fn with_identity(mut args: Vec<String>, identity: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(raw) = identity else { return Ok(args); };
+    if raw.is_empty() || raw.len() > 4096 || raw.contains(['\0', '\n', '\r']) {
+        return Err("Invalid SSH identity path".into());
+    }
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() { return Err("SSH identity path must be absolute".into()); }
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "SSH identity file unavailable")?;
+    if !meta.file_type().is_file() || meta.len() > 1024 * 1024 {
+        return Err("SSH identity must be a regular file no larger than 1 MiB".into());
+    }
+    // OpenSSH performs its own private-key permission and passphrase checks.
+    // A symlink is deliberately refused so the chosen file cannot silently change.
+    let index = args.len().checked_sub(1).ok_or("Missing SSH target")?;
+    args.splice(index..index, ["-oIdentitiesOnly=yes".into(), "-i".into(), raw.into()]);
     Ok(args)
 }
 fn sftp_arguments(host: &str, port: u16, username: &str, auth: AuthMode) -> Result<Vec<String>, String> {
@@ -277,19 +313,22 @@ fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
 }
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode,
-    kind: TerminalKind, jump: Option<JumpHost>, cols: u16, rows: u16, events: Channel<Event>,
+    kind: TerminalKind, jump: Option<JumpHost>, identity: Option<String>, cols: u16, rows: u16, events: Channel<Event>,
     app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
         return Err("Jump host is supported only in SSH/SFTP console tabs".into());
+    }
+    if identity.is_some() && (!matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp) || auth!=AuthMode::Key) {
+        return Err("Identity file requires key-only SSH/SFTP console".into());
     }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };
     let (program, args) = match kind {
-        TerminalKind::Ssh => ("ssh".into(),with_jump(arguments(&host,port,&username,auth)?,
-            jump.as_ref(),&host,port,&username)?),
-        TerminalKind::Sftp => ("sftp".into(),with_jump(sftp_arguments(&host,port,&username,auth)?,
-            jump.as_ref(),&host,port,&username)?),
+        TerminalKind::Ssh => ("ssh".into(),with_identity(with_jump(arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?, identity.as_deref())?),
+        TerminalKind::Sftp => ("sftp".into(),with_identity(with_jump(sftp_arguments(&host,port,&username,auth)?,
+            jump.as_ref(),&host,port,&username)?, identity.as_deref())?),
         TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
         TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
@@ -359,6 +398,22 @@ pub fn ssh_disconnect(id: String, state: State<'_, Sessions>, app: tauri::AppHan
 mod tests {
     use super::*;
     #[test]
+    fn identity_file_is_explicit_regular_file_and_never_changes_trust_policy() {
+        let path = std::env::temp_dir().join(format!("nodedesk-identity-test-{}", std::process::id()));
+        std::fs::write(&path, b"test key fixture").unwrap();
+        let raw = path.to_str().unwrap();
+        let args = with_identity(arguments("example.org", 22, "admin", AuthMode::Key).unwrap(), Some(raw)).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-i", raw]));
+        assert!(args.contains(&"-oIdentitiesOnly=yes".to_string()));
+        assert!(args.contains(&"-oStrictHostKeyChecking=ask".to_string()));
+        assert_eq!(args.last().unwrap(), "example.org");
+        assert!(with_identity(args.clone(), Some("relative-key")).is_err());
+        assert!(with_identity(args.clone(), Some("/no/such/nodedesk-key")).is_err());
+        assert!(with_identity(args.clone(), Some("/tmp/key\n-oStrictHostKeyChecking=no")).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(with_identity(args, Some(raw)).is_err());
+    }
+    #[test]
     fn read_only_config_preview_never_evaluates_ssh_commands_or_secrets(){
         let entries=ssh_config_hosts(r#"
 Host example-prod
@@ -391,7 +446,7 @@ Host local
     }
     #[test]
     fn jump_is_one_validated_literal_host_for_terminal_only(){
-        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into()};
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into(),next:None};
         let ssh=with_jump(arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
             Some(&jump),"target.internal",22,"deploy").unwrap();
         assert_eq!(&ssh[ssh.len()-3..],["-J","gateway@bastion.example.org:2222","target.internal"]);
@@ -400,11 +455,63 @@ Host local
             Some(&jump),"target.internal",2223,"deploy").unwrap();
         assert_eq!(&sftp[sftp.len()-3..],["-J","gateway@bastion.example.org:2222","deploy@target.internal"]);
         for illegal in ["-oProxyCommand=bad","a,b","ssh://host","host;cmd","host example","host\nmal"]{
-            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into()};
+            let bad=JumpHost{host:illegal.into(),port:22,username:"gateway".into(),next:None};
             assert!(jump_destination(&bad,"target.internal",22,"deploy").is_err(),"{illegal}");
         }
-        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into()};
+        let same=JumpHost{host:"target.internal".into(),port:22,username:"deploy".into(),next:None};
         assert!(jump_destination(&same,"target.internal",22,"deploy").is_err());
+    }
+    #[test] fn two_explicit_hops_validate_every_endpoint_and_refuse_third() {
+        let chain:JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2"}
+        })).unwrap();
+        for base in [
+            arguments("target.example.org",22,"admin",AuthMode::Key).unwrap(),
+            sftp_arguments("target.example.org",22,"admin",AuthMode::Key).unwrap()
+        ] {
+            let args=with_jump(base,Some(&chain),"target.example.org",22,"admin").unwrap();
+            let at=args.iter().position(|arg|arg=="-J").unwrap();
+            assert_eq!(args[at+1],"jump1@bastion.example.org:2201,jump2@edge.example.org:2202");
+            assert!(args.contains(&"-oForwardAgent=no".into()));
+            assert_eq!(&args[..2],["-F","none"]);
+        }
+        for bad in [
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"bastion.example.org","port":2201,"username":"other"}}),
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"target.example.org","port":22,"username":"other"}}),
+            serde_json::json!({"host":"bastion.example.org","port":2201,"username":"jump1",
+                "next":{"host":"bad;sh","port":2202,"username":"jump2"}}),
+        ] {
+            let chain:JumpHost=serde_json::from_value(bad).unwrap();
+            assert!(jump_destination(&chain,"target.example.org",22,"admin").is_err());
+        }
+        assert!(serde_json::from_value::<JumpHost>(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2",
+                "next":{"host":"third.example.org","port":2203,"username":"jump3"}}
+        })).is_err());
+    }
+    #[test] fn selected_target_key_with_jump_is_not_forwarded_as_agent() {
+        let jump=JumpHost{host:"bastion.example.org".into(),port:2222,username:"gateway".into(),next:None};
+        let path=std::env::temp_dir().join(format!("nodedesk-console-jump-key-{}",std::process::id()));
+        std::fs::write(&path,b"fixture key only").unwrap();
+        let selected=path.to_string_lossy().to_string();
+        for args in [
+            arguments("target.internal",22,"deploy",AuthMode::Key).unwrap(),
+            sftp_arguments("target.internal",2223,"deploy",AuthMode::Key).unwrap()
+        ]{
+            let args=with_identity(with_jump(args,Some(&jump),"target.internal",22,"deploy").unwrap(),
+                Some(&selected)).unwrap();
+            let pos=args.iter().position(|v|v=="-i").unwrap();
+            assert_eq!(args[pos+1],selected);
+            assert!(args.contains(&"-oIdentitiesOnly=yes".into()));
+            assert!(args.contains(&"-oForwardAgent=no".into()));
+            assert!(args.contains(&"-J".into()));
+            assert_eq!(&args[..2],["-F","none"]);
+        }
+        std::fs::remove_file(path).unwrap();
     }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }

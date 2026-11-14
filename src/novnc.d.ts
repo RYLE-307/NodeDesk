@@ -11,5 +11,6 @@ declare module "@novnc/novnc" {
     focus():void;
     sendCredentials(credentials:VncCredentials):void;
     sendCtrlAltDel():void;
+    clipboardPasteFrom(text:string):void;
   }
 }

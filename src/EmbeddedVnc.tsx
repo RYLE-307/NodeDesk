@@ -2,6 +2,7 @@ import {useEffect,useRef,useState} from "react";
 import {isTauri} from "@tauri-apps/api/core";
 import RFB from "@novnc/novnc";
 import type {Connection} from "./catalog";
+import {boundedRemoteClipboard} from "./remoteClipboard";
 import {vncWebsocketEndpoint} from "./vncWebsocket";
 
 type Phase = "idle"|"connecting"|"credentials"|"connected";
@@ -18,13 +19,23 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
   const [viewOnly,setViewOnly]=useState(false);
+  const [clipboardEnabled,setClipboardEnabled]=useState(false);
+  const [remoteClipboardReady,setRemoteClipboardReady]=useState(false);
   const surface=useRef<HTMLDivElement>(null);
   const client=useRef<RFB|null>(null);
   const passwordInput=useRef<HTMLInputElement>(null);
   const phaseRef=useRef<Phase>("idle");
+  const clipboardEnabledRef=useRef(false);
+  const remoteClipboard=useRef("");
+
+  function clearClipboard(){
+    clipboardEnabledRef.current=false;setClipboardEnabled(false);
+    remoteClipboard.current="";setRemoteClipboardReady(false);
+  }
 
   const setPhaseBoth=(next:Phase)=>{phaseRef.current=next;setPhase(next);};
   function disconnect(){
+    clearClipboard();
     const current=client.current;
     client.current=null;
     if(current){
@@ -35,10 +46,12 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
   }
   useEffect(()=>{
     setPhaseBoth("idle");
+    clearClipboard();
     setError("");setMessage("");
     return ()=>{
       const current=client.current;
       client.current=null;
+      remoteClipboard.current="";
       try{current?.disconnect();}catch{/* window or tab was destroyed */}
     };
   },[connection.id,connection.host,connection.port]);
@@ -80,6 +93,18 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
         setMessage(ru?"VNC-подключение установлено. Экран внутри NodeDesk.":
           "VNC connected. Remote framebuffer is inside NodeDesk.");
       });
+      rfb.addEventListener("clipboard",(event:Event)=>{
+        if(client.current!==rfb||!clipboardEnabledRef.current)return;
+        try{
+          remoteClipboard.current=boundedRemoteClipboard(
+            (event as CustomEvent<{text:string}>).detail?.text??"");
+          setRemoteClipboardReady(true);
+        }catch{
+          remoteClipboard.current="";setRemoteClipboardReady(false);
+          setError(ru?"Удалённый буфер обмена пуст, небезопасен или слишком велик.":
+            "Remote clipboard is empty, unsafe or too large.");
+        }
+      });
       rfb.addEventListener("credentialsrequired",()=>{
         if(client.current!==rfb)return;
         challenged=true;
@@ -105,6 +130,7 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
         if(client.current!==rfb)return;
         const clean=(e as CustomEvent<{clean?:boolean}>).detail?.clean;
         client.current=null;
+        clearClipboard();
         setPhaseBoth("idle");
         if(passwordInput.current)passwordInput.current.value="";
         if(!clean)setError(ru?"VNC-соединение оборвалось. Проверьте сервер и WSS-сертификат.":
@@ -141,6 +167,26 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
       disconnect();
     }
   }
+  async function copyRemoteClipboard(){
+    if(phaseRef.current!=="connected"||!clipboardEnabledRef.current||!remoteClipboard.current)return;
+    try{
+      await navigator.clipboard.writeText(boundedRemoteClipboard(remoteClipboard.current));
+      setMessage(ru?"Удалённый текст скопирован по вашему запросу.":"Remote text copied on request.");
+    }catch{setError(ru?"Локальный буфер обмена недоступен.":"Local clipboard unavailable.");}
+  }
+  async function sendLocalClipboard(){
+    const rfb=client.current;
+    if(phaseRef.current!=="connected"||!rfb||!clipboardEnabledRef.current||rfb.viewOnly)return;
+    if(!window.confirm(ru?"Передать текст из локального буфера обмена на удалённый компьютер?":
+      "Send local clipboard text to the remote desktop?"))return;
+    try{
+      const value=boundedRemoteClipboard(await navigator.clipboard.readText());
+      if(client.current!==rfb||!clipboardEnabledRef.current||rfb.viewOnly)return;
+      rfb.clipboardPasteFrom(value);
+      setMessage(ru?"Локальный текст отправлен по вашему запросу.":"Local text sent on request.");
+    }catch{setError(ru?"Буфер обмена недоступен или текст небезопасен/слишком велик.":
+      "Clipboard unavailable or text unsafe/too large.");}
+  }
   return <div className="vnc-embedded" aria-label={ru?"Встроенный просмотр VNC":"Embedded VNC viewer"}>
     <h3>{ru?"Встроенный VNC (защищённый WSS)":"Embedded VNC (secure WSS)"}</h3>
     <p className="ssh-help">{ru
@@ -163,6 +209,17 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
       </label>
       {phase==="connected"&&<button type="button"
         onClick={()=>client.current?.sendCtrlAltDel()}>Ctrl+Alt+Del</button>}
+      {phase==="connected"&&<>
+        <label className="check"><input type="checkbox" checked={clipboardEnabled}
+          onChange={e=>{clipboardEnabledRef.current=e.target.checked;setClipboardEnabled(e.target.checked);
+            remoteClipboard.current="";setRemoteClipboardReady(false);}}/>
+          {ru?"Буфер обмена в этой сессии":"Clipboard in this session"}
+        </label>
+        <button type="button" disabled={!clipboardEnabled||!remoteClipboardReady}
+          onClick={()=>void copyRemoteClipboard()}>{ru?"Копировать удалённый текст":"Copy remote text"}</button>
+        <button type="button" disabled={!clipboardEnabled||viewOnly}
+          onClick={()=>void sendLocalClipboard()}>{ru?"Отправить локальный текст":"Send local text"}</button>
+      </>}
     </div>
     {phase==="credentials"&&<form className="vnc-embedded-password" onSubmit={e=>{e.preventDefault();authenticate();}}>
       <label>{ru?"Пароль VNC":"VNC password"}
@@ -175,7 +232,7 @@ export function EmbeddedVnc({connection,language}:{connection:Connection;languag
     {message&&<p role="status">{message}</p>}
     <div className="vnc-embedded-surface" aria-label={ru?"Экран VNC":"VNC screen"} ref={surface}/>
     <p className="ssh-help">{ru
-      ?"Данные экрана и ввода передаются через WSS в WebView. Проверку TLS выполняет система, но сервер должен требовать аутентификацию. Пароль временно обрабатывается noVNC в памяти. Буфер обмена автоматически не синхронизируется."
-      :"Screen and input travel through WSS in the WebView. TLS is verified by the OS, but the server must enforce authentication. noVNC processes the password transiently in memory. Clipboard is not automatically synchronized."}</p>
+      ?"Данные экрана и ввода передаются через WSS в WebView. Проверку TLS выполняет система, но сервер должен требовать аутентификацию. Пароль временно обрабатывается noVNC в памяти. Буфер обмена выключен до включения; копирование и отправка текста требуют отдельных действий и ограничены 64 КиБ."
+      :"Screen and input travel through WSS in the WebView. TLS is verified by the OS, but the server must enforce authentication. noVNC processes the password transiently in memory. Clipboard sharing is off until enabled; each text copy or send is explicit and limited to 64 KiB."}</p>
   </div>;
 }

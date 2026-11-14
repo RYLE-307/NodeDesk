@@ -93,6 +93,28 @@ test('no automatic connections; local works before login; remote waits for authe
   await expect(files.getByRole('button',{name:'Upload → remote'})).toBeDisabled();
 });
 
+test('direct Files identity stays transient and is excluded from interactive login',async({page}) => {
+  const files=await open(page);
+  const interactive=files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'});
+  await interactive.uncheck();
+  const key=files.getByRole('textbox',{name:'Files SSH identity file path'});
+  await key.fill('/home/fixture/.ssh/id_ed25519');
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination));
+  expect(calls.at(-1).destination).toMatchObject({authSession:null,identity:'/home/fixture/.ssh/id_ed25519'});
+  expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain('id_ed25519');
+  await interactive.check();
+  await expect(key).toHaveCount(0);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  const after=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).at(-1).destination);
+  expect(after.authSession).toBeTruthy();
+  expect(after.identity).toBeNull();
+});
+
 test('collision is rejected before confirmation or transfer; closing tab disconnects login',async({page}) => {
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();
@@ -1061,4 +1083,58 @@ test('redacted SFTP transfer report exports statuses without filenames or connec
   for(const secret of ['sample.bin','extra.bin','/remote','/local','password','authSession']){
     expect(JSON.stringify(json)).not.toContain(secret);
   }
+});
+
+test('Files single-hop gateway routes selected identity only to target',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).uncheck();
+  const gateway=files.getByRole('checkbox',{name:'Via SSH gateway (key/agent)'});
+  await gateway.check();
+  const identity=files.getByRole('textbox',{name:'Files SSH identity file path'});
+  await expect(identity).toBeVisible();
+  await identity.fill('/home/fixture/.ssh/target-key');
+  await files.getByRole('textbox',{name:'Files gateway host'}).fill('bastion.example.org');
+  await files.getByRole('textbox',{name:'Files gateway username'}).fill('operator');
+  await files.getByRole('spinbutton',{name:'Files gateway port'}).fill('2201');
+  expect(await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_list'&&x.destination))).toHaveLength(0);
+  await files.getByRole('region',{name:'Remote filesystem',exact:true}).getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByText('/remote',{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==='files_list'&&x.destination));
+  expect(calls.at(-1).destination).toMatchObject({
+    authSession:null,identity:'/home/fixture/.ssh/target-key',
+    jump:{host:'bastion.example.org',username:'operator',port:2201}
+  });
+  const stored=await page.evaluate(()=>JSON.stringify(localStorage));
+  expect(stored).not.toContain('bastion.example.org');
+  expect(stored).not.toContain('operator');
+  expect(stored).not.toContain('target-key');
+  await gateway.uncheck();
+  await expect(files.getByText('/remote',{exact:true})).toHaveCount(0);
+  await files.getByRole('checkbox',{name:'Interactive Files login (password/PAM)'}).check();
+  await expect(gateway).toHaveCount(0);
+});
+
+test("Files two-hop gateway preserves explicit target identity and invalidates the remote listing",async({page})=>{
+  const files=await open(page);
+  await files.getByRole("checkbox",{name:"Interactive Files login (password/PAM)"}).uncheck();
+  await files.getByRole("checkbox",{name:"Via SSH gateway (key/agent)"}).check();
+  await files.getByRole("textbox",{name:"Files gateway host"}).fill("bastion.example.org");
+  await files.getByRole("textbox",{name:"Files gateway username"}).fill("operator");
+  await files.getByRole("spinbutton",{name:"Files gateway port"}).fill("2201");
+  await files.getByRole("checkbox",{name:"Add second Files gateway"}).check();
+  await files.getByRole("textbox",{name:"Second Files gateway host"}).fill("edge.example.org");
+  await files.getByRole("textbox",{name:"Second Files gateway username"}).fill("edge");
+  await files.getByRole("spinbutton",{name:"Second Files gateway port"}).fill("2202");
+  await files.getByRole("textbox",{name:"Files SSH identity file path"}).fill("/home/fixture/target-key");
+  await files.getByRole("region",{name:"Remote filesystem",exact:true}).getByRole("button",{name:"Open / refresh"}).click();
+  await expect(files.getByText("/remote",{exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(x=>x.cmd==="files_list"&&x.destination));
+  expect(calls.at(-1).destination).toMatchObject({
+    identity:"/home/fixture/target-key",
+    jump:{host:"bastion.example.org",username:"operator",port:2201,
+      next:{host:"edge.example.org",username:"edge",port:2202}}
+  });
+  await files.getByRole("textbox",{name:"Second Files gateway host"}).fill("new-edge.example.org");
+  await expect(files.getByText("/remote",{exact:true})).toHaveCount(0);
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("edge.example.org");
 });

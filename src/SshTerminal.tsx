@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
 import { TunnelWorkspace } from "./TunnelWorkspace";
+import { decideTerminalPaste } from "./terminalPaste";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -26,6 +27,11 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUser,setJumpUser]=useState("");
   const [jumpPort,setJumpPort]=useState("22");
+  const [secondHop,setSecondHop]=useState(false);
+  const [secondHost,setSecondHost]=useState("");
+  const [secondUser,setSecondUser]=useState("");
+  const [secondPort,setSecondPort]=useState("22");
+  const [identity,setIdentity]=useState("");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
   const ru = language === "ru";
@@ -47,8 +53,15 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     const screen=container.current!;
     const guardPaste=(event:ClipboardEvent)=>{
       const value=event.clipboardData?.getData("text/plain")??"";
-      if (!value.includes("\n") && !value.includes("\r")) return;
-      if (!window.confirm(currentLanguage.current==="ru"
+      const decision=decideTerminalPaste(value);
+      if (decision==="reject-size" || decision==="reject-control") {
+        event.preventDefault();
+        setStatus(currentLanguage.current==="ru"
+          ? (decision==="reject-size" ? "Вставка заблокирована: слишком большой текст" : "Вставка заблокирована: управляющие символы")
+          : (decision==="reject-size" ? "Paste blocked: text too large" : "Paste blocked: control characters"));
+        return;
+      }
+      if (decision==="confirm" && !window.confirm(currentLanguage.current==="ru"
         ? "Вставить несколько строк в терминал? Команды могут выполниться сразу."
         : "Paste multiple lines into the terminal? Commands may run immediately.")) event.preventDefault();
     };
@@ -75,7 +88,8 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
     const jump = !local && (kind==="ssh"||kind==="sftp") && jumpEnabled
-      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort)} : null;
+      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort),
+          ...(secondHop?{next:{host:secondHost,username:secondUser,port:Number(secondPort)}}:{})} : null;
     const events = new Channel<Event>();
     events.onmessage = event => {
       if (session.current !== id) return;
@@ -87,10 +101,31 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
       else sessionCallback.current?.(id);
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
+  }
+  async function copySelection() {
+    const selection=terminal.current?.getSelection()??"";
+    if (!selection) {
+      setStatus(ru?"Сначала выделите текст в терминале":"Select terminal output to copy");
+      return;
+    }
+    if (selection.length>65536 || new TextEncoder().encode(selection).length>65536) {
+      setStatus(ru?"Выделение слишком большое для копирования":"Selection too large to copy");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatus(ru?"Буфер обмена недоступен":"Clipboard unavailable");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      setStatus(ru?"Выделенный текст скопирован":"Selected text copied");
+    } catch {
+      setStatus(ru?"Копирование отклонено системой":"Clipboard write denied");
+    }
   }
   function changeFont(delta:number) {
     setFontSize(current=>{
@@ -111,13 +146,22 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       </label>}
       <button disabled={busy || (jumpEnabled && (kind==="ssh"||kind==="sftp") &&
           (!jumpHost || !jumpUser || !Number.isInteger(Number(jumpPort)) ||
-            Number(jumpPort)<1 || Number(jumpPort)>65535))}
+            Number(jumpPort)<1 || Number(jumpPort)>65535 ||
+            (secondHop && (!secondHost || !secondUser ||
+              !Number.isInteger(Number(secondPort)) || Number(secondPort)<1 ||
+              Number(secondPort)>65535))))}
         onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
     {!local && (kind==="ssh" || kind==="sftp") && <div className="ssh-jump-options">
+      {auth==="key" && <label>{ru?"Путь к файлу SSH-ключа (необязательно)":"SSH identity file path (optional)"}
+        <input aria-label="SSH identity file path" value={identity} disabled={busy} maxLength={4096}
+          autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/></label>}
+      {auth==="key" && <p className="ssh-help">{ru
+        ?"Укажите абсолютный путь к локальному приватному ключу. Путь не сохраняется; OpenSSH проверяет права файла и запрашивает passphrase в терминале. При использовании шлюза этот файл применяется только к конечному серверу; шлюз использует собственный агент или стандартные ключи."
+        :"Enter an absolute path to a local private key. The path is not saved; OpenSSH checks file permissions and prompts for its passphrase in the terminal. With a jump host, this file applies only to the target; the gateway uses its own agent or default keys."}</p>}
       <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-        onChange={e=>setJumpEnabled(e.target.checked)}/>
+        onChange={e=>{setJumpEnabled(e.target.checked);if(!e.target.checked)setSecondHop(false);}}/>
         {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}
       </label>
       {jumpEnabled && <>
@@ -130,9 +174,23 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         <label>{ru?"Порт шлюза":"Jump port"}<input type="number" min="1" max="65535"
           value={jumpPort} aria-label="Jump port" disabled={busy}
           onChange={e=>setJumpPort(e.target.value)}/></label>
+        <label><input type="checkbox" checked={secondHop} disabled={busy}
+          onChange={e=>setSecondHop(e.target.checked)}/>
+          {ru?"Добавить второй SSH-шлюз":"Add second SSH jump host"}</label>
+        {secondHop && <>
+          <label>{ru?"Хост второго шлюза":"Second jump host"}<input aria-label="Second jump host"
+            value={secondHost} maxLength={253} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondHost(e.target.value)}/></label>
+          <label>{ru?"Пользователь второго шлюза":"Second jump username"}<input aria-label="Second jump username"
+            value={secondUser} maxLength={200} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondUser(e.target.value)}/></label>
+          <label>{ru?"Порт второго шлюза":"Second jump port"}<input aria-label="Second jump port"
+            type="number" min="1" max="65535" value={secondPort} disabled={busy}
+            onChange={e=>setSecondPort(e.target.value)}/></label>
+        </>}
         <p className="ssh-help">{ru
-          ?"Только один явно заданный шлюз, только SSH/SFTP-консоль. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. Для GUI Files шлюз пока не поддерживается."
-          :"One explicit jump host, SSH/SFTP console only. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Not supported for Files GUI."}</p>
+          ?"Не более двух явно заданных SSH-шлюзов. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. GUI Files также поддерживает шлюзы."
+          :"At most two explicit SSH jump hosts. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Also available in GUI Files."}</p>
       </>}
     </div>}
     <div className="ssh-toolbar terminal-tools">
@@ -141,6 +199,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();searchAddon.current?.findNext(query);}}}/></label>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findPrevious(query)} aria-label={ru?"Предыдущее совпадение":"Previous match"}>↑</button>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findNext(query)} aria-label={ru?"Следующее совпадение":"Next match"}>↓</button>
+      <button type="button" onClick={()=>void copySelection()} aria-label={ru?"Копировать выделение":"Copy selected text"}>{ru?"Копировать":"Copy selection"}</button>
       <button type="button" onClick={()=>changeFont(-1)} aria-label={ru?"Уменьшить шрифт":"Decrease font size"}>−</button>
       <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
       <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>

@@ -4,7 +4,9 @@ import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
+import { VaultWorkspace } from "./VaultWorkspace";
 import { NetworkWorkspace } from "./NetworkWorkspace";
+import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {
@@ -29,7 +31,7 @@ const labels = {
     exportCatalog: "Экспорт каталога",
     importCatalog: "Импорт каталога",
     importFailed: "Файл каталога не прошёл проверку; данные не изменены.",
-    importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты.",
+    importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты. Системные секреты не импортируются, но записи с тем же ID и адресом могут использовать уже сохранённый секрет после разблокировки хранилища.",
     importDone: "Каталог импортирован",
     openConnection: "Открыть вкладку",
     duplicate: "Дублировать",
@@ -95,7 +97,7 @@ const labels = {
     exportCatalog: "Export catalog",
     importCatalog: "Import catalog",
     importFailed: "Catalog file failed validation; nothing changed.",
-    importConfirm: "Replace the current catalog with this file? Open sessions will close.",
+    importConfirm: "Replace the current catalog with this file? Open sessions will close. OS credentials are not imported, but entries with the same ID and endpoint may access an existing saved credential after vault unlock.",
     importDone: "Catalog imported",
     openConnection: "Open tab",
     duplicate: "Duplicate",
@@ -174,6 +176,7 @@ function readSidebarWidth(): number {
   } catch { return 310; }
 }
 const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
+const VAULT_TAB = "__nodedesk_vault__";
 const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
 const NETWORK_TAB = "__nodedesk_network__";
 type Editor =
@@ -563,12 +566,14 @@ export default function App() {
   }
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      id === VAULT_TAB ? (data.language === "ru" ? "Защищённое хранилище" : "Credential vault") :
       id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
       id === NETWORK_TAB ? (data.language === "ru" ? "Диагностика сети" : "Network diagnostics") :
       (data.connections.find((c) => c.id === id)?.name ?? quickConnections[id]?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
+    if (id === VAULT_TAB) return <VaultWorkspace connections={data.connections} language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
     if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language}/>;
     const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
@@ -695,6 +700,11 @@ export default function App() {
                 className={active === SYSTEM_VPN_TAB ? "selected" : ""}
                 onClick={() => open(SYSTEM_VPN_TAB)}>
                 <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
+                className={active === VAULT_TAB ? "selected" : ""}
+                onClick={() => open(VAULT_TAB)}>
+                {data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
               </button>
               <button type="button" aria-label={data.language === "ru" ? "Локальный терминал" : "Local terminal"}
                 className={active === LOCAL_SHELL_TAB ? "selected" : ""}
@@ -859,12 +869,7 @@ export default function App() {
             onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);savePaneRatio("row");}}
             onKeyDown={e=>paneResizeKey(e,"row")}/>}
         </div>
-        {data.monitoring && (
-          <section className="monitor">
-            <strong>{t.monitoring}</strong>
-            <p>{t.unavailable}</p>
-          </section>
-        )}
+        {data.monitoring && <MonitorPanel language={data.language}/>}
         <div className="status">{t.stage}<span role="status"> {notice}</span></div>
       </main>
       <dialog

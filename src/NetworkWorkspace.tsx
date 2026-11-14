@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from "react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
+import {createNetworkReport} from "./networkReport";
 
 type ProbeResult={addresses:string[];tcpReachable:boolean;elapsedMs:number};
 type PingResult={reachable:boolean;elapsedMs:number;output:string};
@@ -31,87 +32,142 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   const [scanBusy,setScanBusy]=useState(false);
   const [scanResult,setScanResult]=useState<PortScanResult|null>(null);
   const [scanError,setScanError]=useState("");
-  // Async backend diagnostics may finish after the operator changes the
-  // host/ports or closes the tool. Never present a stale result as belonging
-  // to the new target. This discards UI results; it is NOT process cancellation.
+  const [includeSensitive,setIncludeSensitive]=useState(false);
+  // Invalidate stale results and stop native diagnostic processes when the
+  // target changes or the workspace closes.
   const targetVersion=useRef(0);
   const mounted=useRef(true);
+  const probeId=useRef<string|null>(null);
+  const pingId=useRef<string|null>(null);
+  const traceId=useRef<string|null>(null);
+  const scanId=useRef<string|null>(null);
+  function cancelProbe(showMessage:boolean){
+    const id=probeId.current;if(!id)return;
+    probeId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setBusy(false);setError(ru?"Проверка TCP отменена":"TCP check cancelled");}
+  }
+  function cancelPing(showMessage:boolean){
+    const id=pingId.current;if(!id)return;
+    pingId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setPingBusy(false);setPingError(ru?"Ping отменён":"Ping cancelled");}
+  }
+  function cancelTrace(showMessage:boolean){
+    const id=traceId.current;if(!id)return;
+    traceId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setTraceBusy(false);setTraceError(ru?"Трассировка отменена":"Traceroute cancelled");}
+  }
+  function cancelScan(showMessage:boolean){
+    const id=scanId.current;if(!id)return;
+    scanId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setScanBusy(false);setScanError(ru?"Проверка портов отменена":"Port check cancelled");}
+  }
   useEffect(()=>{
     mounted.current=true;
-    return ()=>{mounted.current=false;targetVersion.current++;};
+    return ()=>{
+      mounted.current=false;targetVersion.current++;
+      for(const id of [probeId.current,pingId.current,traceId.current,scanId.current]){
+        if(id)void invoke("network_cancel",{id}).catch(()=>{});
+      }
+      probeId.current=null;pingId.current=null;traceId.current=null;scanId.current=null;
+    };
   },[]);
   function changeTarget(){
     targetVersion.current++;
+    cancelProbe(false);cancelPing(false);cancelTrace(false);cancelScan(false);
+    setBusy(false);setPingBusy(false);setTraceBusy(false);setScanBusy(false);
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
+    setIncludeSensitive(false);
     setError("");setPingError("");setTraceError("");setScanError("");
+  }
+  function downloadReport(){
+    if((!result && !pingResult && !traceResult && !scanResult) ||
+       busy || pingBusy || traceBusy || scanBusy)return;
+    if(includeSensitive && !window.confirm(ru
+      ? "Полный отчёт содержит адреса и вывод сетевых команд. Скачать?"
+      : "The full report contains addresses and raw diagnostic output. Download?"))return;
+    const report=createNetworkReport({host,port,tcp:result,ping:pingResult,trace:traceResult,ports:scanResult},
+      {includeSensitive,createdAt:new Date().toISOString()});
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;link.download="nodedesk-network-report.json";
+    document.body.append(link);link.click();link.remove();
+    window.setTimeout(()=>URL.revokeObjectURL(url),10000);
   }
 
   async function run(){
-    if(busy)return;
+    if(probeId.current)return;
     setResult(null);setError("");
     if(!isTauri()){setError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),port};
+    const id=crypto.randomUUID();probeId.current=id;
     setBusy(true);
     try{
-      const received=await invoke<ProbeResult>("network_probe",{target:request});
-      if(mounted.current && version===targetVersion.current)setResult(received);
+      const received=await invoke<ProbeResult>("network_probe",{id,target:request});
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setError(String(e));
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setError(String(e));
     }finally{
-      if(mounted.current)setBusy(false);
+      if(probeId.current===id){probeId.current=null;if(mounted.current)setBusy(false);}
     }
   }
   async function runPing(){
-    if(pingBusy)return;
+    if(pingId.current)return;
     setPingResult(null);setPingError("");
     if(!isTauri()){setPingError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();pingId.current=id;
     setPingBusy(true);
     try{
-      const received=await invoke<PingResult>("network_ping",{target:request});
-      if(mounted.current && version===targetVersion.current)setPingResult(received);
+      const received=await invoke<PingResult>("network_ping",{id,target:request});
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setPingError(String(e));
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingError(String(e));
     }finally{
-      if(mounted.current)setPingBusy(false);
+      if(pingId.current===id){pingId.current=null;if(mounted.current)setPingBusy(false);}
     }
   }
 
   async function runTrace(){
-    if(traceBusy)return;
+    if(traceId.current)return;
     setTraceResult(null);setTraceError("");
     if(!isTauri()){setTraceError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();traceId.current=id;
     setTraceBusy(true);
     try{
-      const received=await invoke<TraceResult>("network_trace",{target:request});
-      if(mounted.current && version===targetVersion.current)setTraceResult(received);
+      const received=await invoke<TraceResult>("network_trace",{id,target:request});
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setTraceError(String(e));
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceError(String(e));
     }finally{
-      if(mounted.current)setTraceBusy(false);
+      if(traceId.current===id){traceId.current=null;if(mounted.current)setTraceBusy(false);}
     }
   }
 
   async function runScan(){
-    if(scanBusy)return;
+    if(scanId.current)return;
     setScanResult(null);setScanError("");
     const ports=parseExplicitPorts(portsText);
     if(!ports){setScanError(ru?"Укажи от 1 до 12 уникальных TCP-портов через запятую без диапазонов":"Enter 1–12 distinct TCP ports separated by commas; no ranges");return;}
     if(!isTauri()){setScanError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),ports};
+    const id=crypto.randomUUID();scanId.current=id;
     setScanBusy(true);
     try{
-      const received=await invoke<PortScanResult>("network_scan_ports",{target:request});
-      if(mounted.current && version===targetVersion.current)setScanResult(received);
+      const received=await invoke<PortScanResult>("network_scan_ports",{id,target:request});
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setScanError(String(e));
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanError(String(e));
     }finally{
-      if(mounted.current)setScanBusy(false);
+      if(scanId.current===id){scanId.current=null;if(mounted.current)setScanBusy(false);}
     }
   }
 
@@ -122,8 +178,11 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <label>{ru?"Хост":"Host"}<input value={host} onChange={e=>{setHost(e.target.value);changeTarget();}} maxLength={253} autoComplete="off"/></label>
       <label>{ru?"Порт":"Port"}<input type="number" min={1} max={65535} value={port} onChange={e=>{setPort(Number(e.target.value));changeTarget();}}/></label>
       <button type="button" disabled={busy||!host.trim()||!Number.isInteger(port)||port<1||port>65535} onClick={()=>void run()}>{busy?(ru?"Проверка…":"Checking…"):(ru?"Проверить TCP":"Check TCP")}</button>
+      {busy&&<button type="button" onClick={()=>cancelProbe(true)}>{ru?"Отменить TCP":"Cancel TCP check"}</button>}
       <button type="button" disabled={pingBusy||!host.trim()} onClick={()=>void runPing()}>{pingBusy?(ru?"Ping…":"Pinging…"):"Ping"}</button>
+      {pingBusy&&<button type="button" onClick={()=>cancelPing(true)}>{ru?"Отменить Ping":"Cancel ping"}</button>}
       <button type="button" disabled={traceBusy||!host.trim()} onClick={()=>void runTrace()}>{traceBusy?(ru?"Трассировка…":"Tracing…"):(ru?"Трассировка":"Traceroute")}</button>
+      {traceBusy&&<button type="button" onClick={()=>cancelTrace(true)}>{ru?"Отменить трассировку":"Cancel traceroute"}</button>}
     </div>
     <div className="network-fields">
       <label>{ru?"TCP-порты (через запятую)":"TCP ports (comma-separated)"}
@@ -133,7 +192,15 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <button type="button" disabled={scanBusy||!host.trim()} onClick={()=>void runScan()}>
         {scanBusy?(ru?"Проверка портов…":"Checking ports…"):(ru?"Проверить порты":"Check ports")}
       </button>
+      {scanBusy&&<button type="button" onClick={()=>cancelScan(true)}>{ru?"Отменить порты":"Cancel port check"}</button>}
     </div>
+    <label><input type="checkbox" checked={includeSensitive} onChange={e=>setIncludeSensitive(e.target.checked)}/>
+      {ru?"Включить адреса целей и вывод утилит (конфиденциально)":"Include target addresses and tool output (sensitive)"}
+    </label>
+    <button type="button" disabled={busy||pingBusy||traceBusy||scanBusy||(!result&&!pingResult&&!traceResult&&!scanResult)}
+      onClick={downloadReport}>{ru?"Скачать отчёт":"Download report"}</button>
+    <p className="ssh-help">{ru?"По умолчанию отчёт скрывает имена хостов, IP-адреса и сырой вывод команд. Полные данные доступны только после включения опции и подтверждения. Никогда не отправляйте полный отчёт без проверки.":
+      "By default the report omits hostnames, IP addresses and raw tool output. Sensitive details require opting in and confirmation. Review any full report before sharing."}</p>
     {scanError&&<p role="alert" className="error">{scanError}</p>}
     {scanResult&&<div role="status" aria-label={ru?"Результат проверки портов":"Port check result"}>
       <p>{ru?"Адреса":"Addresses"}: {scanResult.addresses.join(", ")} ({scanResult.elapsedMs} ms)</p>

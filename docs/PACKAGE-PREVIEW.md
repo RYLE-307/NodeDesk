@@ -28,6 +28,9 @@ install/uninstall inside its container.
 Optional Linux ping, traceroute, desktop viewers and system VPN tooling remain
 separate OS dependencies; the UI reports unavailable tools instead of silently
 installing them.
+The Arch package lists `iproute2` as optional for checking whether active VPN
+routes are present in the kernel table. If it is absent, NodeDesk reports the
+route result as unknown.
 
 These CI packages do not establish native Arch compatibility, install/uninstall
 correctness, signing trust, update policy, WebView2 availability, executable

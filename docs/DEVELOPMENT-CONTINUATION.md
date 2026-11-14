@@ -6,6 +6,25 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-14 Linux VPN kernel route verification awaiting CI
+
+- Code starting HEAD `9e76439` on `feat/post-v0.9-roadmap`, PR #13 Draft.
+  The previous VPN cancellation code HEAD `bc8b288` passed
+  [CI 43579493521](https://github.com/RYLE-307/NodeDesk/actions/runs/43579493521)
+  6/6. No real VPN or production network was accessed.
+- Active Linux VPN route evidence now checks both NetworkManager's active UUID
+  and installed unicast routes on its exact interface. A missing `ip` tool,
+  ambiguous device, malformed output or timeout becomes unknown rather than
+  a false positive. A disposable `ip` fixture tests matching, mismatched,
+  invalid and unavailable device/tool paths. DNS is still a presence check;
+  neither field proves actual traffic or DNS path correctness.
+- Local frontend unit tests 53/53, production build, Rust syntax and diff
+  checks passed. Linux semantic Rust tests and browser/Windows/Arch builds
+  require exact-head CI; local MSVC linker remains unavailable.
+- Native Windows and Arch verification remains **NOT TESTED**; see
+  [MANUAL-QA.md](MANUAL-QA.md). Next: verify CI, then continue VPN lifecycle
+  gaps, SSH/SFTP and P1 work.
+
 ### 2026-11-14 VPN connect/disconnect cancellation verified
 
 - VPN code HEAD `bc8b2884f950d0c589279e5aa1299b4b085fc7da` on

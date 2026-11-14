@@ -404,14 +404,47 @@ fn health_impl(profile:&VpnProfile)->VpnHealth {
         route_configured:None,dns_configured:None};
     if !profile.active{return health;}
     let deadline=Instant::now()+Duration::from_secs(10);
-    // Active UUID, not display name. Capture no raw addresses in the result.
-    health.route_configured=nmcli_until(&["-g","IP4.ROUTE,IP6.ROUTE", "connection",
-        "show","--active","uuid",&profile.id],deadline).ok()
-        .map(|v|!v.trim().is_empty());
+    // Both an active NetworkManager route and an installed kernel route on
+    // its exact device are required. A missing tool or ambiguous device is
+    // unknown, not a false claim that traffic traverses the VPN.
+    let configured=nmcli_until(&["-g","IP4.ROUTE,IP6.ROUTE", "connection",
+        "show","--active","uuid",&profile.id],deadline).ok();
+    let device=nmcli_until(&["-g","GENERAL.DEVICES", "connection",
+        "show","--active","uuid",&profile.id],deadline).ok();
+    health.route_configured=match (configured,device) {
+        (Some(routes),Some(device)) if !routes.trim().is_empty() =>
+            route_on_device_with_tool(std::path::Path::new("/usr/bin/ip"),device.trim(),deadline),
+        (Some(routes),_) if routes.trim().is_empty() => Some(false),
+        _=>None,
+    };
     health.dns_configured=nmcli_until(&["-g","IP4.DNS,IP6.DNS", "connection",
         "show","--active","uuid",&profile.id],deadline).ok()
         .map(|v|!v.trim().is_empty());
     health
+}
+
+#[cfg(target_os="linux")]
+fn safe_vpn_device(device:&str)->bool {
+    !device.is_empty() && device.len()<=32 && !device.starts_with('-') &&
+        device.bytes().all(|b|b.is_ascii_alphanumeric()||b"_.:-".contains(&b))
+}
+
+#[cfg(target_os="linux")]
+fn route_on_device_with_tool(tool:&std::path::Path,device:&str,deadline:Instant)->Option<bool> {
+    if !safe_vpn_device(device) {return None;}
+    let mut observed=false;
+    for family in ["-4","-6"] {
+        let mut command=Command::new(tool);
+        command.args(["-j",family,"route","show","dev",device,"table","all"]);
+        let raw=output_with_timeout(&mut command,remaining(deadline).ok()?).ok()?;
+        let routes:Vec<serde_json::Value>=serde_json::from_str(&raw).ok()?;
+        observed |= routes.iter().any(|route| {
+            route.get("dev").and_then(|v|v.as_str())==Some(device)
+                && route.get("type").and_then(|v|v.as_str()).is_none_or(|kind|kind=="unicast")
+                && route.get("dst").and_then(|v|v.as_str()).is_some()
+        });
+    }
+    Some(observed)
 }
 
 #[cfg(windows)]
@@ -691,6 +724,23 @@ mod tests {
         assert_eq!(result.route_configured,None);
         assert_eq!(result.dns_configured,None);
         assert!(!serde_json::to_string(&result).unwrap().contains("Disposable fixture"));
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn disposable_kernel_route_evidence_is_bound_to_exact_vpn_device() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let tool=dir.path().join("ip-fixture");
+        std::fs::write(&tool,"#!/bin/sh\ncase \"$2\" in\n -4) printf '%s' '[{\"dst\":\"10.7.0.0/24\",\"dev\":\"wg0\"}]';;\n -6) printf '%s' '[]';;\nesac\n").unwrap();
+        let mut mode=std::fs::metadata(&tool).unwrap().permissions();
+        mode.set_mode(0o700);
+        std::fs::set_permissions(&tool,mode).unwrap();
+        let deadline=||Instant::now()+Duration::from_secs(3);
+        assert_eq!(route_on_device_with_tool(&tool,"wg0",deadline()),Some(true));
+        assert_eq!(route_on_device_with_tool(&tool,"wg1",deadline()),Some(false));
+        assert_eq!(route_on_device_with_tool(&tool,"--help",deadline()),None);
+        assert_eq!(route_on_device_with_tool(&tool,"wg0\nother",deadline()),None);
+        assert_eq!(route_on_device_with_tool(std::path::Path::new("/missing/ip"),"wg0",deadline()),None);
     }
     #[cfg(windows)]
     #[test]

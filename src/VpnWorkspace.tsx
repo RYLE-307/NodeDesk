@@ -170,8 +170,8 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
           <span>{ru?"Только просмотр — протокол или политика шифрования не поддерживается":"Read-only — protocol or encryption policy unsupported"}</span>}</td>
       </tr>)}</tbody>
     </table></div>}
-    <p className="ssh-help">{ru?"Проверка показывает только наличие маршрутов и DNS в активном системном профиле. Она не доказывает, что трафик или DNS-запросы идут через VPN; split tunnel может не иметь маршрута по умолчанию. Адреса и имена серверов не передаются в WebView.":
-      "The check shows only whether the active OS profile reports routes and DNS. It does not prove traffic or DNS queries use the VPN; split tunnels need not have a default route. Addresses and server names never reach the WebView."}</p>
+    <p className="ssh-help">{ru?"Проверка сверяет активный системный профиль с маршрутами его интерфейса (Linux — также с таблицей маршрутизации ОС) и наличием DNS. Она не доказывает, что трафик или DNS-запросы идут через VPN; split tunnel может не иметь маршрута по умолчанию. Адреса и имена серверов не передаются в WebView.":
+      "The check compares the active OS profile with routes on its interface (Linux also checks the kernel route table) and DNS presence. It does not prove traffic or DNS queries use the VPN; split tunnels need not have a default route. Addresses and server names never reach the WebView."}</p>
     <p className="ssh-help">{ru
       ? "Arch/Linux: NetworkManager WireGuard, OpenVPN и OpenConnect; другие VPN-плагины только для просмотра. Windows: VPN-профили текущего пользователя — IKEv2/L2TP/SSTP. Профили с шифрованием Optional/Custom/NoEncryption доступны только для просмотра. Профили других программ не показываются."
       : "Arch/Linux: NetworkManager WireGuard, OpenVPN and OpenConnect; other VPN plugins are read-only. Windows: current-user IKEv2/L2TP/SSTP profiles. Optional/Custom/NoEncryption profiles are read only. Third-party VPN clients are not managed."}</p>

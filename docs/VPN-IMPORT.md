@@ -47,3 +47,12 @@ have applied the connection change before cancellation, so NodeDesk does not
 claim either final state and asks the operator to refresh. Disposable Linux
 manager and browser fixtures cover cancellation; native route/DNS and traffic
 behavior still require acceptance.
+
+On Linux, an active profile's route indicator now requires both a route
+reported by NetworkManager for its exact UUID and an installed unicast route
+on NetworkManager's exact device in the OS routing table. The device name is
+validated before passing it as an argument to `ip`; no shell or address data
+reaches WebView. Missing `iproute2`, ambiguous devices, malformed output or a
+timeout yield an unknown result. DNS remains a NetworkManager presence check.
+This detects some profile-versus-kernel mismatches; it cannot establish the
+actual path of traffic or DNS queries, which remains native QA.

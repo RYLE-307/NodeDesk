@@ -35,9 +35,9 @@ pub struct VpnHealth {
 /// The worker owns this guard: cancelling an IPC call cannot unlock it while
 /// a blocking OS command is still running.
 #[derive(Default)]
-pub struct VpnActions { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool> }
+pub struct VpnActions { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool>, setting:Arc<AtomicBool>, cancel_set:Arc<AtomicBool> }
 
-struct VpnActionGuard { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool> }
+struct VpnActionGuard { busy:Arc<AtomicBool>, importing:Arc<AtomicBool>, cancel_import:Arc<AtomicBool>, setting:Arc<AtomicBool>, cancel_set:Arc<AtomicBool> }
 
 impl VpnActions {
     fn acquire(&self)->Result<VpnActionGuard,String> {
@@ -45,8 +45,11 @@ impl VpnActions {
             .map_err(|_| "Another system VPN action is already in progress".to_string())?;
         self.cancel_import.store(false,Ordering::Release);
         self.importing.store(false,Ordering::Release);
+        self.cancel_set.store(false,Ordering::Release);
+        self.setting.store(false,Ordering::Release);
         Ok(VpnActionGuard{busy:Arc::clone(&self.busy),importing:Arc::clone(&self.importing),
-            cancel_import:Arc::clone(&self.cancel_import)})
+            cancel_import:Arc::clone(&self.cancel_import),setting:Arc::clone(&self.setting),
+            cancel_set:Arc::clone(&self.cancel_set)})
     }
 }
 
@@ -54,6 +57,8 @@ impl Drop for VpnActionGuard {
     fn drop(&mut self) {
         self.cancel_import.store(false,Ordering::Release);
         self.importing.store(false,Ordering::Release);
+        self.cancel_set.store(false,Ordering::Release);
+        self.setting.store(false,Ordering::Release);
         self.busy.store(false,Ordering::Release);
     }
 }
@@ -96,10 +101,12 @@ fn observed_state(before:&VpnProfile, profiles:&[VpnProfile], connect:bool)->Res
     Ok(current.active==connect)
 }
 
-fn wait_for_state(before:&VpnProfile, connect:bool)->Result<Vec<VpnProfile>,String> {
+fn wait_for_state(before:&VpnProfile, connect:bool, cancel:&AtomicBool)->Result<Vec<VpnProfile>,String> {
     let deadline=Instant::now()+Duration::from_secs(5);
     loop {
+        if cancel.load(Ordering::Acquire) {return Err("VPN action cancelled; refresh system profiles because the OS state may have changed".into());}
         let profiles=list_impl_until(deadline)?;
+        if cancel.load(Ordering::Acquire) {return Err("VPN action cancelled; refresh system profiles because the OS state may have changed".into());}
         if observed_state(before,&profiles,connect)? {return Ok(profiles);}
         if Instant::now()>=deadline {
             return Err("System VPN manager accepted the request, but the profile did not reach the requested state; refresh its status".into());
@@ -125,6 +132,9 @@ fn output_with_timeout(command:&mut Command,timeout:Duration)->Result<String,Str
 fn output_with_timeout_and_cancel(command:&mut Command,timeout:Duration,
     cancel:Option<&AtomicBool>)->Result<String,String> {
     const MAX_OUTPUT:u64=256*1024;
+    if cancel.is_some_and(|flag|flag.load(Ordering::Acquire)) {
+        return Err("VPN action cancelled; refresh system profiles because the OS state may have changed".into());
+    }
     let mut child=command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_|"System VPN manager not installed or unavailable".to_string())?;
     let mut stdout=child.stdout.take().ok_or("System VPN manager output unavailable")?;
@@ -139,7 +149,7 @@ fn output_with_timeout_and_cancel(command:&mut Command,timeout:Duration,
     let status=loop {
         if cancel.is_some_and(|flag|flag.load(Ordering::Acquire)) {
             let _=child.kill(); let _=child.wait(); let _=reader.join();
-            return Err("VPN import cancelled; refresh system profiles".into());
+            return Err("VPN action cancelled; refresh system profiles because the OS state may have changed".into());
         }
         if captured.is_none() {
             if let Ok(result)=rx.try_recv() {
@@ -375,11 +385,17 @@ fn list_impl_until(deadline:Instant)->Result<Vec<VpnProfile>,String> {
     Ok(profiles)
 }
 #[cfg(target_os="linux")]
-fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
+fn execute_impl(profile:&VpnProfile,connect:bool,cancel:&AtomicBool)->Result<(),String> {
+    execute_with_tool(std::path::Path::new("/usr/bin/nmcli"),profile,connect,cancel)
+}
+#[cfg(target_os="linux")]
+fn execute_with_tool(tool:&std::path::Path,profile:&VpnProfile,connect:bool,cancel:&AtomicBool)->Result<(),String> {
     let verb=if connect {"up"} else {"down"};
     // Explicit UUID keyword prevents accidentally operating on a different
     // connection with the same display name. -w bounds nmcli waiting.
-    nmcli(&["-w","30","connection",verb,"uuid",&profile.id]).map(|_|())
+    let mut command=Command::new(tool);
+    command.args(["-w","30","connection",verb,"uuid",&profile.id]);
+    output_with_timeout_and_cancel(&mut command,Duration::from_secs(35),Some(cancel)).map(|_|())
 }
 
 #[cfg(target_os="linux")]
@@ -447,7 +463,7 @@ fn list_impl_until(deadline:Instant)->Result<Vec<VpnProfile>,String> {
     parse_windows_profiles(&raw)
 }
 #[cfg(windows)]
-fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
+fn execute_impl(profile:&VpnProfile,connect:bool,cancel:&AtomicBool)->Result<(),String> {
     // rasdial uses saved Windows system credentials only. No password/username
     // is passed, and stdin is closed so missing credentials fail rather than
     // being captured in this application's UI or logs.
@@ -457,7 +473,7 @@ fn execute_impl(profile:&VpnProfile,connect:bool)->Result<(),String> {
     let mut cmd=windows_tool(&["System32","rasdial.exe"])?;
     cmd.arg(&profile.name);
     if !connect {cmd.arg("/disconnect");}
-    output(cmd).map(|_|())
+    output_with_timeout_and_cancel(&mut cmd,Duration::from_secs(35),Some(cancel)).map(|_|())
 }
 
 #[cfg(windows)]
@@ -499,7 +515,7 @@ fn list_impl()->Result<Vec<VpnProfile>,String>{Err("VPN manager is supported onl
 #[cfg(not(any(windows,target_os="linux")))]
 fn list_impl_until(_deadline:Instant)->Result<Vec<VpnProfile>,String>{list_impl()}
 #[cfg(not(any(windows,target_os="linux")))]
-fn execute_impl(_profile:&VpnProfile,_connect:bool)->Result<(),String>{
+fn execute_impl(_profile:&VpnProfile,_connect:bool,_cancel:&AtomicBool)->Result<(),String>{
     Err("VPN manager is supported only on Windows and Linux".into())
 }
 #[cfg(not(any(windows,target_os="linux")))]
@@ -534,6 +550,13 @@ pub fn vpn_cancel_import(actions:tauri::State<'_,VpnActions>)->bool {
     } else {false}
 }
 #[tauri::command]
+pub fn vpn_cancel_set(actions:tauri::State<'_,VpnActions>)->bool {
+    if actions.setting.load(Ordering::Acquire) {
+        actions.cancel_set.store(true,Ordering::Release);
+        true
+    } else {false}
+}
+#[tauri::command]
 pub async fn vpn_health(profile_id:String)->Result<VpnHealth,String>{
     if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
     tauri::async_runtime::spawn_blocking(move || {
@@ -547,6 +570,7 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
     if !uuid_ok(&profile_id) {return Err("Invalid system VPN profile ID".into());}
     // The guard belongs to the spawned worker, not the IPC future.
     let guard=actions.acquire()?;
+    guard.setting.store(true,Ordering::Release);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard=guard;
         // Recheck the exact profile, its current kind and active state at the
@@ -557,11 +581,11 @@ pub async fn vpn_set(actions:tauri::State<'_,VpnActions>,profile_id:String,expec
             .ok_or("System VPN profile is missing or unsupported")?;
         verify_request_snapshot(selected,&expected_name,&expected_kind,expected_active)?;
         require_control_allowed(selected)?;
-        if selected.active!=connect {execute_impl(selected,connect)?;}
+        if selected.active!=connect {execute_impl(selected,connect,&_guard.cancel_set)?;}
         // A successful OS command is not proof of a connected/disconnected
         // profile. Poll the OS for a bounded time and reject stale identity.
         // This still does not prove route, DNS or traffic correctness.
-        wait_for_state(selected,connect)
+        wait_for_state(selected,connect,&_guard.cancel_set)
     }).await.map_err(|_|"VPN action worker failed".to_string())?
 }
 
@@ -732,8 +756,44 @@ function Get-DnsClientServerAddress { [pscustomobject]@{InterfaceIndex=77;Server
         drop(held);
         let after=actions.acquire().unwrap();
         assert!(actions.acquire().is_err());
+        after.setting.store(true,Ordering::Release);
+        actions.cancel_set.store(true,Ordering::Release);
         drop(after);
+        assert!(!actions.setting.load(Ordering::Acquire));
+        assert!(!actions.cancel_set.load(Ordering::Acquire));
         assert!(actions.acquire().is_ok());
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn disposable_vpn_connect_cancel_kills_manager_and_preserves_uuid_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let tool=dir.path().join("nmcli-fixture");
+        let args=dir.path().join("args");
+        std::fs::write(&tool,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec sleep 30\n",args.display())).unwrap();
+        let mut mode=std::fs::metadata(&tool).unwrap().permissions();
+        mode.set_mode(0o700);
+        std::fs::set_permissions(&tool,mode).unwrap();
+        let profile=VpnProfile{id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Fixture".into(),kind:"WireGuard".into(),active:false,control_allowed:true};
+        let cancelled=Arc::new(AtomicBool::new(false));
+        let signal=Arc::clone(&cancelled);
+        let tool_for_worker=tool.clone();
+        let profile_for_worker=profile.clone();
+        let start=Instant::now();
+        let worker=std::thread::spawn(move ||execute_with_tool(&tool_for_worker,&profile_for_worker,true,&signal));
+        for _ in 0..50 {
+            if args.exists(){break;}
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(args.exists(),"disposable manager never started");
+        cancelled.store(true,Ordering::Release);
+        assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+        assert!(start.elapsed()<Duration::from_secs(5));
+        assert_eq!(std::fs::read_to_string(&args).unwrap().lines().collect::<Vec<_>>(),
+            ["-w","30","connection","up","uuid",profile.id.as_str()]);
+        assert!(execute_with_tool(std::path::Path::new("/missing/nmcli"),&profile,false,&cancelled)
+            .unwrap_err().contains("cancelled"));
     }
 
     #[test]

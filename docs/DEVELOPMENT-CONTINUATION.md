@@ -1,10 +1,30 @@
 # NodeDesk development continuation
 
-Updated: 2026-11-13. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
+Updated: 2026-11-14. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
 The branch was fetched into the isolated `NodeDesk-rc` worktree because the
 existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
+
+### 2026-11-14 VPN connect/disconnect cancellation awaiting CI
+
+- Starting HEAD `50d7c9e3dd86b4740861eb29dabffce815cf8588`; its
+  [exact-head CI](https://github.com/RYLE-307/NodeDesk/actions/runs/43449814026)
+  passed 6/6. Working copy was clean before this block.
+- Connect/disconnect now has an explicit cancellation path for NetworkManager
+  and Windows rasdial. A cancellation signal ends a pending process, keeps the
+  serialized mutation lock until the worker exits and tells the operator to
+  refresh because the OS may already have changed state. The UI exposes a
+  Cancel button only for the running action. No real profile was used.
+- Added disposable Linux manager and Playwright cancellation scenarios.
+  Local frontend unit tests 53/53 and production build passed. Rust source
+  parsed; local Rust linking is unavailable without MSVC `link.exe`.
+  Local Playwright server did not start; exact-head CI must run the browser
+  test and Windows/Ubuntu/Arch Rust suites before this block is verified.
+- Native Windows/Arch acceptance is tracked separately in
+  [MANUAL-QA.md](MANUAL-QA.md). It remains **NOT TESTED**. Next code work:
+  verify this block's CI, then improve VPN route/DNS evidence and remaining
+  lifecycle; continue SSH/SFTP and P1 without waiting for physical QA.
 
 ### 2026-11-13 Packaging smoke work pending exact-head CI
 

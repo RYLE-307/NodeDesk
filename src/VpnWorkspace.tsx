@@ -71,6 +71,15 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
     } catch(e) {if(alive.current)setError(String(e));}
     finally{if(alive.current)setBusy("");}
   }
+  async function cancelSet(profile:VpnProfile){
+    if(busy!==profile.id)return;
+    try{
+      const accepted=await invoke<boolean>("vpn_cancel_set");
+      if(alive.current&&accepted)setMessage(ru?
+        "Отмена запрошена. Состояние VPN могло измениться; обновите список после завершения операции.":
+        "Cancellation requested. VPN state may have changed; refresh after the action finishes.");
+    }catch{if(alive.current)setError(ru?"Не удалось запросить отмену VPN.":"Could not request VPN cancellation.");}
+  }
   async function checkHealth(profile:VpnProfile){
     if(loading||busy||healthBusy)return;
     setHealthBusy(profile.id);setError("");
@@ -153,9 +162,11 @@ export function VpnWorkspace({language}:{language:"ru"|"en"}) {
           <button type="button" disabled={loading||!!busy||!!healthBusy}
             onClick={()=>void checkHealth(p)}>{healthBusy===p.id?(ru?"Проверка…":"Checking…"):
             (ru?"Проверить":"Check")}</button></td>
-        <td>{p.controlAllowed ? <button type="button" disabled={loading||!!busy}
+        <td>{p.controlAllowed ? <><button type="button" disabled={loading||!!busy}
           onClick={()=>void toggle(p)}>{busy===p.id?(ru?"Выполняется…":"Working…"):
-          p.active?(ru?"Отключить":"Disconnect"):(ru?"Подключить":"Connect")}</button> :
+          p.active?(ru?"Отключить":"Disconnect"):(ru?"Подключить":"Connect")}</button>
+          {busy===p.id&&<button type="button" onClick={()=>void cancelSet(p)}>
+            {ru?"Отменить":"Cancel"}</button>}</> :
           <span>{ru?"Только просмотр — протокол или политика шифрования не поддерживается":"Read-only — protocol or encryption policy unsupported"}</span>}</td>
       </tr>)}</tbody>
     </table></div>}

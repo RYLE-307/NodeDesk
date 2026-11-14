@@ -38,3 +38,12 @@ an in-progress importer and retains the process-wide mutation lock until the
 worker exits. Native Arch import, secret-agent
 behavior, actual route/DNS operation and uninstall of imported profiles remain
 **NOT TESTED**. Windows profile creation and OpenConnect import remain open.
+
+Connect and disconnect now expose a separate cancel action. Linux `nmcli` and
+Windows `rasdial` are spawned without a shell, with bounded output and a
+35-second deadline. A cancellation request kills the waiting child process;
+the mutation lock remains held until the worker exits. The OS may already
+have applied the connection change before cancellation, so NodeDesk does not
+claim either final state and asks the operator to refresh. Disposable Linux
+manager and browser fixtures cover cancellation; native route/DNS and traffic
+behavior still require acceptance.

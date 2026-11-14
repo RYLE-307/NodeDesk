@@ -1,14 +1,14 @@
 import {test,expect} from "@playwright/test";
 
 const UUID="123e4567-e89b-12d3-a456-426614174000";
-async function open(page,{language="en",empty=false,fail=false,readOnly=false,holdImport=false}={}) {
-  await page.addInitScript(({language,empty,fail,readOnly,holdImport,uuid})=>{
+async function open(page,{language="en",empty=false,fail=false,readOnly=false,holdImport=false,holdSet=false}={}) {
+  await page.addInitScript(({language,empty,fail,readOnly,holdImport,holdSet,uuid})=>{
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],connections:[],language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};window.isTauri=true;
     window.fixture={
-      calls:[], fail, holdImport, rejectImport:null,
+      calls:[], fail, holdImport, rejectImport:null, holdSet, rejectSet:null,
       profiles:empty?[]:[{id:uuid,name:"Office VPN",kind:"vpn",active:false,controlAllowed:!readOnly}]
     };
     let next=0;
@@ -35,15 +35,20 @@ async function open(page,{language="en",empty=false,fail=false,readOnly=false,ho
             routeConfigured:current.active,dnsConfigured:current.active};
         }
         if(cmd==="vpn_set"){
+          if(window.fixture.holdSet)return new Promise((_,reject)=>{window.fixture.rejectSet=reject;});
           if(window.fixture.fail)throw new Error("System VPN manager rejected the request");
           window.fixture.profiles=window.fixture.profiles.map(p=>
             p.id===args.profileId ? {...p,active:args.connect}:p);
           return window.fixture.profiles;
         }
+        if(cmd==="vpn_cancel_set"){
+          window.fixture.rejectSet?.(new Error("VPN action cancelled; refresh system profiles"));
+          return true;
+        }
         throw new Error("Unexpected native command: "+cmd);
       }
     };
-  },{language,empty,fail,readOnly,holdImport,uuid:UUID});
+  },{language,empty,fail,readOnly,holdImport,holdSet,uuid:UUID});
   await page.goto("/");
   await page.locator(".catalog-tools").getByRole("button",{
     name: language==="en"?"System VPN":"Системные VPN",exact:true
@@ -207,6 +212,19 @@ test("Linux VPN import cancellation waits for native worker and clears path",asy
   await expect(pane.getByRole("alert")).toContainText("Import cancelled");
   const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd.startsWith("vpn_")));
   expect(calls.map(c=>c.cmd)).toContain("vpn_cancel_import");
+});
+
+test("VPN connection cancellation leaves state uncertain until refresh",async({page})=>{
+  const pane=await open(page,{holdSet:true});
+  page.once("dialog",dialog=>dialog.accept());
+  await pane.getByRole("button",{name:"Connect",exact:true}).click();
+  await expect(pane.getByRole("button",{name:"Cancel",exact:true})).toBeVisible();
+  await pane.getByRole("button",{name:"Cancel",exact:true}).click();
+  await expect(pane.getByRole("alert")).toContainText("cancelled");
+  const commands=await page.evaluate(()=>window.fixture.calls.map(call=>call.cmd));
+  expect(commands).toContain("vpn_cancel_set");
+  expect(commands.filter(command=>command==="vpn_set")).toHaveLength(1);
+  await expect(pane).toContainText("Disconnected");
 });
 
 test("Linux VPN import failure cannot invent a profile or retain a file path",async({page})=>{

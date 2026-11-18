@@ -712,7 +712,7 @@ export default function App() {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
     if (id === VAULT_TAB) return <VaultWorkspace connections={data.connections} language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
-    if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language}/>;
+    if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language} connections={data.connections}/>;
     const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :

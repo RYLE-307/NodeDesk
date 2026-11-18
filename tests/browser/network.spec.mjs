@@ -212,3 +212,84 @@ test("network report includes sensitive output only with explicit opt-in and con
   expect(report).toMatchObject({version:2,redacted:false,target:{host:"private.example.internal"},
     ping:{reachable:true,elapsedMs:7,output:"PING PRIVATE 10.90.1.7"}});
 });
+
+
+test("catalog TCP batch is opt-in, sequential and never sends stored credentials",async({page})=>{
+  const input={version:1,groups:[],language:"en",theme:"dark",monitoring:false,
+    connections:[
+      {id:"a",name:"SSH fixture",host:"ssh.example.test",port:22,username:"admin",
+       protocol:"SSH",groupId:null,favorite:false,password:"never-send"},
+      {id:"b",name:"RDP fixture",host:"rdp.example.test",port:3389,username:"user",
+       protocol:"RDP",groupId:null,favorite:false},
+    ]};
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){
+        window.calls.push({cmd,args});
+        if(cmd!=="network_probe")throw Error("Unexpected network command");
+        return {addresses:["127.0.0.1"],tcpReachable:args.target.port===22,elapsedMs:1};
+      },
+    };
+  },input);
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByText("Catalog TCP batch checks").click();
+  const button=pane.getByRole("button",{name:"Check selected TCP ports"});
+  await expect(button).toBeDisabled();
+  await pane.getByRole("checkbox",{name:"Probe: SSH fixture"}).check();
+  await pane.getByRole("checkbox",{name:"Probe: RDP fixture"}).check();
+  expect(await page.evaluate(()=>window.calls)).toEqual([]);
+  page.once("dialog",d=>d.dismiss());
+  await button.click();
+  expect(await page.evaluate(()=>window.calls)).toEqual([]);
+  page.once("dialog",d=>{expect(d.message()).toContain("2 selected connections");d.accept();});
+  await button.click();
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toContainText("SSH fixture · TCP 22: reachable");
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toContainText("RDP fixture · TCP 3389: no response");
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toMatchObject({cmd:"network_probe",args:{target:{host:"ssh.example.test",port:22}}});
+  expect(calls[1]).toMatchObject({cmd:"network_probe",args:{target:{host:"rdp.example.test",port:3389}}});
+  expect(JSON.stringify(calls)).not.toContain("never-send");
+  expect(JSON.stringify(calls)).not.toContain("username");
+});
+test("catalog batch cancel prevents starting the next target and hides late results",async({page})=>{
+  const input={version:1,groups:[],language:"en",theme:"dark",monitoring:false,
+    connections:[
+      {id:"a",name:"SSH fixture",host:"ssh.example.test",port:22,username:"admin",protocol:"SSH",groupId:null,favorite:false},
+      {id:"b",name:"RDP fixture",host:"rdp.example.test",port:3389,username:"user",protocol:"RDP",groupId:null,favorite:false},
+    ]};
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      invoke(cmd,args){
+        window.calls.push({cmd,args});
+        if(cmd==="network_probe")return new Promise(resolve=>{window.resolveBatch=resolve;});
+        if(cmd==="network_cancel")return Promise.resolve();
+        throw Error("Unexpected command");
+      }
+    };
+  },input);
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByText("Catalog TCP batch checks").click();
+  await pane.getByRole("checkbox",{name:"Probe: SSH fixture"}).check();
+  await pane.getByRole("checkbox",{name:"Probe: RDP fixture"}).check();
+  page.once("dialog",d=>d.accept());
+  await pane.getByRole("button",{name:"Check selected TCP ports"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.length)).toBe(1);
+  const initial=await page.evaluate(()=>window.calls[0]);
+  await pane.getByRole("button",{name:"Cancel batch checks"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Batch check cancelled");
+  await page.evaluate(()=>window.resolveBatch({addresses:["192.0.2.1"],tcpReachable:true,elapsedMs:1}));
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toHaveCount(0);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls).toEqual([initial,{cmd:"network_cancel",args:{id:initial.args.id}}]);
+});

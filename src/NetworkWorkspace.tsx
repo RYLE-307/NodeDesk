@@ -1,6 +1,8 @@
 import {useEffect,useRef,useState} from "react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {createNetworkReport} from "./networkReport";
+import {planCatalogNetworkBatch,MAX_NETWORK_BATCH} from "./networkBatch";
+import type {Connection} from "./catalog";
 
 type ProbeResult={addresses:string[];tcpReachable:boolean;elapsedMs:number};
 type PingResult={reachable:boolean;elapsedMs:number;output:string};
@@ -15,7 +17,7 @@ function parseExplicitPorts(text:string):number[]|null {
   return ports;
 }
 
-export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
+export function NetworkWorkspace({language,connections=[]}:{language:"ru"|"en";connections?:Connection[]}) {
   const ru=language==="ru";
   const [host,setHost]=useState("");
   const [port,setPort]=useState(443);
@@ -33,6 +35,12 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   const [scanResult,setScanResult]=useState<PortScanResult|null>(null);
   const [scanError,setScanError]=useState("");
   const [includeSensitive,setIncludeSensitive]=useState(false);
+  const [catalogQuery,setCatalogQuery]=useState("");
+  const [selectedCatalogIds,setSelectedCatalogIds]=useState<string[]>([]);
+  const [batchBusy,setBatchBusy]=useState(false);
+  const [batchError,setBatchError]=useState("");
+  const [batchResults,setBatchResults]=useState<{id:string;name:string;port:number;reachable:boolean|null;elapsedMs:number|null}[]>([]);
+  const batchCurrent=useRef<{cancelled:boolean;id:string|null}|null>(null);
   // Invalidate stale results and stop native diagnostic processes when the
   // target changes or the workspace closes.
   const targetVersion=useRef(0);
@@ -73,6 +81,9 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
         if(id)void invoke("network_cancel",{id}).catch(()=>{});
       }
       probeId.current=null;pingId.current=null;traceId.current=null;scanId.current=null;
+      const batch=batchCurrent.current;
+      batchCurrent.current=null;
+      if(batch){batch.cancelled=true;if(batch.id)void invoke("network_cancel",{id:batch.id}).catch(()=>{});}
     };
   },[]);
   function changeTarget(){
@@ -171,6 +182,69 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
     }
   }
 
+  const catalogMatches=connections.filter(c=>
+    c.name.toLowerCase().includes(catalogQuery.toLowerCase()) ||
+    c.host.toLowerCase().includes(catalogQuery.toLowerCase())
+  ).slice(0,50);
+
+  function toggleCatalogSelection(id:string,checked:boolean){
+    if(batchBusy)return;
+    setSelectedCatalogIds(before=>{
+      if(checked){
+        return before.includes(id) || before.length>=MAX_NETWORK_BATCH ?
+          before : [...before,id];
+      }
+      return before.filter(existing=>existing!==id);
+    });
+  }
+  function cancelBatch(){
+    const active=batchCurrent.current;
+    if(!active)return;
+    active.cancelled=true;
+    batchCurrent.current=null;
+    if(active.id)void invoke("network_cancel",{id:active.id}).catch(()=>{});
+    setBatchBusy(false);
+    setBatchError(ru?"Пакетная проверка отменена":"Batch check cancelled");
+  }
+  async function runCatalogBatch(){
+    if(batchCurrent.current || batchBusy)return;
+    let plan:ReturnType<typeof planCatalogNetworkBatch>;
+    try{plan=planCatalogNetworkBatch(connections,selectedCatalogIds);}
+    catch{setBatchError(ru?"Выбранные подключения устарели или некорректны":"Invalid or stale batch selection");return;}
+    if(!isTauri()){setBatchError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
+    if(!window.confirm(ru ?
+      \`Проверить TCP-порты \${plan.length} выбранных подключений? Будут выполнены реальные DNS/TCP-запросы к этим адресам, по одному, только по вашему подтверждению.\` :
+      \`Check TCP ports for \${plan.length} selected connections? This makes real DNS/TCP requests to these targets, one at a time, only after your confirmation.\`))return;
+    const state={cancelled:false,id:null as string|null};
+    batchCurrent.current=state;
+    setBatchBusy(true);setBatchError("");setBatchResults([]);
+    try{
+      for(const target of plan){
+        if(state.cancelled || batchCurrent.current!==state)break;
+        const id=crypto.randomUUID();
+        state.id=id;
+        try{
+          const reply=await invoke<ProbeResult>("network_probe",{id,target:{host:target.host,port:target.port}});
+          if(!mounted.current || state.cancelled || batchCurrent.current!==state)break;
+          setBatchResults(previous=>[...previous,{
+            id:target.id,name:target.name,port:target.port,
+            reachable:reply.tcpReachable,elapsedMs:reply.elapsedMs,
+          }]);
+        }catch{
+          if(!mounted.current || state.cancelled || batchCurrent.current!==state)break;
+          setBatchResults(previous=>[...previous,{
+            id:target.id,name:target.name,port:target.port,
+            reachable:null,elapsedMs:null,
+          }]);
+        }finally{state.id=null;}
+      }
+    }finally{
+      if(batchCurrent.current===state){
+        batchCurrent.current=null;
+        if(mounted.current)setBatchBusy(false);
+      }
+    }
+  }
   return <section className="vpn-workspace" aria-label={ru?"Диагностика сети":"Network diagnostics"}>
     <h2>{ru?"Диагностика сети":"Network diagnostics"}</h2>
     <p className="ssh-help">{ru?"DNS, TCP, Ping, трассировка и проверка до 12 явно указанных TCP-портов запускаются только по нажатию. Диапазоны и фоновые запросы не поддерживаются.":"DNS, TCP, Ping, traceroute and up to 12 explicitly specified TCP ports run only on click. No ranges or background requests."}</p>
@@ -194,6 +268,36 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       </button>
       {scanBusy&&<button type="button" onClick={()=>cancelScan(true)}>{ru?"Отменить порты":"Cancel port check"}</button>}
     </div>
+    <details className="network-catalog-batch">
+      <summary>{ru?"Пакетная TCP-проверка подключений":"Catalog TCP batch checks"}</summary>
+      <p className="ssh-help">{ru
+        ?"Выберите не более 10 подключений. Проверки запускаются последовательно только после подтверждения. Это проверка доступности TCP-порта, не вход на сервер и не мониторинг."
+        :"Choose up to 10 connections. Checks run sequentially only after confirmation. This tests TCP-port reachability, not authentication or monitoring."}</p>
+      <label>{ru?"Поиск в каталоге":"Search catalog"}
+        <input aria-label={ru?"Поиск для пакетной проверки":"Catalog batch search"}
+          value={catalogQuery} autoComplete="off" maxLength={200}
+          onChange={event=>setCatalogQuery(event.target.value)}/>
+      </label>
+      <div className="catalog-bulk-hosts">
+        {catalogMatches.map(c=><label key={c.id}>
+          <input type="checkbox" aria-label={`${ru?"Проверить":"Probe"}: ${c.name}`}
+            checked={selectedCatalogIds.includes(c.id)}
+            disabled={batchBusy || (!selectedCatalogIds.includes(c.id) && selectedCatalogIds.length>=MAX_NETWORK_BATCH)}
+            onChange={event=>toggleCatalogSelection(c.id,event.target.checked)}/>
+          {c.name} · {c.protocol}:{c.port}
+        </label>)}
+      </div>
+      <p>{ru?"Выбрано":"Selected"}: {selectedCatalogIds.length}/{MAX_NETWORK_BATCH}</p>
+      <button type="button" disabled={batchBusy||!selectedCatalogIds.length}
+        onClick={()=>void runCatalogBatch()}>{ru?"Проверить выбранные TCP-порты":"Check selected TCP ports"}</button>
+      {batchBusy&&<button type="button" onClick={cancelBatch}>{ru?"Отменить пакетную проверку":"Cancel batch checks"}</button>}
+      {batchError&&<p role="alert">{batchError}</p>}
+      {batchResults.length>0&&<div role="status" aria-label={ru?"Результаты пакетной проверки":"Catalog batch results"}>
+        <ul>{batchResults.map(item=><li key={item.id}>{item.name} · TCP {item.port}: {
+          item.reachable===null?(ru?"ошибка":"error"):item.reachable?(ru?"доступен":"reachable"):(ru?"нет ответа":"no response")
+        }{item.elapsedMs!==null?` (${item.elapsedMs} ms)`:""}</li>)}</ul>
+      </div>}
+    </details>
     <label><input type="checkbox" checked={includeSensitive} onChange={e=>setIncludeSensitive(e.target.checked)}/>
       {ru?"Включить адреса целей и вывод утилит (конфиденциально)":"Include target addresses and tool output (sensitive)"}
     </label>

@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 explicit catalog TCP batch diagnostics — exact-head CI pending
+
+- Added a manually triggered, sequential batch of up to 10 selected
+  catalog SSH/RDP/VNC endpoints to Network diagnostics, with a per-tab search
+  over the catalog. Each target uses the existing bounded native
+  `network_probe` command (DNS/TCP only); no SSH/RDP/VNC login, background
+  polling or saved scan state is introduced. Requires a confirmation warning
+  about real TCP requests before any network activity.
+- Cancellation revokes the current operation through `network_cancel`,
+  stops scheduling further targets, discards late results and preserves
+  only transient status UI. Endpoint requests contain host and port only,
+  never account names, password fields, tokens or pins.
+- Node tests verify strict selection caps, stale IDs, forbidden fields
+  and invalid endpoints; browser tests use disposable mocked IPC and
+  check opt-in, sequential requests, cancellation and no secret leakage.
+- Native Windows/Arch acceptance remains **NOT TESTED**; exact-head CI
+  pending. See docs/NETWORK-CATALOG-BATCH.md.
+- Existing selected catalog export blocks remain in this branch. Keep PR #13
+  draft; no real infrastructure, main merge or release.
+
+
 ### 2026-11-18 P1 CAT-05 selected catalog export — exact-head CI pending
 
 - Starting HEAD `ae0e40a7aa2fa39d589aa78410972a628c97fc32` has

@@ -1064,7 +1064,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     assert!(copy_upload_with_verify(&mut c,&source,&collision,&blocked,&op,&events,true).is_err());
     assert!(c.missing(&blocked).unwrap());
     let collision_read=c.open(&collision,1).unwrap();
-    assert_eq!(c.read(&collision_read,0).unwrap().unwrap(),b"untouched");
+    assert_eq!(c.read(&collision_read,0).unwrap().unwrap(),b"untouched".to_vec());
     c.close(&collision_read).unwrap();
     // Native Windows ssh2 adapter also verifies the real partial-resume path.
     let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();

@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 SFTP remote destination collision preflight — CI pending
+
+- Added read-only `missing(final_path)` checks before writing the
+  temporary upload and again immediately before standard SFTP v3 RENAME.
+  A pre-existing target or failed metadata check refuses the transfer
+  without creating its temporary remote file. Existing verified-resume
+  already had two corresponding checks.
+- Extended disposable Linux/OpenSSH and Windows native-SFTP tests with
+  pre-existing destination collisions; they check original bytes remain
+  unchanged and no new partial is created. Only fixtures are used.
+- This narrows stale-listing and remote rename races; compliant SFTP v3
+  servers reject RENAME into existing paths, but this cannot ensure
+  atomic no-overwrite on a noncompliant or concurrently modified server.
+- Parent `f989eea216de337737740a53856fa5de9a85c7fb`
+  includes declared-size/EOF enforcement and codec negative tests.
+  Its GitHub checks were not registered on inspection; exact-head CI
+  remains **NOT RUN / UNCONFIRMED**, and native Windows/Arch operator
+  acceptance remains NOT TESTED. Keep PR #13 Draft; no release or merge.
+
+
 ### 2026-11-18 P0 SFTP declared-size and EOF enforcement — exact-head CI pending
 
 - Parent HEAD `8a315e8d4cc566d400fd9291253b68e345098d5e`

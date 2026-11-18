@@ -604,6 +604,11 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
         if before.dev() != opened.dev() || before.ino() != opened.ino() { return Err("Local source changed before open".into()); }
     }
     let size = opened.len();
+    // Refuse a stale client-side listing or pre-existing target before
+    // writing any bytes to a remote temporary file. A compliant v3 server
+    // also refuses collision on RENAME; the recheck below narrows races.
+    op.check()?;
+    if !c.missing(remote)? {return Err("Remote destination exists; overwrite disabled".into());}
     // EXCL|CREAT|WRITE; never opens/clobbers an existing remote path.
     let h = c.open(temp,2|8|32)?;
     let mut offset = 0; let mut bytes = vec![0;CHUNK];
@@ -616,9 +621,12 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
     if offset != size || f.metadata().map_err(|_| "Cannot inspect source")?.len() != size { return Err("Source changed during upload".into()); }
     c.close(&h)?; op.check()?;
     if verify {verify_sftp_readback(c,temp,&mut f,size,op)?;}
-    let mut b = vec![]; wire::string(&mut b,temp.as_bytes()); wire::string(&mut b,remote.as_bytes());
-    // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
-    Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
+    op.check()?;
+    if !c.missing(remote)? {return Err("Remote destination appeared during upload; no overwrite".into());}
+    // The standard v3 RENAME has no overwrite flag; deliberately avoid
+    // OpenSSH's posix-rename extension. A noncompliant or racing server
+    // may still overwrite, so this is not an atomic server-side guarantee.
+    c.rename(temp,remote)
 }
 /// Explicit resume: verify every byte of a remote partial against the opened
 /// local source before writing, then recheck the entire file before publication.
@@ -1046,6 +1054,18 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
     let events=Channel::<Progress>::new(|_|Ok(()));
     copy_upload_with_verify(&mut c,&source,&remote,&temp,&op,&events,true).unwrap();
+    // Exercise collision safety through the native Windows adapter without
+    // relying on direct filesystem access to the fixture's SFTP root.
+    let collision=wire::join(&home,&format!("native-existing-{case}.bin")).unwrap();
+    let blocked=wire::join(&home,&format!(".native-blocked-{case}.part")).unwrap();
+    let collision_handle=c.open(&collision,2|8|32).unwrap();
+    c.write(&collision_handle,0,b"untouched").unwrap();
+    c.close(&collision_handle).unwrap();
+    assert!(copy_upload_with_verify(&mut c,&source,&collision,&blocked,&op,&events,true).is_err());
+    assert!(c.missing(&blocked).unwrap());
+    let collision_read=c.open(&collision,1).unwrap();
+    assert_eq!(c.read(&collision_read,0).unwrap().unwrap(),b"untouched");
+    c.close(&collision_read).unwrap();
     // Native Windows ssh2 adapter also verifies the real partial-resume path.
     let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();
     let resume_part=wire::join(&home,&format!(".native-resume-{case}.part")).unwrap();
@@ -1453,6 +1473,14 @@ mod tests {
         let source = local.join(filename); fs::write(&source,&bytes).unwrap();
         let dest = wire::join(remote_path,filename).unwrap(); let temp = wire::join(remote_path,".upload.part").unwrap();
         let events = Channel::<Progress>::new(|_| Ok(()));
+        // A stale listing cannot cause any write when the final filename
+        // already exists, even if the SFTP implementation permits overwrite.
+        let collision_dest=wire::join(remote_path,"preexisting-upload.bin").unwrap();
+        let collision_part=wire::join(remote_path,".preexisting-upload.part").unwrap();
+        fs::write(&collision_dest,b"untouched").unwrap();
+        assert!(copy_upload_with_verify(&mut c,&source,&collision_dest,&collision_part,&op,&events,true).is_err());
+        assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
+        assert!(!Path::new(&collision_part).exists());
         copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
         assert_eq!(fs::read(&dest).unwrap(),bytes);
         // Verified byte-offset upload: prefix is written through real SFTP v3,

@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 SFTP declared-size and EOF enforcement — exact-head CI pending
+
+- Parent HEAD `8a315e8d4cc566d400fd9291253b68e345098d5e`
+  passed [CI 44330832293](https://github.com/RYLE-307/NodeDesk/actions/runs/44330832293)
+  6/6 across Windows/Ubuntu/Arch preview and Playwright.
+- Fresh SFTP downloads now enforce LSTAT-declared file length **before**
+  writing any DATA chunk: reject short EOF or oversized response, require
+  EOF exactly after the expected length, and recheck remote file
+  size/type/mtime before publication. Verified readback also requires EOF
+  at its terminal offset rather than accepting an exact-length prefix.
+- Ordinary downloads from a server that omits size are bounded to 16 GiB;
+  verified downloads require a declared size before opening a partial.
+  No remote shell, automatic transfers, overwrite, keys or server changes.
+- Added Rust unit tests for zero-size/exact-size, short EOF, oversized
+  DATA, integer overflow, empty chunk and unsized download limit.
+  Normal isolated OpenSSH/Paramiko transfer fixtures remain CI gates.
+  Exact-head CI PENDING; native Windows/Arch GUI acceptance NOT TESTED.
+  See docs/V0.5-SFTP-GUI.md. Keep PR #13 Draft, main/release untouched.
+
+
 ### 2026-11-18 P0 private SFTP download partial identity check — CI pending
 
 - Both ordinary and readback-verified downloads now re-inspect the

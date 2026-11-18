@@ -566,6 +566,13 @@ fn verify_sftp_readback(
         verify_local_chunk(local,&chunk)?;
         at+=chunk.len() as u64;
     }
+    // The expected prefix must also be the end of the remote file.
+    // A server returning more DATA after the advertised size is inconsistent
+    // and must not cause a verified partial to be published.
+    op.check()?;
+    if c.read(&handle,total)?.is_some() {
+        return Err("Remote file grew during integrity verification".into());
+    }
     c.close(&handle)?;
     op.check()?;
     let after=c.lstat(remote)?;
@@ -736,20 +743,59 @@ fn check_download_partial_before_publish(
     Ok(())
 }
 
+// An SFTP server may return DATA past its advertised file size or EOF early.
+// Refuse both before writing. Some servers omit size: limit unknown-size
+// streams to keep a malformed endpoint from filling a local filesystem.
+const MAX_UNSIZED_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+fn checked_download_progress(
+    offset:u64, declared:Option<u64>, received:Option<&[u8]>
+)->Result<Option<u64>> {
+    match received {
+        None => {
+            if declared.is_some_and(|size|offset!=size){
+                return Err("Remote SFTP file ended before its declared size".into());
+            }
+            Ok(None)
+        }
+        Some(chunk) => {
+            if chunk.is_empty() || chunk.len()>CHUNK {
+                return Err("Invalid SFTP download data chunk".into());
+            }
+            let next=offset.checked_add(chunk.len() as u64)
+                .ok_or("Remote SFTP download offset overflow")?;
+            if declared.is_some_and(|size|next>size){
+                return Err("Remote SFTP file exceeds its declared size".into());
+            }
+            if declared.is_none() && next>MAX_UNSIZED_DOWNLOAD_BYTES {
+                return Err("Unknown-size SFTP download exceeds safety limit".into());
+            }
+            Ok(Some(next))
+        }
+    }
+}
+
 fn copy_download_with_verify(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool,verify:bool) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
+    if verify && a.size.is_none() {return Err("SFTP file size required for verified download".into());}
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
     let mut f = if verify {private_new_readable(temp)?} else {private_new(temp)?};
     let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
     let mut offset = 0;
     loop {
         op.check()?;
-        let Some(bytes) = c.read(&h,offset)? else { break; };
-        f.write_all(&bytes).map_err(|_| "Local write failed")?; offset += bytes.len() as u64;
+        let bytes=c.read(&h,offset)?;
+        let Some(next)=checked_download_progress(offset,a.size,bytes.as_deref())? else {break;};
+        let bytes=bytes.ok_or("SFTP data missing after validation")?;
+        f.write_all(&bytes).map_err(|_| "Local write failed")?;
+        offset=next;
         events.send(Progress {bytes:offset,total:a.size}).map_err(|_| "Transfer view closed")?;
     }
     c.close(&h)?;
-    if a.size.is_some_and(|size| size != offset) { return Err("Remote source changed during download".into()); }
+    op.check()?;
+    let after=c.lstat(remote)?;
+    if after.kind()!="file" || after.size!=a.size || after.modified!=a.modified {
+        return Err("Remote source metadata changed during download".into());
+    }
     f.sync_all().map_err(|_| "Local sync failed")?;
     if verify {verify_sftp_readback(c,remote,&mut f,offset,op)?;}
     let open_metadata=f.metadata().map_err(|_|"Private download partial unavailable")?;
@@ -1081,6 +1127,26 @@ mod tests {
             fs::hard_link(&old,&partial).unwrap();
             assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
         }
+    }
+    #[test] fn download_never_writes_past_declared_size_or_accepts_early_eof() {
+        let data=b"data";
+        assert_eq!(checked_download_progress(0,Some(4),Some(data)).unwrap(),Some(4));
+        assert_eq!(checked_download_progress(4,Some(4),None).unwrap(),None);
+        assert_eq!(checked_download_progress(0,Some(0),None).unwrap(),None);
+        assert!(checked_download_progress(0,Some(3),Some(data)).is_err());
+        assert!(checked_download_progress(2,Some(4),Some(data)).is_err());
+        assert!(checked_download_progress(2,Some(4),None).is_err());
+        assert!(checked_download_progress(4,Some(4),Some(b"x")).is_err());
+        assert!(checked_download_progress(0,Some(4),Some(b"")).is_err());
+        assert!(checked_download_progress(u64::MAX,None,Some(b"x")).is_err());
+        assert!(checked_download_progress(0,None,Some(&vec![0;CHUNK+1])).is_err());
+    }
+    #[test] fn unknown_size_download_is_bounded_and_requires_eof() {
+        assert_eq!(checked_download_progress(0,None,Some(b"abc")).unwrap(),Some(3));
+        assert_eq!(checked_download_progress(3,None,None).unwrap(),None);
+        assert_eq!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES-1,None,Some(b"x")).unwrap(),
+            Some(MAX_UNSIZED_DOWNLOAD_BYTES));
+        assert!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES,None,Some(b"x")).is_err());
     }
     #[test] fn readback_detects_corrupt_or_truncated_bytes() {
         let dir=tempfile::tempdir().unwrap();

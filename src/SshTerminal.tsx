@@ -10,6 +10,7 @@ import { TunnelWorkspace } from "./TunnelWorkspace";
 import { decideTerminalPaste } from "./terminalPaste";
 import {prepareTerminalSnippet} from "./terminalSnippet";
 import {collectTerminalScrollback} from "./terminalLog";
+import {queueTerminalWrite} from "./terminalWriteQueue";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -47,7 +48,14 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     term.open(container.current!); terminal.current = term;
     const input = term.onData(data => {
       const id = session.current;
-      if (id) pending.current = pending.current.then(() => invoke("ssh_write", { id, data })).catch(() => { setStatus("Terminal input failed"); });
+      if (!id)return;
+      // The ID is checked when the queued write actually starts, not just
+      // when xterm produces its input; Stop/reconnect invalidates old chunks.
+      pending.current=queueTerminalWrite(pending.current,id,data,
+        ()=>session.current,
+        (writeId,value)=>invoke("ssh_write",{id:writeId,data:value}))
+        .catch(()=>{if(session.current===id)setStatus(currentLanguage.current==="ru"?
+          "Ошибка ввода терминала":"Terminal input failed");});
     });
     const observer = new ResizeObserver(() => {
       if (!container.current?.clientWidth || !container.current.clientHeight) return;

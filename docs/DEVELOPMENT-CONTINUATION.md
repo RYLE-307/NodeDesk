@@ -6,6 +6,22 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 SSH/SFTP queued input lifecycle — exact-head CI pending
+
+- xterm's session input queue used to check the session ID when keystrokes
+  arrived, but not when queued `ssh_write` calls ran after an earlier
+  pending write. The terminal now checks identity at execution time,
+  drops stale chunks on disconnect/reconnect/close, and prevents a late
+  failed write from overwriting a new session's status.
+- A pure queue helper and Node tests verify pending/switch race, ordering,
+  exact bytes, and recovery after rejected IPC. No real keyboard, server,
+  password, or SSH connection used; SFTP/SSH auth behavior unchanged.
+- Full exact-head CI and native Windows/Arch GUI acceptance are pending.
+  See docs/V0.3-SSH.md; the preceding VPN consistency change is
+  `75c0ad902d28a18eec56ea4d5067f590510453b4`.
+- Keep PR #13 draft, no main edits, merge, release or redesign.
+
+
 ### 2026-11-18 P0 VPN health snapshot consistency — exact-head CI pending
 
 - Added a second read-only OS VPN profile enumeration after the bounded

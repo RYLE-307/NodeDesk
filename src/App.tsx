@@ -11,6 +11,8 @@ import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {parseMobaSessions} from "./mobaImport";
 import {sshConfigPreviewToCatalog} from "./sshConfigImport";
+import {bulkUpdateConnections,MAX_BULK_CONNECTIONS} from "./catalogBulk";
+import type {BulkConnectionAction} from "./catalogBulk";
 import {
   Catalog,
   Connection,
@@ -36,6 +38,19 @@ const labels = {
     mergeCatalog: "Добавить из каталога",
     importMoba: "Импорт MobaXterm",
     importSshConfig: "Импорт SSH config",
+    bulkToggle: "Массовое изменение",
+    bulkSelect: "Выбрать подключение",
+    bulkSelected: "Выбрано",
+    bulkDestination: "Группа назначения",
+    bulkMove: "Переместить выбранные",
+    bulkFavorite: "Добавить в избранное",
+    bulkUnfavorite: "Убрать из избранного",
+    bulkClear: "Снять выделение",
+    bulkConfirm: "Применить изменение к выбранным подключениям? Текущие вкладки, адреса и учётные записи не изменятся. Сетевые подключения не запускаются.",
+    bulkDone: "Массовое изменение сохранено",
+    bulkUnchanged: "Выбранные подключения уже имеют эти настройки",
+    bulkInvalid: "Некорректный список или группа; каталог не изменён.",
+
     importSshConfirm: "Добавить Host-записи из локального OpenSSH config? Переносятся только псевдоним, адрес, порт и пользователь. Ключи, команды, ProxyCommand и настройки аутентификации НЕ переносятся. Записи без User потребуют ручного заполнения. Существующий каталог сохраняется, все новые ID изменяются. Повторный импорт создаст дубликаты.",
     importSshDone: "Записи SSH config добавлены",
     importSshEmpty: "Нет поддерживаемых Host-записей SSH config",
@@ -114,6 +129,19 @@ const labels = {
     mergeCatalog: "Merge catalog",
     importMoba: "Import MobaXterm",
     importSshConfig: "Import SSH config",
+    bulkToggle: "Bulk edit",
+    bulkSelect: "Select connection",
+    bulkSelected: "Selected",
+    bulkDestination: "Destination group",
+    bulkMove: "Move selected",
+    bulkFavorite: "Favorite selected",
+    bulkUnfavorite: "Unfavorite selected",
+    bulkClear: "Clear selection",
+    bulkConfirm: "Apply this change to the selected connections? Current tabs, addresses and credentials stay unchanged. No network connection starts.",
+    bulkDone: "Bulk update saved",
+    bulkUnchanged: "Selected connections already have these settings",
+    bulkInvalid: "Invalid selection or group; catalog unchanged.",
+
     importSshConfirm: "Append Host entries from local OpenSSH config? Only aliases, hosts, ports and users are transferred. Keys, commands, ProxyCommand and authentication settings are NOT imported. Entries without User must be edited manually. Existing entries are preserved and imported IDs are replaced. Repeated import creates duplicates.",
     importSshDone: "SSH config entries added",
     importSshEmpty: "No supported SSH config Host entries",
@@ -245,6 +273,10 @@ export default function App() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [bulkMode,setBulkMode] = useState(false);
+  const [bulkSelection,setBulkSelection] = useState<Set<string>>(new Set());
+  const [bulkGroup,setBulkGroup] = useState("");
+
   const [sshConfigHosts,setSshConfigHosts]=useState<{alias:string;host:string;port:number;username:string}[]|null>(null);
   const [sshConfigError,setSshConfigError]=useState("");
   const [sshConfigBusy,setSshConfigBusy]=useState(false);
@@ -352,6 +384,24 @@ export default function App() {
       if(commit(mergeCatalog(data,incoming)))setNotice(t.importSshDone);
     }catch{setNotice(t.importSshFailed);}
     finally{setSshBulkImportBusy(false);}
+  }
+  function performBulkUpdate(action:BulkConnectionAction){
+    if(blocked || !bulkMode || !bulkSelection.size)return;
+    const ids=[...bulkSelection];
+    if(!window.confirm(`${t.bulkConfirm} (${ids.length})`))return;
+    try{
+      const next=bulkUpdateConnections(data,ids,action);
+      if(next===data){setNotice(t.bulkUnchanged);return;}
+      if(commit(next)){setBulkSelection(new Set());setNotice(t.bulkDone);}
+    }catch{setNotice(t.bulkInvalid);}
+  }
+  function toggleBulkSelection(id:string,checked:boolean){
+    setBulkSelection(previous=>{
+      const next=new Set(previous);
+      if(checked && next.size<MAX_BULK_CONNECTIONS)next.add(id);
+      else if(!checked)next.delete(id);
+      return next;
+    });
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -592,6 +642,10 @@ export default function App() {
         e.dataTransfer.effectAllowed = "move"; dragActive.current = true; setDragId(c.id); setMenu(null);
       }} onDragEnd={clearDrag}
       onContextMenu={e => contextMenu(e,c.id)} onKeyDown={e => keyboardMenu(e,c.id)}>
+      {bulkMode && <input type="checkbox" aria-label={`${t.bulkSelect}: ${c.name}`}
+        checked={bulkSelection.has(c.id)} disabled={blocked || (!bulkSelection.has(c.id) && bulkSelection.size>=MAX_BULK_CONNECTIONS)}
+        onClick={event=>event.stopPropagation()}
+        onChange={event=>toggleBulkSelection(c.id,event.target.checked)}/>}
       <button className="connection-open" title={`${c.name} — ${c.username ? c.username + "@" : ""}${c.host}:${c.port}`} onClick={() => { if (!dragActive.current) open(c.id); }}>
         <Icon name={c.protocol}/><span className="row-name">{c.name}</span><small>{c.protocol}</small>{c.favorite && <Icon name="star"/>}
       </button>
@@ -729,6 +783,30 @@ export default function App() {
                 </button>
               </div>
               <button type="button" onClick={quickConnect}><Icon name="plus"/> {t.quickConnect}</button>
+              <button type="button" aria-pressed={bulkMode} disabled={blocked}
+                onClick={()=>{setBulkMode(mode=>!mode);setBulkSelection(new Set());}}>
+                {t.bulkToggle}
+              </button>
+              {bulkMode && <fieldset className="catalog-bulk" aria-label={t.bulkToggle} disabled={blocked}>
+                <legend>{t.bulkSelected}: {bulkSelection.size}/{MAX_BULK_CONNECTIONS}</legend>
+                <label>{t.bulkDestination}
+                  <select aria-label={t.bulkDestination} value={bulkGroup}
+                    onChange={event=>setBulkGroup(event.target.value)}>
+                    <option value="">{t.root}</option>
+                    {data.groups.map(group=><option key={group.id} value={group.id}>{path(group.id)}</option>)}
+                  </select>
+                </label>
+                <div className="actions">
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"move",groupId:bulkGroup||null})}>{t.bulkMove}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"favorite",favorite:true})}>{t.bulkFavorite}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"favorite",favorite:false})}>{t.bulkUnfavorite}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>setBulkSelection(new Set())}>{t.bulkClear}</button>
+                </div>
+              </fieldset>}
               <div className="actions">
                 <button type="button" onClick={exportCatalog} disabled={blocked}>{t.exportCatalog}</button>
                 <button type="button" onClick={()=>{importMode.current="replace";importInput.current?.click();}} disabled={blocked}>{t.importCatalog}</button>

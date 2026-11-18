@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 CAT-04 bounded bulk catalog editing — exact-head CI pending
+
+- Added explicit bulk selection (maximum 50 connections) with group move
+  and favorite/unfavorite operations. Each operation requires confirmation,
+  performs a single atomic catalog update and preserves existing IDs,
+  host addresses, usernames, protocols, pinned RDP certificates, Vault links,
+  open tabs and other catalog entries. No network connections are initiated.
+- A strict pure helper rejects stale/duplicate selections, invalid
+  destination groups and unsupported actions. UI selection is transient,
+  reset when bulk mode is exited and cleared after successful persistence.
+- Node and Playwright fixtures cover allowed, denied and canceled paths;
+  native Windows/Arch acceptance remains **NOT TESTED**, exact-head CI
+  **PENDING**. See docs/CATALOG-BULK.md.
+- Previous HEAD `dc0ce9acc83c68abf765dc85642ccaad3032a856`
+  had 5/6 CI jobs passed; Ubuntu desktop was still running when this
+  checkpoint was created. Verify both runs.
+- Continue other P0/P1 per roadmap; no main changes, PR merge, release,
+  production server connections or visual redesign.
+
+
 ### 2026-11-18 P1 OpenSSH config bulk import — CI pending
 
 - Added explicitly triggered **Import SSH config** action to the catalog.

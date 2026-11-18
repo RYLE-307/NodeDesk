@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {RECOVERY_KEY, validateRecovery, loadRecovery, listRecoveries, recoverySlotsAvailable, saveRecovery,
   forgetRecovery} from "../src/queueRecovery.ts";
 
-const now=Date.UTC(2026,10,7,19,0,0);
+// Use a fresh anchor: forgetRecovery deliberately compares against Date.now().
+// A fixed historical timestamp makes these tests fail after the 7-day TTL.
+const now=Date.now();
 const endpoint={host:"example.internal",port:2222,username:"operator"};
 const fakeStorage=()=> {
   const map=new Map();

@@ -140,7 +140,7 @@ test("catalog merge preserves originals and rekeys nested incoming IDs and secre
   const incoming=fixture();
   incoming.connections[0].password="never-store-or-copy";
   incoming.groups.reverse();
-  const ids=["fresh-parent","fresh-child","fresh-connection"];
+  const ids=["fresh-child","fresh-parent","fresh-connection"];
   const merged=mergeCatalog(existing,incoming,()=>ids.shift());
   assert.equal(merged.groups.length,4);
   assert.equal(merged.connections.length,2);

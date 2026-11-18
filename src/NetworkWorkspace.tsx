@@ -213,8 +213,8 @@ export function NetworkWorkspace({language,connections=[]}:{language:"ru"|"en";c
     catch{setBatchError(ru?"Выбранные подключения устарели или некорректны":"Invalid or stale batch selection");return;}
     if(!isTauri()){setBatchError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     if(!window.confirm(ru ?
-      \`Проверить TCP-порты \${plan.length} выбранных подключений? Будут выполнены реальные DNS/TCP-запросы к этим адресам, по одному, только по вашему подтверждению.\` :
-      \`Check TCP ports for \${plan.length} selected connections? This makes real DNS/TCP requests to these targets, one at a time, only after your confirmation.\`))return;
+      `Проверить TCP-порты ${plan.length} выбранных подключений? Будут выполнены реальные DNS/TCP-запросы к этим адресам, по одному, только по вашему подтверждению.` :
+      `Check TCP ports for ${plan.length} selected connections? This makes real DNS/TCP requests to these targets, one at a time, only after your confirmation.`))return;
     const state={cancelled:false,id:null as string|null};
     batchCurrent.current=state;
     setBatchBusy(true);setBatchError("");setBatchResults([]);

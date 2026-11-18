@@ -32,8 +32,8 @@ test("MobaXterm parser fails closed on malformed, dangerous or unsupported expor
     "[Bookmarks]\\nOnlyTelnet=#98#1%legacy.example%23",
     "[Bookmarks]\\nBadPort=#109#0%host%0%user",
     "[Bookmarks]\\nBadHost=#109#0%ssh://evil%22%user",
-    "[Bookmarks]\\nBadName\\x01=#109#0%host%22%user",
-    "[Bookmarks]\\nSubRep=Bad\\x01\\nS=#109#0%host%22%user",
+    "[Bookmarks]\\nBadName\x01=#109#0%host%22%user",
+    "[Bookmarks]\\nSubRep=Bad\x01\\nS=#109#0%host%22%user",
   ]) assert.throws(()=>parseMobaSessions(raw.replaceAll("\\n","\n")));
   const valid=parseMobaSessions("[Bookmarks]\\nOK=#109#0%host.example%22%operator".replaceAll("\\n","\n"));
   assert.equal(valid.imported,1);

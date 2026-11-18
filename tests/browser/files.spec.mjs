@@ -1157,7 +1157,7 @@ test('optional SFTP readback applies only to confirmed one-file upload',async({p
   await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(1);
   const request=await page.evaluate(()=>window.fixture.calls.find(c=>c.cmd==='files_transfer').request);
   expect(request).toMatchObject({name:'sample.bin',upload:true,verify:true});
-  await expect(files.getByText('Transfer completed',{exact:true})).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_list'&&c.destination).length)).toBe(2);
   await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
   await local.getByRole('checkbox',{name:'Select for transfer: extra.bin'}).check();
   page.once('dialog',dialog=>dialog.accept());

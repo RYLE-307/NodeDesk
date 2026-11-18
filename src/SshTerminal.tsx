@@ -9,6 +9,7 @@ import { FileBrowser } from "./FileBrowser";
 import { TunnelWorkspace } from "./TunnelWorkspace";
 import { decideTerminalPaste } from "./terminalPaste";
 import {prepareTerminalSnippet} from "./terminalSnippet";
+import {collectTerminalScrollback} from "./terminalLog";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -145,6 +146,37 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       setSnippetSending(false);
     }
   }
+  function exportScrollback() {
+    try {
+      const term = terminal.current;
+      if (!term) return;
+      const log = collectTerminalScrollback(term.buffer.active);
+      if (!log.text) {
+        setStatus(ru ? "В терминале пока нет истории для экспорта" :
+          "No terminal scrollback to export");
+        return;
+      }
+      if (!window.confirm(ru
+        ? "Экспортировать видимую историю терминала в TXT? Она может содержать адреса, команды и секреты. Проверьте файл перед передачей. Логи не сохраняются автоматически."
+        : "Export rendered terminal scrollback as TXT? It may contain addresses, commands and secrets. Review the file before sharing. Logs are never saved automatically.")) return;
+      const suffix = log.truncated ? "\n[NodeDesk: older or oversized content omitted]\n" : "\n";
+      const url = URL.createObjectURL(new Blob([log.text, suffix], {type:"text/plain;charset=utf-8"}));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "nodedesk-terminal-" + new Date().toISOString().replace(/[:.]/g,"-") + ".txt";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+      setStatus(log.truncated ?
+        (ru ? "Запрошен ограниченный экспорт истории (не более 512 КиБ)" :
+          "Bounded scrollback export requested (up to 512 KiB)") :
+        (ru ? "Запрошен экспорт истории терминала" : "Terminal scrollback export requested"));
+    } catch {
+      setStatus(ru ? "Не удалось подготовить экспорт терминала" :
+        "Could not prepare terminal scrollback export");
+    }
+  }
   async function copySelection() {
     const selection=terminal.current?.getSelection()??"";
     if (!selection) {
@@ -239,6 +271,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findPrevious(query)} aria-label={ru?"Предыдущее совпадение":"Previous match"}>↑</button>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findNext(query)} aria-label={ru?"Следующее совпадение":"Next match"}>↓</button>
       <button type="button" onClick={()=>void copySelection()} aria-label={ru?"Копировать выделение":"Copy selected text"}>{ru?"Копировать":"Copy selection"}</button>
+      <button type="button" onClick={exportScrollback} aria-label={ru?"Экспорт истории терминала":"Export terminal scrollback"}>{ru?"Экспорт TXT":"Export TXT"}</button>
       <button type="button" onClick={()=>changeFont(-1)} aria-label={ru?"Уменьшить шрифт":"Decrease font size"}>−</button>
       <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
       <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>

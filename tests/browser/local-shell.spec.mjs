@@ -115,3 +115,19 @@ test("terminal snippet inserts exact text without Enter, consent or persistence 
   await pane.getByRole("button",{name:"Stop"}).click();
   await expect(button).toBeDisabled();
 });
+
+
+test("terminal log export never starts a session or creates a download for empty scrollback",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+    version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
+  })));
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Local terminal"}).click();
+  const pane=page.getByRole("region",{name:"Local terminal"});
+  let downloads=0;
+  page.on("download",()=>{downloads++;});
+  await pane.getByRole("button",{name:"Export terminal scrollback"}).click();
+  await expect(pane.getByRole("status")).toContainText("No terminal scrollback to export");
+  expect(downloads).toBe(0);
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).not.toContain("terminal-log");
+});

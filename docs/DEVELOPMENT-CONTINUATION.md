@@ -1,10 +1,31 @@
 # NodeDesk development continuation
 
-Updated: 2026-11-14. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
+Updated: 2026-11-18. Work only on `feat/post-v0.9-roadmap`; draft PR #13.
 The branch was fetched into the isolated `NodeDesk-rc` worktree because the
 existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
+
+### 2026-11-18 P1 explicit terminal scrollback TXT export — exact-head CI pending
+
+- Verified prior HEAD `d3e7ca10e40585fdcc8834472b1a3ce760db41a6`
+  [CI 44282098198](https://github.com/RYLE-307/NodeDesk/actions/runs/44282098198)
+  passed 6/6 on Windows, Ubuntu, Arch and browser.
+- Added a user-initiated **Export TXT** action in terminal toolbar.
+  It reads rendered xterm scrollback on demand (never input keystrokes),
+  requires explicit confirmation warning about sensitive output and
+  starts a local download. No background logging or automatic network upload.
+- Export is bounded to 4096 buffer lines / 512 KiB UTF-8. Soft-wrapped
+  lines are joined. Truncation is disclosed in the resulting file. The
+  filename is generic and does not include a remote host or username.
+  Missing scrollback produces no file.
+- New Node tests cover Unicode byte limits, wrap handling, bounds and
+  empty history; Playwright checks the no-download/no-autostart path.
+  Exact-head Windows/Ubuntu/Arch CI and native Windows/Arch GUI acceptance
+  remain pending. See docs/TERMINAL-LOGGING.md.
+- Next: inspect exact-head CI, repair failures, then progress further P0/P1
+  protocol functionality. Leave PR #13 Draft; no real servers, merge or release.
+
 
 ### 2026-11-18 P1 transient command snippets — CI pending
 

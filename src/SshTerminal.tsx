@@ -8,6 +8,7 @@ import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
 import { TunnelWorkspace } from "./TunnelWorkspace";
 import { decideTerminalPaste } from "./terminalPaste";
+import {prepareTerminalSnippet} from "./terminalSnippet";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -34,6 +35,9 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const [identity,setIdentity]=useState("");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
+  const [snippet,setSnippet]=useState("");
+  const [sessionLaunched,setSessionLaunched]=useState(false);
+  const [snippetSending,setSnippetSending]=useState(false);
   const ru = language === "ru";
   useEffect(() => {
     const term = new Terminal({ cursorBlink: true, scrollback: 2000, fontSize: 13, theme: { background: "#11151b", foreground: "#e2e8f0" } });
@@ -77,14 +81,14 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   async function stop() {
     const id = session.current; session.current = null;
     sessionCallback.current?.(null);
-    setBusy(false); setStatus(ru ? "Отключено" : "Disconnected");
+    setBusy(false); setSessionLaunched(false); setStatus(ru ? "Отключено" : "Disconnected");
     if (id) await invoke("ssh_disconnect", { id }).catch(e => setStatus(String(e)));
   }
   async function connect() {
     if (!isTauri()) { setStatus(ru ? "Терминал доступен в настольном приложении" : "Terminal requires the desktop app"); return; }
     const term = terminal.current!;
     const id = crypto.randomUUID(); session.current = id;
-    setBusy(true); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
+    setBusy(true); setSessionLaunched(false); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
     const jump = !local && (kind==="ssh"||kind==="sftp") && jumpEnabled
@@ -95,7 +99,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       if (session.current !== id) return;
       if (event.kind === "data") term.write(new Uint8Array(event.value));
       else {
-        session.current = null; sessionCallback.current?.(null); setBusy(false);
+        session.current = null; sessionCallback.current?.(null); setBusy(false); setSessionLaunched(false);
         setStatus(event.kind === "exit" ? `${ru ? "Сессия завершена, код" : "Session exited, code"} ${event.value}` : event.value);
         void invoke("ssh_disconnect", { id });
       }
@@ -103,8 +107,43 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     try {
       await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
-      else sessionCallback.current?.(id);
-    } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
+      else { setSessionLaunched(true); sessionCallback.current?.(id); }
+    } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setSessionLaunched(false); setStatus(String(e)); } }
+  }
+  async function insertSnippet() {
+    if (!(local || kind === "ssh") || !sessionLaunched || snippetSending) return;
+    let value: string;
+    try { value = prepareTerminalSnippet(snippet); }
+    catch {
+      setStatus(ru ? "Недопустимый сниппет: одна строка без управляющих символов, до 4 КиБ" :
+        "Invalid snippet: one line, no control characters, up to 4 KiB");
+      return;
+    }
+    const id = session.current;
+    if (!id) return;
+    if (!window.confirm(ru
+      ? "Вставить текст БЕЗ Enter? Убедитесь, что открыт командный prompt, а не запрос пароля."
+      : "Insert text WITHOUT Enter? Check that this is a shell prompt, not a password prompt.")) return;
+    if (session.current !== id) return;
+    setSnippetSending(true);
+    const task = pending.current.then(async () => {
+      if (session.current !== id) throw new Error("session changed");
+      await invoke("ssh_write", { id, data: value });
+    });
+    pending.current = task.catch(() => {});
+    try {
+      await task;
+      if (session.current === id) {
+        setSnippet("");
+        terminal.current?.focus();
+        setStatus(ru ? "Сниппет вставлен без Enter; проверьте строку" :
+          "Snippet inserted without Enter; review the line before executing");
+      }
+    } catch {
+      setStatus(ru ? "Ошибка вставки сниппета" : "Could not insert snippet into this session");
+    } finally {
+      setSnippetSending(false);
+    }
   }
   async function copySelection() {
     const selection=terminal.current?.getSelection()??"";
@@ -204,6 +243,18 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
       <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>
     </div>
+    {(local || kind === "ssh") && <div className="ssh-toolbar terminal-snippet">
+      <label>{ru ? "Временный командный сниппет" : "Temporary command snippet"}
+        <input type="text" aria-label={ru ? "Командный сниппет" : "Command snippet"}
+          value={snippet} maxLength={4096} autoComplete="off" spellCheck={false}
+          onChange={event=>setSnippet(event.target.value)}
+          onKeyDown={event=>{if(event.key==="Enter")event.preventDefault();}}/>
+      </label>
+      <button type="button" disabled={!sessionLaunched || snippetSending || !snippet.trim()}
+        onClick={()=>void insertSnippet()}>{ru ? "Вставить (без Enter)" : "Insert (no Enter)"}</button>
+      <small>{ru ? "Не сохраняется и не выполняется автоматически. Сверьте приглашение." :
+        "Not saved or auto-executed. Check the terminal prompt first."}</small>
+    </div>}
     <p className="ssh-help">{local ? (ru ? "Оболочка запускается только по нажатию. Команды выполняются на этом компьютере с вашими правами; закрытие вкладки завершает процесс. PowerShell запускается без профиля." : "The shell starts only when you click Start. Commands run on this computer with your permissions; closing the tab ends the process. PowerShell starts without a profile.") : kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
       ? (ru
         ? "Настоящий OpenSSH SFTP. После входа используйте pwd, ls, cd, get, put и help. Сначала проверьте SHA256 ключа сервера; пароли не сохраняются. Локальный каталог передачи задавайте командой lcd — по умолчанию он зависит от запуска NodeDesk. Для графического управления файлами откройте вкладку «Файлы»."

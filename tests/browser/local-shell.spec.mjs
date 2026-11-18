@@ -78,3 +78,40 @@ test("terminal copy requires selected terminal text and never reads clipboard im
   await expect(pane.getByRole("status")).toContainText("Select terminal output to copy");
   await expect(pane.getByRole("button",{name:"Copy selected text"})).toBeEnabled();
 });
+
+test("terminal snippet inserts exact text without Enter, consent or persistence bypass",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+      version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false
+    }));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];let next=0;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return ++next;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args});}
+    };
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Local terminal"}).click();
+  const pane=page.getByRole("region",{name:"Local terminal"});
+  const input=pane.getByRole("textbox",{name:"Command snippet"});
+  const button=pane.getByRole("button",{name:"Insert (no Enter)"});
+  await input.fill("printf 'hello'");
+  await expect(button).toBeDisabled();
+  await pane.getByRole("button",{name:"Start"}).click();
+  await expect(button).toBeEnabled();
+  page.once("dialog",d=>d.dismiss());
+  await button.click();
+  expect(await page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write"))).toHaveLength(0);
+  page.once("dialog",d=>{expect(d.message()).toContain("WITHOUT Enter");d.accept();});
+  await button.click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write").length)).toBe(1);
+  expect((await page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write")))[0].args.data).toBe("printf 'hello'");
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("printf 'hello'");
+  await expect(input).toHaveValue("");
+  await input.fill("pwd\nwhoami");
+  await button.click();
+  await expect(pane.getByRole("status")).toContainText("Invalid snippet");
+  expect(await page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write"))).toHaveLength(1);
+  await pane.getByRole("button",{name:"Stop"}).click();
+  await expect(button).toBeDisabled();
+});

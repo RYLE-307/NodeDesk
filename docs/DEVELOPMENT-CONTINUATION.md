@@ -6,6 +6,23 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 transient command snippets — CI pending
+
+- Starting HEAD `40821289022f14a8b7795e6cf28f3cef1711930b`
+  passed [CI 44262296992](https://github.com/RYLE-307/NodeDesk/actions/runs/44262296992)
+  6/6 on Windows, Ubuntu, Arch and browser.
+- SSH and local-shell terminals now offer a transient, explicit-confirm
+  one-line command snippet. It inserts text into the active PTY with **no
+  Enter**. Nothing auto-executes or persists. The dialog warns that a
+  launched SSH process does not guarantee the password/MFA prompt is over.
+- Validation rejects control/bidi, multiline and overlong input.
+  Session identity is checked before writing. Unit and browser fixture
+  coverage were added; full exact-head CI and native acceptance remain
+  pending. See docs/TERMINAL-SNIPPETS.md.
+- This is partial P1 snippet tooling, not macros or multi-execution.
+  Next: check CI, fix failures, continue other P0/P1. PR #13 stays draft.
+
+
 ### 2026-11-18 P1 conservative MobaXterm .mxtsessions import — pending exact-head CI
 
 - Parses local Windows-1252 MobaXterm bookmark exports, reading only the

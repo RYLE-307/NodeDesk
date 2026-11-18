@@ -591,6 +591,37 @@ fn private_new_readable(path:&Path)->Result<fs::File>{
 fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>) -> Result<()> {
     copy_upload_with_verify(c,source,remote,temp,op,events,false)
 }
+/// Reject source path replacement, size change and metadata-visible edits
+/// before publishing an upload. This is not an atomic file snapshot.
+fn check_upload_source_stable(source:&Path,open:&fs::File,initial:&fs::Metadata)->Result<()> {
+    let current=fs::symlink_metadata(source)
+        .map_err(|_|"Upload source disappeared during transfer")?;
+    let held=open.metadata().map_err(|_|"Cannot inspect open upload source")?;
+    if !current.is_file() || current.is_symlink() || !held.is_file() ||
+        current.len()!=initial.len() || held.len()!=initial.len() {
+        return Err("Local upload source changed during transfer".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if current.dev()!=initial.dev() || current.ino()!=initial.ino() ||
+            held.dev()!=initial.dev() || held.ino()!=initial.ino() {
+            return Err("Local upload source was replaced during transfer".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if current.file_attributes() & 0x400 != 0 || held.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point upload source refused".into());
+        }
+    }
+    let original_mtime=initial.modified()
+        .map_err(|_|"Upload source modification time unavailable")?;
+    if current.modified().map_err(|_|"Upload source metadata unavailable")?!=original_mtime ||
+        held.modified().map_err(|_|"Open source metadata unavailable")?!=original_mtime {
+        return Err("Local upload source was modified during transfer".into());
+    }
+    Ok(())
+}
 fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>,verify:bool) -> Result<()> {
     let before = fs::symlink_metadata(source).map_err(|_| "Local source unavailable")?;
     if !before.is_file() || before.is_symlink() { return Err("Only regular files can be uploaded".into()); }
@@ -603,6 +634,7 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
         use std::os::unix::fs::MetadataExt;
         if before.dev() != opened.dev() || before.ino() != opened.ino() { return Err("Local source changed before open".into()); }
     }
+    check_upload_source_stable(source,&f,&opened)?;
     let size = opened.len();
     // Refuse a stale client-side listing or pre-existing target before
     // writing any bytes to a remote temporary file. A compliant v3 server
@@ -615,13 +647,17 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
     loop {
         op.check()?;
         let n = f.read(&mut bytes).map_err(|_| "Local read failed")?; if n == 0 { break; }
-        c.write(&h,offset,&bytes[..n])?; offset += n as u64;
+        let next=offset.checked_add(n as u64).ok_or("Upload size overflow")?;
+        if next>size {return Err("Local source grew during upload".into());}
+        c.write(&h,offset,&bytes[..n])?; offset=next;
         events.send(Progress { bytes:offset,total:Some(size) }).map_err(|_| "Transfer view closed")?;
     }
-    if offset != size || f.metadata().map_err(|_| "Cannot inspect source")?.len() != size { return Err("Source changed during upload".into()); }
+    if offset!=size {return Err("Source changed during upload".into());}
     c.close(&h)?; op.check()?;
+    check_upload_source_stable(source,&f,&opened)?;
     if verify {verify_sftp_readback(c,temp,&mut f,size,op)?;}
     op.check()?;
+    check_upload_source_stable(source,&f,&opened)?;
     if !c.missing(remote)? {return Err("Remote destination appeared during upload; no overwrite".into());}
     // The standard v3 RENAME has no overwrite flag; deliberately avoid
     // OpenSSH's posix-rename extension. A noncompliant or racing server
@@ -646,6 +682,7 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
             return Err("Local source changed".into());
         }
     }
+    check_upload_source_stable(source,&f,&opened)?;
     let size=opened.len();op.check()?;
     if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
     let attrs=c.lstat(temp)?;
@@ -687,9 +724,7 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
             .map_err(|_|"Transfer view closed")?;
     }
     c.close(&h)?;op.check()?;
-    if f.metadata().map_err(|_|"Cannot inspect local source")?.len()!=size {
-        return Err("Local source changed during resume".into());
-    }
+    check_upload_source_stable(source,&f,&opened)?;
     let full=c.lstat(temp)?;
     if full.kind()!="file"||full.size!=Some(size){
         return Err("Remote file size changed; not published".into());
@@ -709,6 +744,7 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
         at+=chunk.len() as u64;
     }
     c.close(&reader)?;op.check()?;
+    check_upload_source_stable(source,&f,&opened)?;
     if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
     // SFTP v3 rename (not overwrite-capable posix-rename); hostile concurrent
     // writers cannot be excluded atomically by this protocol.
@@ -1167,6 +1203,31 @@ mod tests {
         assert_eq!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES-1,None,Some(b"x")).unwrap(),
             Some(MAX_UNSIZED_DOWNLOAD_BYTES));
         assert!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES,None,Some(b"x")).is_err());
+    }
+    #[test] fn upload_source_recheck_rejects_in_place_size_change() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("upload-source.bin");
+        fs::write(&path,b"1234").unwrap();
+        let handle=fs::File::open(&path).unwrap();
+        let initial=handle.metadata().unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_ok());
+        fs::write(&path,b"longer bytes").unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn upload_source_recheck_rejects_same_size_replacement_and_symlink() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("upload-source.bin");
+        fs::write(&path,b"same").unwrap();
+        let handle=fs::File::open(&path).unwrap();
+        let initial=handle.metadata().unwrap();
+        let saved=dir.path().join("original.bin");
+        fs::rename(&path,&saved).unwrap();
+        fs::write(&path,b"same").unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&saved,&path).unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
     }
     #[test] fn readback_detects_corrupt_or_truncated_bytes() {
         let dir=tempfile::tempdir().unwrap();

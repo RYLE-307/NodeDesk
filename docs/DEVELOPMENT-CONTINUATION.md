@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 SFTP upload source revalidation — exact-head CI pending
+
+- Parent `bbb612614c89bc5169284262d2b9f3874ae52738`
+  passed [CI 44384042236](https://github.com/RYLE-307/NodeDesk/actions/runs/44384042236)
+  6/6 (browser, Windows/Ubuntu desktop and Arch preview).
+- Fresh and resumed SFTP uploads now validate both the original open
+  local source and its pathname before publication: regular file,
+  original length/mtime, Unix dev/inode and Windows reparse attributes.
+  Fresh uploads stop a newly grown source chunk before sending it.
+- Added synthetic Rust tests for size modification, same-size file path
+  replacement and symlink injection. The optional full-byte remote
+  verification and all existing fixture tests remain unchanged.
+- This narrows source mutation races but cannot provide an atomic
+  local snapshot; timestamp-preserving edits or post-check modifications
+  remain possible. Exact-head CI pending, native Windows/Arch GUI
+  acceptance NOT TESTED. No production servers or credentials touched.
+- Work only on draft PR #13 / feat/post-v0.9-roadmap; no main merge,
+  redesign or release.
+
+
 ### 2026-11-18 P0 SFTP remote destination collision preflight — CI pending
 
 - Added read-only `missing(final_path)` checks before writing the

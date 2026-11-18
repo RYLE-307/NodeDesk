@@ -6,6 +6,30 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 safe catalog merge implementation — pending exact-head CI
+
+- Starting feature-branch HEAD `c1b20c782162a2146d4be6c8cdfc7ac3490aa54e`
+  passed [CI 43580616023](https://github.com/RYLE-307/NodeDesk/actions/runs/43580616023) 6/6.
+- Added an explicit non-destructive **Merge catalog** operation alongside
+  the existing replacement import. It appends validated NodeDesk JSON
+  groups/connections and leaves current connections, settings, tabs and recent
+  items unchanged. Nested group references are remapped independently.
+- Every imported group/connection receives a new unique ID, including on
+  an imported ID that previously existed in this catalog. This prevents
+  accidental association with saved OS-Vault credentials after an import.
+  All imported unknown fields (including secrets) are stripped by the
+  existing catalog decoder. No import ever starts a network connection.
+- Explicit confirmation explains that a repeated merge creates duplicates.
+  Invalid input, ID collisions or capacity overflow fail atomically.
+  Node unit and Playwright scenarios were added; **exact-head CI and native
+  Windows/Arch GUI acceptance remain pending**.
+- This is one partial CAT-02 backup/restore usability increment, not a
+  MobaXterm-format importer or proof of complete migration support.
+- Next: inspect exact-head CI, repair failures if any; continue remaining
+  P0 (VPN lifecycle, SSH/SFTP, RDP/VNC secret audit) and P1 per roadmap.
+  Maintain PR #13 Draft; no main merge or release.
+
+
 ### 2026-11-14 Linux VPN kernel route verification awaiting CI
 
 - Code starting HEAD `9e76439` on `feat/post-v0.9-roadmap`, PR #13 Draft.

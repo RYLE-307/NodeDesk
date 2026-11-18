@@ -6,6 +6,7 @@ import {
   emptyCatalog,
   KEY,
   load,
+  mergeCatalog,
   removeGroup,
   save,
 } from "../src/catalog.ts";
@@ -132,4 +133,42 @@ test("VNC profiles retain v1 compatibility without persisting credentials",()=>{
   assert.ok(!JSON.stringify(decoded).includes("never-store-this"));
   decoded.connections[0].protocol="NOT_A_PROTOCOL";
   assert.throws(()=>decode(JSON.stringify(decoded)));
+});
+
+test("catalog merge preserves originals and rekeys nested incoming IDs and secrets", () => {
+  const existing=fixture();
+  const incoming=fixture();
+  incoming.connections[0].password="never-store-or-copy";
+  incoming.groups.reverse();
+  const ids=["fresh-parent","fresh-child","fresh-connection"];
+  const merged=mergeCatalog(existing,incoming,()=>ids.shift());
+  assert.equal(merged.groups.length,4);
+  assert.equal(merged.connections.length,2);
+  assert.deepEqual(merged.groups.slice(0,2),existing.groups);
+  assert.deepEqual(merged.connections[0],existing.connections[0]);
+  assert.deepEqual(merged.groups.slice(2),[
+    {id:"fresh-child",name:"Child",parentId:"fresh-parent"},
+    {id:"fresh-parent",name:"Parent",parentId:null},
+  ]);
+  assert.equal(merged.connections[1].id,"fresh-connection");
+  assert.equal(merged.connections[1].groupId,"fresh-child");
+  assert.equal(merged.language,existing.language);
+  assert.equal(merged.theme,existing.theme);
+  assert.ok(!JSON.stringify(merged).includes("never-store-or-copy"));
+  assert.equal(incoming.connections[0].id,"c");
+  assert.equal(existing.connections.length,1);
+});
+
+test("catalog merge rejects ID collisions and capacity overflow without mutating source", () => {
+  const current=fixture();
+  const incoming=fixture();
+  const before=JSON.stringify(current);
+  assert.throws(()=>mergeCatalog(current,incoming,()=>"c"));
+  assert.throws(()=>mergeCatalog(current,incoming,()=>"same-id"));
+  assert.equal(JSON.stringify(current),before);
+  const full={...emptyCatalog(),connections:Array.from({length:10000},(_,i)=>({
+    ...fixture().connections[0],id:`existing-${i}`
+  }))};
+  assert.throws(()=>mergeCatalog(full,incoming));
+  assert.equal(full.connections.length,10000);
 });

@@ -27,3 +27,37 @@ test("catalog export/import excludes secrets and rejects invalid replacement",as
   expect(imported.connections.map(c=>c.name)).toEqual(["Second"]);
   expect(JSON.stringify(imported)).not.toContain("never-export");
 });
+
+test("merge catalog keeps current sessions, rekeys imported IDs and never imports secrets",async({page})=>{
+  const original=connection("same-id","Existing");
+  await page.addInitScript(value=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value)),
+    catalog([original]));
+  await page.goto("/");
+  const incoming=catalog([connection("same-id","Imported")]);
+  incoming.groups=[{id:"group-1",name:"Imported group",parentId:null}];
+  incoming.connections[0].groupId="group-1";
+  incoming.connections[0].password="not-a-stored-password";
+  const chooser=page.waitForEvent("filechooser");
+  await page.getByRole("button",{name:"Merge catalog"}).click();
+  page.once("dialog",dialog=>dialog.accept());
+  await (await chooser).setFiles({name:"backup.json",mimeType:"application/json",
+    buffer:Buffer.from(JSON.stringify(incoming))});
+  await expect(page.getByRole("status").last()).toContainText("Catalog merged");
+  const merged=JSON.parse(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1")));
+  expect(merged.connections).toHaveLength(2);
+  expect(merged.connections[0].id).toBe("same-id");
+  expect(merged.connections[0].name).toBe("Existing");
+  expect(merged.connections[1].name).toBe("Imported");
+  expect(merged.connections[1].id).not.toBe("same-id");
+  expect(merged.connections[1].groupId).toBe(merged.groups[0].id);
+  expect(merged.groups[0].id).not.toBe("group-1");
+  expect(JSON.stringify(merged)).not.toContain("not-a-stored-password");
+
+  const before=JSON.stringify(merged);
+  const chooser2=page.waitForEvent("filechooser");
+  await page.getByRole("button",{name:"Merge catalog"}).click();
+  page.once("dialog",dialog=>dialog.dismiss());
+  await (await chooser2).setFiles({name:"backup.json",mimeType:"application/json",
+    buffer:Buffer.from(JSON.stringify(incoming))});
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
+});

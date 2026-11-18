@@ -19,6 +19,7 @@ import {
   load,
   removeGroup,
   moveConnection,
+  mergeCatalog,
   save,
 } from "./catalog";
 
@@ -30,6 +31,9 @@ const labels = {
     quickConnect: "Быстрое подключение",
     exportCatalog: "Экспорт каталога",
     importCatalog: "Импорт каталога",
+    mergeCatalog: "Добавить из каталога",
+    mergeConfirm: "Добавить группы и подключения из файла, не удаляя текущие? Все импортированные ID будут заменены новыми, чтобы не связывать записи с сохранёнными секретами. Повторный импорт создаст дубликаты. Настройки и открытые сессии сохранятся.",
+    mergeDone: "Подключения добавлены в каталог",
     importFailed: "Файл каталога не прошёл проверку; данные не изменены.",
     importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты. Системные секреты не импортируются, но записи с тем же ID и адресом могут использовать уже сохранённый секрет после разблокировки хранилища.",
     importDone: "Каталог импортирован",
@@ -96,6 +100,9 @@ const labels = {
     quickConnect: "Quick Connect",
     exportCatalog: "Export catalog",
     importCatalog: "Import catalog",
+    mergeCatalog: "Merge catalog",
+    mergeConfirm: "Append groups and connections without replacing current entries? All imported IDs will be regenerated to avoid linking existing OS-vault credentials. Importing twice creates duplicates. Settings and open tabs are preserved.",
+    mergeDone: "Catalog merged",
     importFailed: "Catalog file failed validation; nothing changed.",
     importConfirm: "Replace the current catalog with this file? Open sessions will close. OS credentials are not imported, but entries with the same ID and endpoint may access an existing saved credential after vault unlock.",
     importDone: "Catalog imported",
@@ -222,6 +229,7 @@ export default function App() {
   const [sshConfigError,setSshConfigError]=useState("");
   const [sshConfigBusy,setSshConfigBusy]=useState(false);
   const importInput=useRef<HTMLInputElement>(null);
+  const importMode=useRef<"replace"|"merge">("replace");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
   function showMenu(id: string, x: number, y: number) {
@@ -284,12 +292,16 @@ export default function App() {
     try {
       if(file.size>2_000_000)throw new Error("Catalog too large");
       const imported=decode(await file.text());
-      if(!window.confirm(t.importConfirm))return;
-      if(commit(imported)) {
-        setTabs([]);setActive("");setSecondary("");setQuickConnections({});
-        setLayout(1);setExtraPanes(["",""]);
-        setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
-        setNotice(t.importDone);
+      const merge=importMode.current==="merge";
+      if(!window.confirm(merge?t.mergeConfirm:t.importConfirm))return;
+      const next=merge?mergeCatalog(data,imported):imported;
+      if(commit(next)) {
+        if(!merge) {
+          setTabs([]);setActive("");setSecondary("");setQuickConnections({});
+          setLayout(1);setExtraPanes(["",""]);
+          setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
+        }
+        setNotice(merge?t.mergeDone:t.importDone);
       }
     } catch {setNotice(t.importFailed);}
   }
@@ -671,7 +683,8 @@ export default function App() {
               <button type="button" onClick={quickConnect}><Icon name="plus"/> {t.quickConnect}</button>
               <div className="actions">
                 <button type="button" onClick={exportCatalog} disabled={blocked}>{t.exportCatalog}</button>
-                <button type="button" onClick={()=>importInput.current?.click()} disabled={blocked}>{t.importCatalog}</button>
+                <button type="button" onClick={()=>{importMode.current="replace";importInput.current?.click();}} disabled={blocked}>{t.importCatalog}</button>
+                <button type="button" onClick={()=>{importMode.current="merge";importInput.current?.click();}} disabled={blocked}>{t.mergeCatalog}</button>
               </div>
               <input ref={importInput} type="file" accept=".json,application/json" hidden
                 onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importCatalog(file);}}/>

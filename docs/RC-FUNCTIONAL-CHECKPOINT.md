@@ -211,3 +211,14 @@ keys** rather than sharing one key. The two-hop integration test pins each
 literal host-and-port identity independently. Its negative case deliberately
 omits only the second jump's key while trusting the first jump and target.
 All trust files and keys remain inside the disposable fixture.
+
+## P1 safe non-destructive NodeDesk catalog import (2026-11-18)
+
+Users can append verified NodeDesk JSON groups and connections without replacing
+their existing catalog or settings. Imported IDs are always regenerated to avoid
+credential-vault identity reuse; nested parent/group references are remapped.
+Import cannot auto-connect and ignores unknown secret fields. Repeated merges
+append duplicates intentionally, as disclosed in the confirmation dialog.
+Invalid or over-capacity imports make no changes. Node and browser tests are
+provided; exact-head CI and native Windows/Arch UI acceptance are still required.
+MobaXterm formats and general migration remain open.

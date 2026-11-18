@@ -12,6 +12,7 @@ import logo from "./assets/nodedesk-logo.svg";
 import {parseMobaSessions} from "./mobaImport";
 import {sshConfigPreviewToCatalog} from "./sshConfigImport";
 import {bulkUpdateConnections,MAX_BULK_CONNECTIONS} from "./catalogBulk";
+import {exportSelectedCatalog} from "./catalogSelectionExport";
 import type {BulkConnectionAction} from "./catalogBulk";
 import {
   Catalog,
@@ -46,6 +47,10 @@ const labels = {
     bulkFavorite: "Добавить в избранное",
     bulkUnfavorite: "Убрать из избранного",
     bulkClear: "Снять выделение",
+    bulkExport: "Экспорт выбранных",
+    bulkExportConfirm: "Сохранить выбранные подключения в JSON? Адреса, имена пользователей и названия групп могут быть конфиденциальными. Пароли, ключи и закреплённые сертификаты НЕ экспортируются. При новом импорте потребуется заново подтвердить доверие к серверу.",
+    bulkExportDone: "Выбранные подключения экспортированы",
+    bulkExportFailed: "Не удалось экспортировать выбранные подключения",
     bulkConfirm: "Применить изменение к выбранным подключениям? Текущие вкладки, адреса и учётные записи не изменятся. Сетевые подключения не запускаются.",
     bulkDone: "Массовое изменение сохранено",
     bulkUnchanged: "Выбранные подключения уже имеют эти настройки",
@@ -137,6 +142,10 @@ const labels = {
     bulkFavorite: "Favorite selected",
     bulkUnfavorite: "Unfavorite selected",
     bulkClear: "Clear selection",
+    bulkExport: "Export selected",
+    bulkExportConfirm: "Save selected connections as JSON? Host addresses, usernames and group names can be sensitive. Passwords, keys and pinned certificates are NOT exported. Imported connections require new trust verification.",
+    bulkExportDone: "Selected connections exported",
+    bulkExportFailed: "Could not export selected connections",
     bulkConfirm: "Apply this change to the selected connections? Current tabs, addresses and credentials stay unchanged. No network connection starts.",
     bulkDone: "Bulk update saved",
     bulkUnchanged: "Selected connections already have these settings",
@@ -384,6 +393,20 @@ export default function App() {
       if(commit(mergeCatalog(data,incoming)))setNotice(t.importSshDone);
     }catch{setNotice(t.importSshFailed);}
     finally{setSshBulkImportBusy(false);}
+  }
+  function exportBulkSelected(){
+    if(blocked || !bulkMode || !bulkSelection.size)return;
+    if(!window.confirm(`${t.bulkExportConfirm} (${bulkSelection.size})`))return;
+    try{
+      const selected=exportSelectedCatalog(data,[...bulkSelection]);
+      const content=JSON.stringify(selected,null,2);
+      const url=URL.createObjectURL(new Blob([content],{type:"application/json"}));
+      const link=document.createElement("a");
+      link.href=url;link.download="nodedesk-selected-catalog.json";
+      document.body.append(link);link.click();link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+      setNotice(t.bulkExportDone);
+    }catch{setNotice(t.bulkExportFailed);}
   }
   function performBulkUpdate(action:BulkConnectionAction){
     if(blocked || !bulkMode || !bulkSelection.size)return;
@@ -803,6 +826,8 @@ export default function App() {
                     onClick={()=>performBulkUpdate({kind:"favorite",favorite:true})}>{t.bulkFavorite}</button>
                   <button type="button" disabled={!bulkSelection.size}
                     onClick={()=>performBulkUpdate({kind:"favorite",favorite:false})}>{t.bulkUnfavorite}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={exportBulkSelected}>{t.bulkExport}</button>
                   <button type="button" disabled={!bulkSelection.size}
                     onClick={()=>setBulkSelection(new Set())}>{t.bulkClear}</button>
                 </div>

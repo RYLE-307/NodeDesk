@@ -1,4 +1,5 @@
 import {test,expect} from "@playwright/test";
+import {readFile} from "node:fs/promises";
 
 const data=()=>({
   version:1,groups:[{id:"ops",name:"Operations",parentId:null}],
@@ -56,4 +57,44 @@ test("bulk mode does not connect, clears selection on exit and keeps canceled ch
   await expect(page.getByRole("button",{name:"Move selected"})).toBeDisabled();
   expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
   expect(await page.evaluate(()=>window.calls.filter(c=>c.startsWith("ssh_")||c.startsWith("rdp_")||c.startsWith("vnc_")))).toEqual([]);
+});
+
+
+test("export selected downloads only chosen endpoints without credentials or pins",async({page})=>{
+  const initial=data();
+  initial.connections[1].rdpSha256Fingerprint="a".repeat(64);
+  initial.connections[0].password="never-export";
+  await page.addInitScript(value=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value)),initial);
+  await page.goto("/");
+  await page.getByRole("button",{name:"Bulk edit"}).click();
+  const button=page.getByRole("button",{name:"Export selected"});
+  await expect(button).toBeDisabled();
+  await page.getByRole("checkbox",{name:"Select connection: SSH lab"}).check();
+  await page.getByRole("checkbox",{name:"Select connection: RDP lab"}).check();
+  const before=await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"));
+  let downloads=0;
+  page.on("download",()=>{downloads++;});
+  page.once("dialog",dialog=>{expect(dialog.message()).toContain("(2)");dialog.dismiss();});
+  await button.click();
+  expect(downloads).toBe(0);
+  page.once("dialog",dialog=>{
+    expect(dialog.message()).toContain("pinned certificates are NOT exported");
+    dialog.accept();
+  });
+  const downloadPromise=page.waitForEvent("download");
+  await button.click();
+  const download=await downloadPromise;
+  expect(download.suggestedFilename()).toBe("nodedesk-selected-catalog.json");
+  const exported=JSON.parse(await readFile(await download.path(),"utf8"));
+  expect(exported.connections.map(c=>c.name)).toEqual(["SSH lab","RDP lab"]);
+  expect(exported.connections.map(c=>c.protocol)).toEqual(["SSH","RDP"]);
+  expect(exported.connections[0].id).not.toBe("ssh");
+  expect(exported.connections[1].id).not.toBe("rdp");
+  expect(exported.connections[1].rdpSha256Fingerprint).toBeUndefined();
+  expect(JSON.stringify(exported)).not.toContain("never-export");
+  expect(JSON.stringify(exported)).not.toContain("a".repeat(64));
+  expect(exported.connections.some(c=>c.name==="VNC lab")).toBe(false);
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
+  await expect(page.getByRole("checkbox",{name:"Select connection: SSH lab"})).toBeChecked();
+  await expect(page.getByRole("status").last()).toContainText("Selected connections exported");
 });

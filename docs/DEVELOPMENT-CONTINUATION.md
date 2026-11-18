@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 CAT-05 selected catalog export — exact-head CI pending
+
+- Starting HEAD `ae0e40a7aa2fa39d589aa78410972a628c97fc32` has
+  [CI 44303121609](https://github.com/RYLE-307/NodeDesk/actions/runs/44303121609);
+  confirm its final conclusion before closing the VPN DNS gate.
+- **Bulk edit → Export selected** serializes only selected endpoints
+  (up to 50) and the necessary parent groups to a local NodeDesk JSON
+  download after separate confirmation warning about sensitive addresses.
+  No password, private key, token, RDP certificate pin or other unrecognized
+  fields are included. Every exported group/connection ID is regenerated
+  to prevent accidental association with OS-Vault secrets even with a
+  replacement import; the existing Merge flow works unchanged.
+- Pure Node tests cover hierarchy, exact field allowlisting, fresh IDs,
+  rejected/stale/duplicate inputs and source immutability; Playwright covers
+  cancelled and accepted downloads, retained selection and absence of
+  unrelated sessions. No real services or secrets were used.
+- Exact-head CI and native Windows/Arch GUI acceptance remain **PENDING**;
+  no main merge, PR release or redesign. See docs/CATALOG-BULK.md.
+
+
 ### 2026-11-18 P0 Linux VPN resolver evidence — exact-head CI pending
 
 - Starting HEAD `577b6334aa892cf5c67c8723b81e1fc5f0af1818`

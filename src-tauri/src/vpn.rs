@@ -411,15 +411,22 @@ fn health_impl(profile:&VpnProfile)->VpnHealth {
         "show","--active","uuid",&profile.id],deadline).ok();
     let device=nmcli_until(&["-g","GENERAL.DEVICES", "connection",
         "show","--active","uuid",&profile.id],deadline).ok();
-    health.route_configured=match (configured,device) {
+    health.route_configured=match (configured.as_deref(),device.as_deref()) {
         (Some(routes),Some(device)) if !routes.trim().is_empty() =>
             route_on_device_with_tool(std::path::Path::new("/usr/bin/ip"),device.trim(),deadline),
         (Some(routes),_) if routes.trim().is_empty() => Some(false),
         _=>None,
     };
-    health.dns_configured=nmcli_until(&["-g","IP4.DNS,IP6.DNS", "connection",
-        "show","--active","uuid",&profile.id],deadline).ok()
-        .map(|v|!v.trim().is_empty());
+    let nm_dns=nmcli_until(&["-g","IP4.DNS,IP6.DNS", "connection",
+        "show","--active","uuid",&profile.id],deadline).ok();
+    // NetworkManager alone does not prove the system resolver has this
+    // profile's DNS. Confirm a matching systemd-resolved link when available.
+    health.dns_configured=match (nm_dns.as_deref(),device.as_deref()) {
+        (Some(dns),_) if dns.trim().is_empty() => Some(false),
+        (Some(_),Some(device)) =>
+            dns_on_device_with_tool(std::path::Path::new("/usr/bin/resolvectl"),device.trim(),deadline),
+        _=>None,
+    };
     health
 }
 
@@ -445,6 +452,35 @@ fn route_on_device_with_tool(tool:&std::path::Path,device:&str,deadline:Instant)
         });
     }
     Some(observed)
+}
+
+#[cfg(target_os="linux")]
+fn parse_resolvectl_link_dns(raw:&str,device:&str)->Option<bool> {
+    // Global DNS or DNS configured for a different interface is not
+    // evidence for the selected VPN's NetworkManager UUID.
+    if !safe_vpn_device(device) || raw.len()>16*1024 {return None;}
+    let mut lines=raw.lines().map(str::trim).filter(|s|!s.is_empty());
+    let head=lines.next()?.strip_prefix("Link ")?;
+    let (index,link)=head.split_once(' ')?;
+    if index.is_empty() || !index.bytes().all(|b|b.is_ascii_digit()) {return None;}
+    let marker=format!("({device}):");
+    let servers=link.strip_prefix(&marker)?;
+    let mut found=false;
+    for token in std::iter::once(servers).chain(lines).flat_map(str::split_whitespace) {
+        if token.parse::<std::net::IpAddr>().is_err() {return None;}
+        found=true;
+    }
+    Some(found)
+}
+#[cfg(target_os="linux")]
+fn dns_on_device_with_tool(
+    tool:&std::path::Path,device:&str,deadline:Instant
+)->Option<bool> {
+    if !safe_vpn_device(device) {return None;}
+    let mut command=Command::new(tool);
+    command.args(["--no-pager","dns",device]);
+    let raw=output_with_timeout(&mut command,remaining(deadline).ok()?).ok()?;
+    parse_resolvectl_link_dns(&raw,device)
 }
 
 #[cfg(windows)]
@@ -742,6 +778,44 @@ mod tests {
         assert_eq!(route_on_device_with_tool(&tool,"wg0\nother",deadline()),None);
         assert_eq!(route_on_device_with_tool(std::path::Path::new("/missing/ip"),"wg0",deadline()),None);
     }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn resolvectl_dns_evidence_is_link_bound_and_fails_closed() {
+        let good="Link 17 (wg-test): 192.0.2.53 2001:db8::53\n";
+        assert_eq!(parse_resolvectl_link_dns(good,"wg-test"),Some(true));
+        assert_eq!(parse_resolvectl_link_dns("Link 17 (wg-test):\n","wg-test"),Some(false));
+        assert_eq!(parse_resolvectl_link_dns("Link 17 (wg-test): 192.0.2.53\n 2001:db8::53\n","wg-test"),Some(true));
+        assert_eq!(parse_resolvectl_link_dns("Link 17 (eth0): 192.0.2.53\n","wg-test"),None);
+        assert_eq!(parse_resolvectl_link_dns("Global: 192.0.2.53\n","wg-test"),None);
+        assert_eq!(parse_resolvectl_link_dns("Link 17 (wg-test): 192.0.2.53\nLink 18 (eth0): 198.51.100.53\n","wg-test"),None);
+        assert_eq!(parse_resolvectl_link_dns("Link 17 (wg-test): invalid\n","wg-test"),None);
+        assert_eq!(parse_resolvectl_link_dns("Link x (wg-test): 192.0.2.53\n","wg-test"),None);
+        assert_eq!(parse_resolvectl_link_dns(good,"--help"),None);
+        assert_eq!(parse_resolvectl_link_dns(good,"wg-test\nother"),None);
+        assert_eq!(parse_resolvectl_link_dns("","wg-test"),None);
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn disposable_resolvectl_uses_fixed_read_only_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let tool=dir.path().join("resolvectl-fixture");
+        let script=r#"#!/bin/sh
+if [ "$1" != "--no-pager" ] || [ "$2" != "dns" ] || [ "$3" != "wg-test" ]; then exit 12; fi
+printf 'Link 17 (wg-test): 192.0.2.53\n'
+"#;
+        std::fs::write(&tool,script).unwrap();
+        let mut permissions=std::fs::metadata(&tool).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&tool,permissions).unwrap();
+        let deadline=||Instant::now()+Duration::from_secs(3);
+        assert_eq!(dns_on_device_with_tool(&tool,"wg-test",deadline()),Some(true));
+        assert_eq!(dns_on_device_with_tool(&tool,"eth0",deadline()),None);
+        assert_eq!(dns_on_device_with_tool(&tool,"--help",deadline()),None);
+        assert_eq!(dns_on_device_with_tool(&tool,"wg-test\nother",deadline()),None);
+        assert_eq!(dns_on_device_with_tool(std::path::Path::new("/missing/resolvectl"),"wg-test",deadline()),None);
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_health_query_uses_only_mocked_network_objects() {

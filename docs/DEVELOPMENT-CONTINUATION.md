@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 Linux VPN resolver evidence — exact-head CI pending
+
+- Starting HEAD `577b6334aa892cf5c67c8723b81e1fc5f0af1818`
+  passed [CI 44297897391](https://github.com/RYLE-307/NodeDesk/actions/runs/44297897391)
+  6/6 across Windows, Ubuntu, Arch and browser.
+- Linux VPN health no longer treats NetworkManager's DNS values as
+  sufficient evidence. It now requires a matching systemd-resolved
+  `Link N (device)` response with parsed DNS IP addresses for the device
+  tied to the exact active VPN UUID. Missing/malformed resolver evidence
+  reports unknown rather than asserting DNS works; no NetworkManager DNS
+  is absent. Static scripts never execute shell-supplied data.
+- New Rust parser and fake-resolvectl executable tests cover matching link,
+  wrong link, absent/invalid values, missing executable, unsafe device
+  and fixed argument shape. All use disposable local data; no real VPN,
+  DNS service or network target accessed.
+- This is per-link resolver **presence evidence**, not proof of DNS queries
+  traversing the VPN, routing domains or privacy/leak properties.
+  Native Windows/Arch QA remains **NOT TESTED**, exact-head CI pending.
+- PR #13 stays Draft; no main changes, merge, release or redesign.
+
+
 ### 2026-11-18 P0 native Vault-to-RDP/VNC credential handoff — CI pending
 
 - Parent HEAD `75ec48c21926a1f5f788adcbf42dbd88166aa4a1`;

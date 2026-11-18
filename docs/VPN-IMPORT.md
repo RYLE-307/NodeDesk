@@ -53,6 +53,14 @@ reported by NetworkManager for its exact UUID and an installed unicast route
 on NetworkManager's exact device in the OS routing table. The device name is
 validated before passing it as an argument to `ip`; no shell or address data
 reaches WebView. Missing `iproute2`, ambiguous devices, malformed output or a
-timeout yield an unknown result. DNS remains a NetworkManager presence check.
-This detects some profile-versus-kernel mismatches; it cannot establish the
-actual path of traffic or DNS queries, which remains native QA.
+timeout yield an unknown result. DNS now requires an active NetworkManager
+profile to report IP4.DNS/IP6.DNS **and** systemd-resolved to report a DNS
+server on that profile's exact device through read-only
+`/usr/bin/resolvectl --no-pager dns DEVICE`.
+The parser accepts only IP addresses under a matching `Link N (device)`
+header. Missing resolver, unsupported DNS architectures, ambiguous output,
+mismatched device or timeout yield **unknown**, not confirmed DNS. If the
+active NetworkManager profile reports no DNS, its DNS indicator is absent.
+No DNS addresses enter WebView and no DNS configuration is modified.
+These checks do not prove real query routing, split DNS, leak resistance,
+or VPN encryption, which remain native QA.

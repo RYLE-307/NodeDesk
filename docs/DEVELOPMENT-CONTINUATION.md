@@ -6,6 +6,24 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 resumed SFTP upload terminal EOF/metadata — CI pending
+
+- Parent `7a06c737b2ff893b247204d739be0f504cc6170e`
+  adds local source revalidation. Its CI was in progress when this
+  checkpoint was written.
+- Explicit upload-resume now requires EOF immediately after the
+  full-file byte comparison, rechecks remote partial size/type/mtime
+  and permissions against post-write metadata, and revalidates the
+  original local source before standard no-overwrite SFTP v3 rename.
+- Rust unit cases cover changed size, type, mtime and permissions;
+  existing isolated OpenSSH and native Windows-adapter resume fixture
+  tests must pass on exact HEAD. No real network destinations accessed.
+- This reduces incomplete/changed remote upload publication but
+  cannot guarantee atomicity against a concurrent server writer.
+  Exact-head CI pending and Windows/Arch native manual QA NOT TESTED.
+- Keep Draft PR #13, no main changes, merge, release or redesign.
+
+
 ### 2026-11-18 P0 SFTP upload source revalidation — exact-head CI pending
 
 - Parent `bbb612614c89bc5169284262d2b9f3874ae52738`

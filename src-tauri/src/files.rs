@@ -667,6 +667,20 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
 /// Explicit resume: verify every byte of a remote partial against the opened
 /// local source before writing, then recheck the entire file before publication.
 /// Only previous NodeDesk operation IDs are accepted by the caller UI.
+/// Check a remote partial against its *post-write* baseline once the
+/// verified readback is complete. The remote server is trusted to report
+/// metadata consistently; this is not an atomic filesystem snapshot.
+fn check_uploaded_partial_stable(
+    before:&wire::Attrs,after:&wire::Attrs,size:u64
+)->Result<()> {
+    if before.kind()!="file" || before.size!=Some(size) ||
+        after.kind()!="file" || after.size!=Some(size) ||
+        after.modified!=before.modified ||
+        after.permissions!=before.permissions {
+        return Err("Remote partial changed during upload verification".into());
+    }
+    Ok(())
+}
 fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
     op:&Operation,events:&Channel<Progress>)->Result<()> {
     let before=fs::symlink_metadata(source).map_err(|_|"Local source unavailable")?;
@@ -743,7 +757,15 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
         if chunk!=expected{return Err("Remote data mismatch; no publication".into());}
         at+=chunk.len() as u64;
     }
+    // A matching prefix is insufficient: the server must return EOF at
+    // the expected length, and the post-write file must still be stable.
+    op.check()?;
+    if c.read(&reader,size)?.is_some() {
+        return Err("Remote upload partial has trailing data".into());
+    }
     c.close(&reader)?;op.check()?;
+    let after=c.lstat(temp)?;
+    check_uploaded_partial_stable(&full,&after,size)?;
     check_upload_source_stable(source,&f,&opened)?;
     if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
     // SFTP v3 rename (not overwrite-capable posix-rename); hostile concurrent
@@ -1203,6 +1225,25 @@ mod tests {
         assert_eq!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES-1,None,Some(b"x")).unwrap(),
             Some(MAX_UNSIZED_DOWNLOAD_BYTES));
         assert!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES,None,Some(b"x")).is_err());
+    }
+    #[test] fn upload_resume_partial_changes_block_publication() {
+        let baseline=wire::Attrs{
+            size:Some(4),permissions:Some(0o100600),modified:Some(100),
+        };
+        assert!(check_uploaded_partial_stable(&baseline,&baseline,4).is_ok());
+        assert!(check_uploaded_partial_stable(&baseline,&baseline,3).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            size:Some(5),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            permissions:Some(0o120777),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            modified:Some(101),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            permissions:Some(0o100644),..baseline.clone()
+        },4).is_err());
     }
     #[test] fn upload_source_recheck_rejects_in_place_size_change() {
         let dir=tempfile::tempdir().unwrap();

@@ -1481,6 +1481,23 @@ mod tests {
         assert!(copy_upload_with_verify(&mut c,&source,&collision_dest,&collision_part,&op,&events,true).is_err());
         assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
         assert!(!Path::new(&collision_part).exists());
+        // A second collision can appear *while* an upload is in flight.
+        // Inject one only into the disposable fixture after the first
+        // progress event, then require the publication-time recheck to
+        // leave the concurrently created final file untouched.
+        let late_dest=wire::join(remote_path,"late-upload-collision.bin").unwrap();
+        let late_part=wire::join(remote_path,".late-upload-collision.part").unwrap();
+        let late_path=PathBuf::from(&late_dest);
+        let late_writer=late_path.clone();
+        assert!(!late_path.exists());
+        let late_events=Channel::<Progress>::new(move |_| {
+            if !late_writer.exists() { fs::write(&late_writer,b"late owner").unwrap(); }
+            Ok(())
+        });
+        assert!(copy_upload_with_verify(&mut c,&source,&late_dest,&late_part,&op,&late_events,true).is_err());
+        assert_eq!(fs::read(&late_path).unwrap(),b"late owner");
+        assert!(Path::new(&late_part).exists(),"refused upload retains its private partial");
+        fs::remove_file(&late_part).unwrap();
         copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
         assert_eq!(fs::read(&dest).unwrap(),bytes);
         // Verified byte-offset upload: prefix is written through real SFTP v3,

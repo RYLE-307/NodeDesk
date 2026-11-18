@@ -92,6 +92,17 @@ fn verify_request_snapshot(
     Ok(())
 }
 
+/// Guard a read-only VPN health report against a profile that disconnected,
+/// disappeared, or was replaced while OS route/DNS tools were running.
+fn verify_health_snapshot(before:&VpnProfile, profiles:&[VpnProfile])->Result<(),String> {
+    let current=profiles.iter().find(|p|p.id.eq_ignore_ascii_case(&before.id))
+        .ok_or("System VPN profile disappeared during health inspection; refresh profiles")?;
+    if current!=before {
+        return Err("System VPN profile changed during health inspection; refresh profiles".into());
+    }
+    Ok(())
+}
+
 fn observed_state(before:&VpnProfile, profiles:&[VpnProfile], connect:bool)->Result<bool,String> {
     let current=profiles.iter().find(|p|p.id.eq_ignore_ascii_case(&before.id))
         .ok_or("System VPN profile disappeared after the action")?;
@@ -631,7 +642,12 @@ pub async fn vpn_health(profile_id:String)->Result<VpnHealth,String>{
     tauri::async_runtime::spawn_blocking(move || {
         let profile=list_impl()?.into_iter().find(|p|p.id.eq_ignore_ascii_case(&profile_id))
             .ok_or("System VPN profile is missing or unsupported")?;
-        Ok(health_impl(&profile))
+        let health=health_impl(&profile);
+        // OS state can change during the bounded route/DNS inspection.
+        // Re-list the same UUID to avoid returning a stale green status.
+        let after=list_impl()?;
+        verify_health_snapshot(&profile,&after)?;
+        Ok(health)
     }).await.map_err(|_|"VPN health worker failed".to_string())?
 }
 #[tauri::command]
@@ -973,6 +989,28 @@ function Get-DnsClientServerAddress { [pscustomobject]@{InterfaceIndex=77;Server
         let replaced=VpnProfile{kind:"Other VPN (read-only)".into(),
             control_allowed:false,..baseline.clone()};
         assert!(verify_request_snapshot(&replaced,&baseline.name,&baseline.kind,baseline.active).is_err());
+    }
+    #[test]
+    fn vpn_health_rechecks_profile_after_diagnostic_and_rejects_stale_state() {
+        let initial=VpnProfile{
+            id:"123e4567-e89b-12d3-a456-426614174000".into(),
+            name:"Disposable".into(),kind:"WireGuard".into(),
+            active:true,control_allowed:true,
+        };
+        assert!(verify_health_snapshot(&initial,&[initial.clone()]).is_ok());
+        assert!(verify_health_snapshot(&initial,&[]).is_err());
+        assert!(verify_health_snapshot(&initial,&[VpnProfile{
+            id:"123e4567-e89b-12d3-a456-426614174001".into(),
+            ..initial.clone()
+        }]).is_err());
+        for changed in [
+            VpnProfile{active:false,..initial.clone()},
+            VpnProfile{name:"Replaced".into(),..initial.clone()},
+            VpnProfile{kind:"Other".into(),..initial.clone()},
+            VpnProfile{control_allowed:false,..initial.clone()},
+        ]{
+            assert!(verify_health_snapshot(&initial,&[changed]).is_err());
+        }
     }
     #[test]
     fn vpn_action_requires_observed_state_and_stable_profile() {

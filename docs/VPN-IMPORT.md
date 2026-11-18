@@ -64,3 +64,18 @@ active NetworkManager profile reports no DNS, its DNS indicator is absent.
 No DNS addresses enter WebView and no DNS configuration is modified.
 These checks do not prove real query routing, split DNS, leak resistance,
 or VPN encryption, which remain native QA.
+
+## 2026-11-18 — VPN profile health snapshot revalidation
+
+After inspecting the active profile's OS routes and resolver configuration,
+NodeDesk re-enumerates the system VPN list and requires the exact same
+UUID, displayed name, protocol, active state and control eligibility
+to remain unchanged. A disappearing, disabled or externally replaced
+profile returns a visible refresh-required error instead of a stale
+route/DNS presence result. This is a bounded read-only operation and
+never connects, disconnects, imports or changes an OS profile.
+
+The post-check reduces stale-state windows but **cannot** guarantee
+that VPN traffic follows the expected route, that DNS queries remain on
+the interface, or that the OS won't change immediately afterward.
+Native Windows/Arch operator acceptance is still **NOT TESTED**.

@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 VPN health snapshot consistency — exact-head CI pending
+
+- Added a second read-only OS VPN profile enumeration after the bounded
+  route/DNS health inspection. The exact UUID must still refer to the
+  same name, protocol, active state and control eligibility; disappearing,
+  disconnected or replaced profiles fail closed with a refresh-required
+  error instead of returning stale presence indicators.
+- Pure Rust disposable-profile tests cover stable, missing, reused-ID,
+  renamed, disconnected and changed-control-state observations. No real
+  VPN profile, network route, server or credential was accessed.
+- This protects only the snapshot consistency, not DNS leak safety or
+  real traffic routing. Exact-head CI and native Windows/Arch QA remain
+  pending. See docs/VPN-IMPORT.md.
+- Previous P0 RDP/VNC preflight commit
+  `957e53f66d6111866c0f8f678d16fd3d6ea6b86c` has
+  [CI 44306579522](https://github.com/RYLE-307/NodeDesk/actions/runs/44306579522)
+  still under verification. Leave PR #13 Draft, do not touch main or
+  publish RC/stable.
+
+
 ### 2026-11-18 P0 native RDP/VNC saved-credential preflight — exact-head CI pending
 
 - Starting HEAD `fdc340e8bdfe234e518dbb172702fea421e1dd3e`

@@ -91,6 +91,35 @@ fn valid_target(target: &Target) -> bool {
         && !target.username.chars().any(char::is_control)
 }
 
+// Validate all public saved-connect parameters before asking the OS vault
+// for a secret. The guarded connect function repeats validation after
+// acquiring the session registry, since state may change in the meantime.
+fn valid_rdp_pin(pin: &str) -> bool {
+    let normalized = pin.replace(':', "");
+    normalized.len() == 64 && normalized.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn preflight_saved_connect(
+    target: &Target,
+    width: u16,
+    height: u16,
+    pin: Option<&str>,
+) -> Result<(), String> {
+    if !valid_target(target)
+        || !(320..=1920).contains(&width)
+        || !(240..=1080).contains(&height)
+    {
+        return Err("Invalid direct RDP parameters".into());
+    }
+    if pin.is_some_and(|value| !valid_rdp_pin(value)) {
+        return Err("Invalid RDP certificate SHA256 pin".into());
+    }
+    if std::env::var_os("SSLKEYLOGFILE").is_some() {
+        return Err("Disable TLS key logging before direct RDP".into());
+    }
+    Ok(())
+}
+
 fn config(
     target: &Target,
     password: String,
@@ -114,7 +143,7 @@ fn config_pinned(
         certificate_sha256
     {
         let normalized = fingerprint.replace(':', "");
-        if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !valid_rdp_pin(&fingerprint) {
             return Err("Invalid RDP certificate SHA256 pin".into());
         }
         let expected = hex::decode(normalized).map_err(|_| "Invalid RDP certificate SHA256 pin")?;
@@ -224,8 +253,14 @@ pub async fn rdp_direct_connect_saved(
     certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    if !valid_target(&target) {
-        return Err("Invalid direct RDP target".into());
+    preflight_saved_connect(&target, width, height, certificate_sha256.as_deref())?;
+    // Reject an already-active ID before reading from Credential Manager /
+    // Secret Service. The internal connect guard rechecks to close races.
+    {
+        let active = sessions.0.lock().map_err(|_| "RDP session state unavailable")?;
+        if active.contains_key(&target.id) {
+            return Err("RDP connection already active".into());
+        }
     }
     let store = vault.inner().clone();
     let identity = target.clone();
@@ -665,6 +700,22 @@ pub fn rdp_direct_release_input(sessions: State<'_, Sessions>, id: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_connect_rejects_bad_public_rdp_metadata_before_vault_read() {
+        let target = Target {
+            id: "123e4567-e89b-12d3-a456-426614174000".into(),
+            host: "fixture.example.test".into(), port: 3389,
+            username: "fixture".into(),
+        };
+        assert!(preflight_saved_connect(&target, 800, 600, None).is_ok());
+        assert!(preflight_saved_connect(&target, 800, 600, Some(&"A".repeat(64))).is_ok());
+        assert!(preflight_saved_connect(&target, 800, 600, Some("bad")).is_err());
+        assert!(preflight_saved_connect(&target, 800, 600, Some(&"Z".repeat(64))).is_err());
+        assert!(preflight_saved_connect(&target, 319, 600, None).is_err());
+        assert!(preflight_saved_connect(&target, 800, 1081, None).is_err());
+        assert!(preflight_saved_connect(&Target{host:"bad/host".into(),..target.clone()},800,600,None).is_err());
+        assert!(preflight_saved_connect(&Target{username:"".into(),..target},800,600,None).is_err());
+    }
     #[test]
     fn direct_rdp_requires_strict_identity_and_bounded_credentials() {
         let target = Target {

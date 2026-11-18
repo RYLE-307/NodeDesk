@@ -61,3 +61,14 @@ one transient unmanaged heap copy before IronRDP configuration is built.
 A direct user-entered password is wrapped immediately when it enters the
 public command. IronRDP may retain other password copies after successful
 connection, so complete memory safety remains a release blocker.
+
+## 2026-11-18 — saved-credential preflight
+
+The saved-credential entrypoint now validates the public RDP target,
+desktop dimensions, certificate fingerprint and TLS key-logging policy
+**before** asking Credential Manager/Secret Service for a password.
+It also rejects an already-running connection ID before the vault read.
+The native session registry repeats its duplicate check after the read
+to handle races with concurrent callers. No stored credential is returned
+to WebView. These early checks avoid unnecessary secret materialization;
+the existing TLS/CredSSP trust and credential-copy limitations remain.

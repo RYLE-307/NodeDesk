@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 native RDP/VNC saved-credential preflight — exact-head CI pending
+
+- Starting HEAD `fdc340e8bdfe234e518dbb172702fea421e1dd3e`
+  [CI 44305192468](https://github.com/RYLE-307/NodeDesk/actions/runs/44305192468)
+  passed frontend Windows/Ubuntu, browser, Windows desktop when inspected;
+  verify remaining Ubuntu desktop and Arch jobs before closing prior gates.
+- The native RDP/VNC saved-password entrypoints now validate all public
+  connection parameters and certificate pin **before** reading from Vault,
+  and check the active-session registry before retrieving the password.
+  The existing guarded connection path rechecks the ID after secret read,
+  handling concurrent starts without constructing duplicate protocol clients.
+- RDP public preflight covers endpoint, dimensions, pin and TLS key-logging
+  policy. VNC covers endpoint, username, strict SPKI pin and key-logging.
+  Rust unit cases and Node source regression tests verify rejection paths
+  and prevent accidental Vault reads before preflight/duplicate checks.
+- No real secret store, desktop server or VPN accessed. CI exact-head and
+  native Windows/Arch GUI QA remain **PENDING/NOT TESTED**. See
+  docs/DIRECT-RDP-SECURITY.md and docs/DIRECT-VNC.md.
+- Keep PR #13 draft; no main edits, merge, release or design changes.
+
+
 ### 2026-11-18 P1 explicit catalog TCP batch diagnostics — exact-head CI pending
 
 - Added a manually triggered, sequential batch of up to 10 selected

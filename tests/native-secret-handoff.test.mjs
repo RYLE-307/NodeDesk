@@ -28,3 +28,20 @@ for(const [name,source,connectName] of sources){
     assert.match(publicBody,/Zeroizing::new\(password\)/);
   });
 }
+
+test("saved desktop connections validate public metadata and duplicate IDs before accessing the vault",()=>{
+  for(const [name,source,connectName] of sources){
+    const rust=readFileSync(new URL(source,import.meta.url),"utf8");
+    const start=rust.indexOf("pub async fn "+connectName+"_saved(");
+    const end=rust.indexOf("#[tauri::command]",start+1);
+    assert.ok(start>=0&&end>start,name+" saved-command boundary");
+    const saved=rust.slice(start,end);
+    const validation=saved.indexOf("preflight_saved_connect(&target,");
+    const duplicate=saved.indexOf("active.contains_key(&target.id)");
+    const read=saved.indexOf("store.read_connection(");
+    assert.ok(validation>=0&&duplicate>validation&&read>duplicate,
+      name+": reject invalid or active target before Vault secret lookup");
+    assert.ok(saved.includes("let secret = tauri::async_runtime::spawn_blocking"),
+      name+": keep saved credentials only on native side");
+  }
+});

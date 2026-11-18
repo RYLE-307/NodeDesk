@@ -71,14 +71,8 @@ impl Sessions {
     }
 }
 
-fn options(
-    target: &Target,
-    password: String,
-    spki_sha256: String,
-) -> Result<ConnectOptions, String> {
-    // Validation may return before the credential is handed to the VNC core.
-    // Keep NodeDesk's owning copy guarded on every such exit path.
-    let mut password = zeroize::Zeroizing::new(password);
+// Public, credential-free preflight must run before a saved-Vault read.
+fn preflight_saved_connect(target: &Target, spki_sha256: &str) -> Result<(), String> {
     if target.id.len() != 36
         || !target.id.bytes().enumerate().all(|(i, b)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -90,9 +84,6 @@ fn options(
         || crate::vnc::endpoint(&target.host, target.port).is_err()
         || target.username.len() > 200
         || target.username.chars().any(char::is_control)
-        || password.is_empty()
-        || password.len() > 1024
-        || password.contains('\0')
         || spki_sha256.len() != 64
         || !spki_sha256.bytes().all(|b| b.is_ascii_hexdigit())
     {
@@ -100,6 +91,21 @@ fn options(
     }
     if std::env::var_os("SSLKEYLOGFILE").is_some() {
         return Err("Disable TLS key logging before direct VNC".into());
+    }
+    Ok(())
+}
+
+fn options(
+    target: &Target,
+    password: String,
+    spki_sha256: String,
+) -> Result<ConnectOptions, String> {
+    // Validation may return before the credential is handed to the VNC core.
+    // Keep NodeDesk's owning copy guarded on every such exit path.
+    let mut password = zeroize::Zeroizing::new(password);
+    preflight_saved_connect(target, &spki_sha256)?;
+    if password.is_empty() || password.len() > 1024 || password.contains('\0') {
+        return Err("Invalid direct VNC target, credential or TLS SPKI pin".into());
     }
     let mut result = ConnectOptions::vnc(target.host.clone(), target.port);
     result.credentials =
@@ -205,6 +211,15 @@ pub async fn vnc_direct_connect_saved(
     clipboard: bool,
     events: Channel<Event>,
 ) -> Result<(), String> {
+    // Reject bad metadata and already-active IDs before any secret lookup.
+    // The guarded connect function checks the session map again after read.
+    preflight_saved_connect(&target, &spki_sha256)?;
+    {
+        let active = sessions.0.lock().map_err(|_| "VNC session state unavailable")?;
+        if active.contains_key(&target.id) {
+            return Err("VNC connection already active".into());
+        }
+    }
     // The vault binds its record to this entire public identity. The secret
     // stays in the native process and is never returned to WebView.
     let store = vault.inner().clone();
@@ -477,6 +492,22 @@ mod tests {
             select_subtype(&[S::Plain, S::X509Vnc], &valid).unwrap(),
             S::X509Vnc
         );
+    }
+    #[test]
+    fn saved_connect_rejects_bad_public_vnc_metadata_before_vault_read() {
+        let target = target();
+        assert!(preflight_saved_connect(&target, &"A".repeat(64)).is_ok());
+        assert!(preflight_saved_connect(&target, "").is_err());
+        assert!(preflight_saved_connect(&target, &"Z".repeat(64)).is_err());
+        assert!(preflight_saved_connect(
+            &Target{host:"bad/host".into(),..target.clone()}, &"A".repeat(64)
+        ).is_err());
+        assert!(preflight_saved_connect(
+            &Target{port:0,..target.clone()}, &"A".repeat(64)
+        ).is_err());
+        assert!(preflight_saved_connect(
+            &Target{username:"bad\nname".into(),..target}, &"A".repeat(64)
+        ).is_err());
     }
     #[test]
     fn framebuffer_rejects_out_of_bounds_and_copies_overlap_safely() {

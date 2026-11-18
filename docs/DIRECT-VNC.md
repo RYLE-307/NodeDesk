@@ -85,3 +85,14 @@ creating another unprotected String allocation before wrapping it. The
 explicit-password IPC still wraps its received String on entry. This
 is a narrow elimination of one copy, not a claim that the VNC protocol
 library or OS transport erases every transient credential buffer.
+
+## 2026-11-18 — saved-credential preflight
+
+The native saved-VNC path now validates public target ID, endpoint,
+username, SPKI SHA256 pin and TLS key-logging policy, and checks whether
+the session ID is already active, **before** reading the password from
+the OS Vault. The internal session registry repeats the duplicate
+check after the read to protect against concurrent starts. The same
+public preflight runs when creating VNC protocol options; all earlier
+certificate trust requirements are unchanged. This does not prove
+third-party memory zeroization.

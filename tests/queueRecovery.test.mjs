@@ -109,3 +109,19 @@ test("separate queue checkpoints on one endpoint are independently restored and 
   assert.deepEqual(listRecoveries(store,endpoint,now).map(item=>item.queueId),[second]);
   assert.equal(saveRecovery(store,record({queueId:"bad-id"}),now),false);
 });
+
+test("verified queue checkpoint retains opt-in but rejects tampered values",()=>{
+  const store=fakeStorage();
+  const checked=record({verify:true});
+  assert.equal(validateRecovery(checked,now)?.verify,true);
+  assert.equal(saveRecovery(store,checked,now),true);
+  const stored=loadRecovery(store,endpoint,now);
+  assert.equal(stored?.verify,true);
+  assert.equal(JSON.parse(store.getItem(RECOVERY_KEY)).records[0].verify,true);
+  assert.equal(validateRecovery(record(),now)?.verify,false);
+  assert.equal(validateRecovery(record({verify:false}),now)?.verify,false);
+  for(const invalid of ["true",1,null,[],{}]){
+    assert.equal(validateRecovery(record({verify:invalid}),now),null);
+  }
+  assert.equal(JSON.stringify(stored).includes("password"),false);
+});

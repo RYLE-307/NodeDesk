@@ -15,7 +15,7 @@ const idPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 export type RecoveryEndpoint = {host:string;port:number;username:string};
 export type RecoveryPartial = {index:number;previousId:string};
 export type RecoveryRecord = {
-  version:1; endpoint:RecoveryEndpoint; upload:boolean;
+  version:1; endpoint:RecoveryEndpoint; upload:boolean; verify?:boolean;
   queueId?:string;
   localDirectory:string; remoteDirectory:string; names:string[];
   sourceEntries:FileEntry[]; items:BatchItem[];
@@ -48,6 +48,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if (v.version!==VERSION || !validEndpoint(v.endpoint) ||
     (v.queueId!==undefined && (typeof v.queueId!=="string" || !idPattern.test(v.queueId))) ||
     typeof v.upload!=="boolean" ||
+    (v.verify!==undefined && typeof v.verify!=="boolean") ||
     !textField(v.localDirectory,2048) || !textField(v.remoteDirectory,2048) ||
     (typeof v.savedAt!=="number" || !Number.isSafeInteger(v.savedAt)) ||
     Number(v.savedAt)>now+60000 || now-Number(v.savedAt)>MAX_AGE_MS ||
@@ -73,6 +74,7 @@ export function validateRecovery(input:unknown,now=Date.now()):RecoveryRecord|nu
   if(items.every(item=>item.state==="done"))return null;
   return {
     version:1,endpoint:{...(v.endpoint as RecoveryEndpoint)},upload:v.upload as boolean,
+    verify:v.verify===true,
     ...(v.queueId?{queueId:v.queueId as string}:{}),
     localDirectory:v.localDirectory as string,remoteDirectory:v.remoteDirectory as string,
     names:[...(v.names as string[])],

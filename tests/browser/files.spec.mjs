@@ -1139,7 +1139,7 @@ test("Files two-hop gateway preserves explicit target identity and invalidates t
   expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("edge.example.org");
 });
 
-test('optional SFTP readback applies only to confirmed one-file upload',async({page}) => {
+test('optional SFTP readback covers both confirmed single and batch uploads',async({page}) => {
   const files=await open(page);
   await files.getByRole('button',{name:'Connect / reconnect'}).click();
   await page.evaluate(()=>{window.fixture.ready=true;window.fixture.emptyRemote=true;window.fixture.extraLocal=true;window.fixture.allowTransfer=true;});
@@ -1148,7 +1148,7 @@ test('optional SFTP readback applies only to confirmed one-file upload',async({p
   const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
   await local.getByRole('button',{name:'Open / refresh'}).click();
   await remote.getByRole('button',{name:'Open / refresh'}).click();
-  const verify=files.getByRole('checkbox',{name:'Verify single-file transfer by readback'});
+  const verify=files.getByRole('checkbox',{name:'Verify SFTP transfers by readback'});
   await expect(verify).not.toBeChecked();
   await verify.check();
   await local.getByRole('button',{name:'sample.bin',exact:true}).click();
@@ -1164,5 +1164,23 @@ test('optional SFTP readback applies only to confirmed one-file upload',async({p
   await files.getByRole('button',{name:'Upload selected (2)'}).click();
   await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(3);
   const batch=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').slice(1).map(c=>c.request));
-  expect(batch.every(item=>item.verify===undefined)).toBe(true);
+  expect(batch.every(item=>item.verify===true)).toBe(true);
+});
+
+test('default-off byte verification does not add readback to a batch',async({page})=>{
+  const files=await open(page);
+  await files.getByRole('button',{name:'Connect / reconnect'}).click();
+  await page.evaluate(()=>{window.fixture.ready=true;window.fixture.emptyRemote=true;window.fixture.allowTransfer=true;});
+  await expect(files.getByText('Authenticated — panes ready',{exact:true})).toBeVisible();
+  const local=files.getByRole('region',{name:'Local filesystem',exact:true});
+  const remote=files.getByRole('region',{name:'Remote filesystem',exact:true});
+  await local.getByRole('button',{name:'Open / refresh'}).click();
+  await remote.getByRole('button',{name:'Open / refresh'}).click();
+  await expect(files.getByRole('checkbox',{name:'Verify SFTP transfers by readback'})).not.toBeChecked();
+  await local.getByRole('checkbox',{name:'Select for transfer: sample.bin'}).check();
+  page.once('dialog',dialog=>dialog.accept());
+  await files.getByRole('button',{name:'Upload selected (1)'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==='files_transfer').length)).toBe(1);
+  const request=await page.evaluate(()=>window.fixture.calls.find(c=>c.cmd==='files_transfer').request);
+  expect(request.verify).toBe(false);
 });

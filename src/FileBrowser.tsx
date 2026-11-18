@@ -11,7 +11,7 @@ import type {RecoveryEndpoint, RecoveryPartial, RecoveryRecord} from "./queueRec
 
 type PendingTransferPlan = {
   id:string;
-  names:string[]; upload:boolean; localDirectory:string; remoteDirectory:string;
+  names:string[]; upload:boolean; verify:boolean; localDirectory:string; remoteDirectory:string;
   connectionKey:string; sourceEntries:FileEntry[]; localVersion:number; remoteVersion:number;
 };
 type QueueSnapshot = {id:string;plan:PendingTransferPlan;items:BatchItem[];
@@ -121,7 +121,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     partial:RecoveryPartial|null):void {
     if(!recoveryEnabled.current)return;
     const state:RecoveryRecord={
-      version:1,endpoint:{...recoveryEndpoint},queueId:plan.id,upload:plan.upload,
+      version:1,endpoint:{...recoveryEndpoint},queueId:plan.id,upload:plan.upload,verify:plan.verify,
       localDirectory:plan.localDirectory,remoteDirectory:plan.remoteDirectory,
       names:[...plan.names],sourceEntries:plan.sourceEntries.map(item=>({...item})),
       items:items.map(item=>({...item})),partial,savedAt:Date.now()
@@ -188,7 +188,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if(!archiveCurrent())return;
     const plan:PendingTransferPlan={
       id:restored.queueId??crypto.randomUUID(),
-      names:[...restored.names],upload:restored.upload,
+      names:[...restored.names],upload:restored.upload,verify:restored.verify??false,
       localDirectory:restored.localDirectory,remoteDirectory:restored.remoteDirectory,
       sourceEntries:restored.sourceEntries.map(entry=>({...entry})),
       connectionKey:profile,
@@ -358,7 +358,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
         };
         try{
           await invoke("files_transfer",{id,request:{
-            ...request,name,
+            ...request,name,verify:plan.verify,
             retainPartial:!plan.upload,
             ...(resumeCandidate?.index===index?{resumeId:resumeCandidate.previousId}:{})
           },events});
@@ -413,7 +413,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     if(!archiveCurrent())return;
     const plan:PendingTransferPlan={
       id:crypto.randomUUID(),
-      names,upload,localDirectory:local!.path,remoteDirectory:remote!.path,
+      names,upload,verify:verifySingleTransfer,localDirectory:local!.path,remoteDirectory:remote!.path,
       connectionKey:profile,
       sourceEntries:names.map(name=>source.entries.find(entry=>entry.name===name)!),
       localVersion:listingVersion.current.local,remoteVersion:listingVersion.current.remote,
@@ -799,11 +799,11 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {interactive && capabilities?.nativeLogin && <p className="ssh-help">{ru ? "Windows: только пароль/PAM и заранее доверенный host key. Новый ключ сначала сверьте и примите в SSH-консоли. Отмена передачи закрывает файловую сессию; затем подключитесь повторно. Для ключа/агента снимите галочку." : "Windows: password/PAM and a previously trusted host key only. Verify and accept new keys in the SSH console first. Cancelling a transfer closes the Files session; reconnect afterwards. For key/agent, uncheck interactive login."}</p>}
     <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
     <label className="files-integrity">
-      <input type="checkbox" aria-label={ru?"Проверить передачу повторным чтением":"Verify single-file transfer by readback"}
+      <input type="checkbox" aria-label={ru?"Проверить SFTP-передачи повторным чтением":"Verify SFTP transfers by readback"}
         checked={verifySingleTransfer} disabled={busy}
         onChange={event=>setVerifySingleTransfer(event.target.checked)}/>
-      {ru?"Проверить байты после передачи (один файл, дополнительное чтение SFTP)":
-        "Verify bytes after transfer (single file, extra SFTP read)"}
+      {ru?"Проверить байты после передачи (один файл или очередь, дополнительное чтение SFTP)":
+        "Verify bytes after transfer (single file or queue, extra SFTP read)"}
     </label>
     <div className="files-actions">
       <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>

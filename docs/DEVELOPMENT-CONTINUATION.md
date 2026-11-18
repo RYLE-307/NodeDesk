@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 SFTP verified batch queues — exact-head CI pending
+
+- Parent HEAD `73e27901b0966b3335acf5e2b4eaf4fbc500b0d2`
+  passed [CI 44309875810](https://github.com/RYLE-307/NodeDesk/actions/runs/44309875810)
+  6/6 (Windows, Ubuntu, Arch preview, browser).
+- Extended explicit SFTP byte-by-byte readback from single files to
+  selected multi-file queues. Every new queue captures its opt-in verify
+  flag before requesting transfers, and each file is checked by the
+  native readback implementation before no-overwrite publication.
+- The flag stays fixed for retries and optional seven-day recovery.
+  Recovery accepts only boolean values and defaults old v1 checkpoints
+  without the flag to verification off. No automatic login, transfers,
+  overwrites or persistence of credentials/contents.
+- Node recovery tests cover enabled/disabled/legacy/malformed values;
+  browser tests cover opt-in true on single and queued uploads and
+  default-off behavior with mocked native IPC. Exact-head CI pending,
+  native GUI acceptance on Windows and Arch NOT TESTED.
+- PR #13 remains draft; no main change, merge, release or real servers.
+
+
 ### 2026-11-18 P0/P1 opt-in verified SFTP byte transfers — CI pending
 
 - Added explicit, off-by-default single-file SFTP full-byte readback.

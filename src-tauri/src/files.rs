@@ -643,7 +643,7 @@ fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str
     if !c.missing(remote)? {return Err("Remote destination exists; overwrite disabled".into());}
     // EXCL|CREAT|WRITE; never opens/clobbers an existing remote path.
     let h = c.open(temp,2|8|32)?;
-    let mut offset = 0; let mut bytes = vec![0;CHUNK];
+    let mut offset: u64 = 0; let mut bytes = vec![0;CHUNK];
     loop {
         op.check()?;
         let n = f.read(&mut bytes).map_err(|_| "Local read failed")?; if n == 0 { break; }

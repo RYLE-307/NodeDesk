@@ -12,9 +12,9 @@ echoed secrets. Treat the resulting TXT as sensitive and check it before
 sharing. The filename includes only a generic NodeDesk prefix and timestamp;
 no host or username. Downloads are started locally through the WebView.
 
-Export is limited to 4096 display lines and 512 KiB of UTF-8. The exporter
-combines soft-wrapped xterm lines, preserves separate logical lines and
-marks any bounded/truncated result. Empty history causes no download.
+Export preserves the most recent 4096 display lines (up to 512 KiB UTF-8),
+discarding older output when the cap is reached. The exporter joins
+soft-wrapped lines and places a truncation notice at the start of the TXT. Empty history causes no download.
 Export neither starts a connection nor changes terminal history.
 
 Known limitations:

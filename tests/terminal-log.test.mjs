@@ -31,12 +31,12 @@ test("terminal log returns empty for a fresh terminal and never auto-creates dat
 });
 test("terminal log caps UTF-8 bytes without slicing through multibyte characters",()=>{
   const oversized=collectTerminalScrollback(buffer([
+    line("older-fragment"),
     line("🙂".repeat(MAX_TERMINAL_LOG_BYTES/4)),
-    line("private-fragment"),
   ]));
   assert.equal(new TextEncoder().encode(oversized.text).length,MAX_TERMINAL_LOG_BYTES);
   assert.equal(oversized.truncated,true);
-  assert.ok(!oversized.text.includes("private-fragment"));
+  assert.ok(!oversized.text.includes("older-fragment"));
   const rejected=collectTerminalScrollback(buffer([line("🙂".repeat(MAX_TERMINAL_LOG_BYTES/4+1))]));
   assert.equal(rejected.text,"");
   assert.equal(rejected.truncated,true);
@@ -47,8 +47,18 @@ test("terminal log bounds line scans and rejects corrupt length",()=>{
     getLine(index){return line(String(index));}
   });
   assert.equal(long.truncated,true);
-  assert.ok(long.text.startsWith("0\n1\n"));
-  assert.ok(!long.text.includes(String(MAX_TERMINAL_LOG_LINES+1)));
+  assert.ok(long.text.startsWith("10\n11\n"));
+  assert.ok(long.text.endsWith(String(MAX_TERMINAL_LOG_LINES+9)));
+  assert.ok(!long.text.startsWith("0\n"));
   assert.throws(()=>collectTerminalScrollback({length:-1,getLine(){return undefined;}}));
   assert.throws(()=>collectTerminalScrollback({length:Infinity,getLine(){return undefined;}}));
+});
+
+test("bounded export favors latest terminal lines over outdated history",()=>{
+  const data=collectTerminalScrollback(buffer([
+    line("old-prefix".repeat(10000)),
+    line("recent terminal data"),
+    line("prompt$"),
+  ]));
+  assert.deepEqual(data,{text:"recent terminal data\nprompt$",truncated:true});
 });

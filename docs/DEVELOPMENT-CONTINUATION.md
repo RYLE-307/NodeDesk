@@ -34,8 +34,9 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
   It reads rendered xterm scrollback on demand (never input keystrokes),
   requires explicit confirmation warning about sensitive output and
   starts a local download. No background logging or automatic network upload.
-- Export is bounded to 4096 buffer lines / 512 KiB UTF-8. Soft-wrapped
-  lines are joined. Truncation is disclosed in the resulting file. The
+- Export is bounded to the most recent 4096 buffer lines / 512 KiB UTF-8.
+  Soft-wrapped lines are joined. Older lines are omitted first and
+  truncation is disclosed at the beginning of the resulting file. The
   filename is generic and does not include a remote host or username.
   Missing scrollback produces no file.
 - New Node tests cover Unicode byte limits, wrap handling, bounds and

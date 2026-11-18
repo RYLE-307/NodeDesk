@@ -18,23 +18,26 @@ export type TerminalLog = { text: string; truncated: boolean };
 export function collectTerminalScrollback(buffer: TerminalDisplayBuffer): TerminalLog {
   if (!Number.isSafeInteger(buffer.length) || buffer.length < 0)
     throw new Error("Invalid terminal buffer");
-  const lineCount = Math.min(buffer.length, MAX_TERMINAL_LOG_LINES);
+  const start = Math.max(0, buffer.length - MAX_TERMINAL_LOG_LINES);
   const chunks: string[] = [];
   const encoder = new TextEncoder();
   let bytes = 0;
-  let truncated = buffer.length > lineCount;
-  for (let i = 0; i < lineCount; i++) {
+  let truncated = start > 0;
+  let newerLineWrapped = false;
+  // Preserve the newest screen history if the byte or line cap is reached.
+  for (let i = buffer.length - 1; i >= start; i--) {
     const line = buffer.getLine(i);
-    if (!line) continue;
+    if (!line) { truncated = true; break; }
     const text = line.translateToString(true);
-    const fragment = (chunks.length && !line.isWrapped ? "\n" : "") + text;
+    const fragment = text + (chunks.length && !newerLineWrapped ? "\n" : "");
     const length = encoder.encode(fragment).byteLength;
     if (bytes + length > MAX_TERMINAL_LOG_BYTES) {
       truncated = true;
       break;
     }
     bytes += length;
-    chunks.push(fragment);
+    chunks.unshift(fragment);
+    newerLineWrapped = line.isWrapped;
   }
   const text = chunks.join("");
   return { text: text.trim() ? text : "", truncated };

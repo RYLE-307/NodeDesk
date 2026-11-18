@@ -159,8 +159,8 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       if (!window.confirm(ru
         ? "Экспортировать видимую историю терминала в TXT? Она может содержать адреса, команды и секреты. Проверьте файл перед передачей. Логи не сохраняются автоматически."
         : "Export rendered terminal scrollback as TXT? It may contain addresses, commands and secrets. Review the file before sharing. Logs are never saved automatically.")) return;
-      const suffix = log.truncated ? "\n[NodeDesk: older or oversized content omitted]\n" : "\n";
-      const url = URL.createObjectURL(new Blob([log.text, suffix], {type:"text/plain;charset=utf-8"}));
+      const prefix = log.truncated ? "[NodeDesk: older terminal output omitted]\n" : "";
+      const url = URL.createObjectURL(new Blob([prefix, log.text, "\n"], {type:"text/plain;charset=utf-8"}));
       const link = document.createElement("a");
       link.href = url;
       link.download = "nodedesk-terminal-" + new Date().toISOString().replace(/[:.]/g,"-") + ".txt";

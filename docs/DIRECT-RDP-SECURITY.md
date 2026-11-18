@@ -51,3 +51,13 @@ with a non-wiping password copy. The accepted session uses the same
 certificate and CredSSP policy as before. IronRDP's own password
 lifecycle after a successful connection still requires a separate
 memory audit; this change must not be represented as complete wiping.
+
+## 2026-11-18 — Vault credential handoff without a new plaintext clone
+
+The saved direct RDP entrypoint now moves the Vault's `Zeroizing<String>`
+into the internal session connect helper instead of using
+`secret.to_string()` to call the public Tauri IPC method. That eliminates
+one transient unmanaged heap copy before IronRDP configuration is built.
+A direct user-entered password is wrapped immediately when it enters the
+public command. IronRDP may retain other password copies after successful
+connection, so complete memory safety remains a release blocker.

@@ -75,3 +75,13 @@ is dropped on these refusal paths. Once accepted, the options are
 transferred to the VNC session supervisor (which wipes its stored
 credential when the session is torn down). This does not prove all
 third-party temporary copies are eliminated.
+
+## 2026-11-18 — Vault credential handoff without a new plaintext clone
+
+The saved direct VNC entrypoint now moves the `Zeroizing<String>` returned
+by the native Vault into a private guarded connect helper. Previously it
+called `secret.to_string()` merely to use the public IPC signature,
+creating another unprotected String allocation before wrapping it. The
+explicit-password IPC still wraps its received String on entry. This
+is a narrow elimination of one copy, not a claim that the VNC protocol
+library or OS transport erases every transient credential buffer.

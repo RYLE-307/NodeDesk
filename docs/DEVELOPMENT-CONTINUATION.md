@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 native Vault-to-RDP/VNC credential handoff — CI pending
+
+- Parent HEAD `75ec48c21926a1f5f788adcbf42dbd88166aa4a1`;
+  [CI 44295827654](https://github.com/RYLE-307/NodeDesk/actions/runs/44295827654)
+  had passed browser, frontend Windows/Ubuntu and Windows desktop as of this check;
+  Arch and Ubuntu desktop still running.
+- Both direct saved RDP/VNC connectors formerly turned the native
+  Vault's `Zeroizing<String>` into an unmanaged `secret.to_string()`
+  before invoking their public command. Changed to move the protected
+  buffer directly into private guarded connection helpers. Explicit
+  Tauri password IPC signatures remain unchanged, and newly received
+  secrets are wrapped immediately on entry.
+- Node source-regression tests guard against reintroducing an unnecessary
+  clone. Rust unit/disposable desktop tests and Windows/Ubuntu/Arch builds
+  are required before claiming this HEAD tested.
+- This is a concrete **copy reduction**, not full IronRDP/VNC/OS memory
+  erasure proof. Native GUI acceptance remains **NOT TESTED**. No real
+  credentials or servers involved.
+- Keep draft PR #13, don't touch main or publish release.
+
+
 ### 2026-11-18 P0 RDP/VNC duplicate-session credential lifetime — CI pending
 
 - On duplicate session ID or registry lock failure, the direct RDP/VNC

@@ -241,10 +241,10 @@ pub async fn rdp_direct_connect_saved(
     .await
     .map_err(|_| "Vault worker failed".to_string())??
     .ok_or("Saved RDP credential not found")?;
-    rdp_direct_connect(
+    rdp_direct_connect_guarded(
         sessions,
         target,
-        secret.to_string(),
+        secret,
         width,
         height,
         clipboard,
@@ -265,12 +265,29 @@ pub async fn rdp_direct_connect(
     certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    // Keep the IPC password wipe-on-drop until the native registry accepts
+    rdp_direct_connect_guarded(
+        sessions, target, Zeroizing::new(password), width, height,
+        clipboard, certificate_sha256, events,
+    ).await
+}
+
+// The saved-secret path moves the Vault's Zeroizing<String> here unchanged.
+// Only the explicit-password IPC wraps its incoming String at this boundary.
+async fn rdp_direct_connect_guarded(
+    sessions: State<'_, Sessions>,
+    target: Target,
+    mut password: Zeroizing<String>,
+    width: u16,
+    height: u16,
+    clipboard: bool,
+    certificate_sha256: Option<String>,
+    events: Channel<Event>,
+) -> Result<(), String> {
+    // Keep the password wipe-on-drop until the native registry accepts
     // this target. Previously, rejecting a duplicate dropped an IronRDP
     // Config/Client that held an ordinary, non-wiping String password.
     // The pinned IronRDP revision still retains password copies after
-    // a *successful* construction; full memory wiping remains an open gate.
-    let mut password = Zeroizing::new(password);
+    // successful construction; full memory wiping remains an open gate.
     let (output, mut receiver) = output_channel(8);
     let (client, session) = {
         let mut all = sessions

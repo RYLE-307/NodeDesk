@@ -221,10 +221,10 @@ pub async fn vnc_direct_connect_saved(
     .await
     .map_err(|_| "Vault worker failed".to_string())??
     .ok_or("Saved VNC credential not found")?;
-    vnc_direct_connect(
+    vnc_direct_connect_guarded(
         sessions,
         target,
-        secret.to_string(),
+        secret,
         spki_sha256,
         clipboard,
         events,
@@ -241,10 +241,24 @@ pub async fn vnc_direct_connect(
     clipboard: bool,
     events: Channel<Event>,
 ) -> Result<(), String> {
+    vnc_direct_connect_guarded(
+        sessions, target, zeroize::Zeroizing::new(password), spki_sha256, clipboard, events,
+    ).await
+}
+
+// Move a saved credential directly out of Vault. Never clone it into another
+// unprotected String just to call the public Tauri IPC command.
+async fn vnc_direct_connect_guarded(
+    sessions: State<'_, Sessions>,
+    target: Target,
+    mut password: zeroize::Zeroizing<String>,
+    spki_sha256: String,
+    clipboard: bool,
+    events: Channel<Event>,
+) -> Result<(), String> {
     // Do not construct an unguarded library credential until after the
     // session registry accepts this ID. Duplicate/poisoned-lock failures
     // must wipe the incoming password without ever allocating VNC options.
-    let mut password = zeroize::Zeroizing::new(password);
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
     let handle = {
         let mut active = sessions

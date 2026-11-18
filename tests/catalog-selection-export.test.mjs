@@ -33,7 +33,7 @@ test("selected export includes only chosen endpoints and their full ancestor pat
   assert.ok(!JSON.stringify(output).includes("a".repeat(64)));
   assert.equal(output.connections[0].id,"new-ssh");
   assert.equal(output.connections[1].id,"new-rdp");
-  assert.equal(output.language,"en");
+  assert.equal(output.language,emptyCatalog().language);
   assert.equal(output.theme,"dark");
   assert.equal(JSON.stringify(existing),original);
   assert.deepEqual(decode(JSON.stringify(output)),output);

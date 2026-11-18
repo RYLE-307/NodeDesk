@@ -537,7 +537,54 @@ impl Drop for PartialLocal {
         if !self.keep_on_error { let _ = fs::remove_file(&self.path); }
     }
 }
+
+fn verify_local_chunk(local:&mut fs::File,remote_bytes:&[u8])->Result<()> {
+    let mut expected=vec![0;remote_bytes.len()];
+    local.read_exact(&mut expected).map_err(|_|"Local file shortened during integrity verification")?;
+    if expected!=remote_bytes {return Err("SFTP byte verification failed; file not published".into());}
+    Ok(())
+}
+// Optional reread through the same authenticated SFTP channel before
+// publication; no shell, external hashing or overwrite.
+fn verify_sftp_readback(
+    c:&mut Sftp,remote:&str,local:&mut fs::File,total:u64,op:&Operation
+)->Result<()> {
+    op.check()?;
+    let before=c.lstat(remote)?;
+    if before.kind()!="file" || before.size!=Some(total) {
+        return Err("Remote file size/type changed before integrity verification".into());
+    }
+    local.seek(SeekFrom::Start(0)).map_err(|_|"Cannot rewind local file for verification")?;
+    let handle=c.open(remote,1)?;
+    let mut at=0_u64;
+    while at<total {
+        op.check()?;
+        let chunk=c.read(&handle,at)?.ok_or("Remote file truncated during verification")?;
+        if chunk.len() as u64>total-at {
+            return Err("Remote file grew during integrity verification".into());
+        }
+        verify_local_chunk(local,&chunk)?;
+        at+=chunk.len() as u64;
+    }
+    c.close(&handle)?;
+    op.check()?;
+    let after=c.lstat(remote)?;
+    if after.kind()!="file" || after.size!=Some(total) || after.modified!=before.modified ||
+        local.metadata().map_err(|_|"Local file missing after verification")?.len()!=total {
+        return Err("File changed during integrity verification; not published".into());
+    }
+    Ok(())
+}
+fn private_new_readable(path:&Path)->Result<fs::File>{
+    let mut options=OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    options.open(path).map_err(|_|"Cannot create local file (destination may exist)".into())
+}
 fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>) -> Result<()> {
+    copy_upload_with_verify(c,source,remote,temp,op,events,false)
+}
+fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>,verify:bool) -> Result<()> {
     let before = fs::symlink_metadata(source).map_err(|_| "Local source unavailable")?;
     if !before.is_file() || before.is_symlink() { return Err("Only regular files can be uploaded".into()); }
     let mut options = OpenOptions::new(); options.read(true);
@@ -561,6 +608,7 @@ fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Opera
     }
     if offset != size || f.metadata().map_err(|_| "Cannot inspect source")?.len() != size { return Err("Source changed during upload".into()); }
     c.close(&h)?; op.check()?;
+    if verify {verify_sftp_readback(c,temp,&mut f,size,op)?;}
     let mut b = vec![]; wire::string(&mut b,temp.as_bytes()); wire::string(&mut b,remote.as_bytes());
     // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
     Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
@@ -653,9 +701,13 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
 }
 
 fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool) -> Result<()> {
+    copy_download_with_verify(c,remote,target,temp,op,events,keep_partial,false)
+}
+fn copy_download_with_verify(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool,verify:bool) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
-    let mut f = private_new(temp)?; let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
+    let mut f = if verify {private_new_readable(temp)?} else {private_new(temp)?};
+    let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
     let mut offset = 0;
     loop {
         op.check()?;
@@ -665,7 +717,9 @@ fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Op
     }
     c.close(&h)?;
     if a.size.is_some_and(|size| size != offset) { return Err("Remote source changed during download".into()); }
-    f.sync_all().map_err(|_| "Local sync failed")?; drop(f); op.check()?;
+    f.sync_all().map_err(|_| "Local sync failed")?;
+    if verify {verify_sftp_readback(c,remote,&mut f,offset,op)?;}
+    drop(f); op.check()?;
     // Atomic no-replace publication (rename would overwrite on Unix).
     fs::hard_link(temp,target).map_err(|_| "Cannot publish download: destination exists or filesystem lacks hard links".to_string())?;
     if keep_partial {
@@ -835,7 +889,7 @@ fn copy_download_resume(c:&mut Sftp,remote:&str,target:&Path,temp:&Path,
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String>, #[serde(default)] retain_partial: bool }
+pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String>, #[serde(default)] retain_partial: bool, #[serde(default)] verify: bool }
 #[tauri::command]
 pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
     resolve_auth(&mut request.destination,&app)?;
@@ -857,7 +911,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
                     .map_err(|e|format!("{e}; partial remains at {old}"))
             } else {
                 let temp=wire::join(&parent,&partial)?;
-                copy_upload(&mut c,&target,&remote,&temp,&g.op,&events)
+                copy_upload_with_verify(&mut c,&target,&remote,&temp,&g.op,&events,request.verify)
                     .map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
             }
         } else if let Some(previous)=request.resume_id.as_deref() {
@@ -865,7 +919,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
             copy_download_resume(&mut c,&remote,&target,&old,&g.op,&events)
                 .map_err(|e|format!("{e}; partial remains at {}",old.display()))
         } else {
-            copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events,request.retain_partial)
+            copy_download_with_verify(&mut c,&remote,&target,&local.join(partial),&g.op,&events,request.retain_partial,request.verify)
         }
     }).await.map_err(|_| "Transfer task failed".to_string())?
 }
@@ -885,9 +939,9 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
         let remote=wire::join(&home,&format!("bridge-{case}.bin"))?;
         let temp=wire::join(&home,&format!(".bridge-{case}.part"))?;
         let events=Channel::<Progress>::new(|_|Ok(()));
-        copy_upload(&mut c,&source,&remote,&temp,&op,&events)?;
+        copy_upload_with_verify(&mut c,&source,&remote,&temp,&op,&events,true)?;
         let target=local.join("download.bin"); let partial=local.join(".download.part");
-        copy_download(&mut c,&remote,&target,&partial,&op,&events,false)?;
+        copy_download_with_verify(&mut c,&remote,&target,&partial,&op,&events,false,true)?;
         assert_eq!(fs::read(&target).unwrap(),bytes);
         assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
         let cancelled=Arc::new(Operation::default()); let mut slave=connect(&d,&cancelled)?;
@@ -910,7 +964,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let source=local.join("source.bin");let bytes:Vec<u8>=(0..65537).map(|n|(n%256)as u8).collect();fs::write(&source,&bytes).unwrap();
     let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
     let events=Channel::<Progress>::new(|_|Ok(()));
-    copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    copy_upload_with_verify(&mut c,&source,&remote,&temp,&op,&events,true).unwrap();
     // Native Windows ssh2 adapter also verifies the real partial-resume path.
     let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();
     let resume_part=wire::join(&home,&format!(".native-resume-{case}.part")).unwrap();
@@ -922,7 +976,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events,false).unwrap();
     assert_eq!(fs::read(&resume_local).unwrap(),bytes);
     let target=local.join("download.bin");let partial=local.join(".download.part");
-    copy_download(&mut c,&remote,&target,&partial,&op,&events,false).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
+    copy_download_with_verify(&mut c,&remote,&target,&partial,&op,&events,false,true).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
     assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
     let folder=format!("native-folder-{case}");
@@ -971,6 +1025,18 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn readback_detects_corrupt_or_truncated_bytes() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("sample");
+        fs::write(&path,b"abcd").unwrap();
+        let mut good=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut good,b"ab").is_ok());
+        assert!(verify_local_chunk(&mut good,b"cd").is_ok());
+        let mut bad=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut bad,b"abce").is_err());
+        let mut short=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut short,b"abcde").is_err());
+    }
     #[test] fn strict_transport_no_password_or_shell() {
         let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,jump:None,control:None,native:None };
         let a = transport_args(&d).unwrap();

@@ -6,6 +6,25 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0/P1 opt-in verified SFTP byte transfers — CI pending
+
+- Added explicit, off-by-default single-file SFTP full-byte readback.
+  Uploads compare the private remote partial with local source before
+  publishing by v3 rename; downloads compare remote source against a
+  private local partial before atomic hard-link publication. Miscompares,
+  size/type/mtime changes, cancellation or timeouts prevent publication.
+- Adds one full SFTP read and is bounded by the 120-second operation
+  watchdog. Existing batch and verified-resume paths are unchanged.
+- Rust negative chunk tests, positive isolated Linux/OpenSSH and
+  Windows/Paramiko fixture paths, and a Playwright opt-in test added.
+  Exact-head CI and native Windows/Arch QA PENDING / NOT TESTED.
+  See docs/V0.5-SFTP-GUI.md.
+- Previous HEAD `61608cb06ea65c6a974e6befe0637280b32f8a0b`
+  [CI 44307245731](https://github.com/RYLE-307/NodeDesk/actions/runs/44307245731)
+  had passed Windows/Ubuntu/browser tasks when observed, Arch pending.
+- PR #13 stays Draft, no main merge, real server access, or release.
+
+
 ### 2026-11-18 P0 SSH/SFTP queued input lifecycle — exact-head CI pending
 
 - xterm's session input queue used to check the session ID when keystrokes

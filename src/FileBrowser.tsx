@@ -28,6 +28,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
   const [localSelection, selectLocal] = useState(""), [remoteSelection, selectRemote] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
   const [progress, setProgress] = useState<Progress | null>(null), [cancelling, setCancelling] = useState(false);
+  const [verifySingleTransfer,setVerifySingleTransfer] = useState(false);
   const gate = useRef(new OperationGate()), mounted = useRef(true);
   const [authSession, setAuthSession] = useState<string | null>(null), [authReady, setAuthReady] = useState(false);
   const [interactive, setInteractive] = useState(false);
@@ -295,7 +296,7 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     void run(id => {
       const events = new Channel<Progress>();
       events.onmessage = p => { if (mounted.current && gate.current.owns(id)) setProgress(p); };
-      return invoke("files_transfer",{id,request:{destination,localDirectory:local!.path,remoteDirectory:remote!.path,name,upload},events});
+      return invoke("files_transfer",{id,request:{destination,localDirectory:local!.path,remoteDirectory:remote!.path,name,upload,verify:verifySingleTransfer},events});
     }, () => {
       // Clear stale destination before reloading it from the backend.
       if (upload) { setRemote(null); selectRemote(""); setBatchRemote([]); } else { setLocal(null); selectLocal(""); setBatchLocal([]); }
@@ -797,6 +798,13 @@ export function FileBrowser({ connection, language }: { connection: Connection; 
     {interactive && <div className="files-login"><SshTerminal key={profile} connection={connection} language={language} kind="filesauth" passwordOnly={!!capabilities?.nativeLogin} onSession={setAuthSession}/><p role="status">{authReady ? (ru ? "Вход выполнен — панели готовы" : "Authenticated — panes ready") : (ru ? "Ожидается вход" : "Waiting for login")}</p></div>}
     {interactive && capabilities?.nativeLogin && <p className="ssh-help">{ru ? "Windows: только пароль/PAM и заранее доверенный host key. Новый ключ сначала сверьте и примите в SSH-консоли. Отмена передачи закрывает файловую сессию; затем подключитесь повторно. Для ключа/агента снимите галочку." : "Windows: password/PAM and a previously trusted host key only. Verify and accept new keys in the SSH console first. Cancelling a transfer closes the Files session; reconnect afterwards. For key/agent, uncheck interactive login."}</p>}
     <p className="ssh-help">{ru ? "При снятой галочке: ключ/агент и ранее доверенный host key (Linux/Windows). Перезапись запрещена. Отмена upload может оставить .nodedesk-*.part. Лимит операции 120 секунд." : "Unchecked: key/agent and previously trusted host key (Linux/Windows). No overwrite. Cancelled uploads may leave .nodedesk-*.part. Operation timeout: 120 seconds."}</p>
+    <label className="files-integrity">
+      <input type="checkbox" aria-label={ru?"Проверить передачу повторным чтением":"Verify single-file transfer by readback"}
+        checked={verifySingleTransfer} disabled={busy}
+        onChange={event=>setVerifySingleTransfer(event.target.checked)}/>
+      {ru?"Проверить байты после передачи (один файл, дополнительное чтение SFTP)":
+        "Verify bytes after transfer (single file, extra SFTP read)"}
+    </label>
     <div className="files-actions">
       <button disabled={!transferAllowed(local?.entries.find(e => e.name === localSelection),local,remote,busy)} onClick={() => transfer(true)}>{ru ? "Загрузить → сервер" : "Upload → remote"}</button>
       <button disabled={!transferAllowed(remote?.entries.find(e => e.name === remoteSelection),local,remote,busy)} onClick={() => transfer(false)}>{ru ? "← Скачать локально" : "← Download locally"}</button>

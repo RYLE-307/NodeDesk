@@ -16,12 +16,12 @@ test("catalog export/import excludes secrets and rejects invalid replacement",as
   expect(JSON.stringify(exported)).not.toContain("never-export");
 
   const before=await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"));
-  await page.locator('input[type="file"]').setInputFiles({name:"bad.json",mimeType:"application/json",buffer:Buffer.from("bad")});
+  await page.locator('input[accept=".json,application/json"]').setInputFiles({name:"bad.json",mimeType:"application/json",buffer:Buffer.from("bad")});
   await expect(page.getByRole("status").last()).toContainText("failed validation");
   expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
 
   page.once("dialog",dialog=>dialog.accept());
-  await page.locator('input[type="file"]').setInputFiles({name:"new.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(catalog([connection("second","Second")])))});
+  await page.locator('input[accept=".json,application/json"]').setInputFiles({name:"new.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(catalog([connection("second","Second")])))});
   await expect(page.getByRole("status").last()).toContainText("Catalog imported");
   const imported=JSON.parse(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1")));
   expect(imported.connections.map(c=>c.name)).toEqual(["Second"]);
@@ -60,4 +60,39 @@ test("merge catalog keeps current sessions, rekeys imported IDs and never import
   await (await chooser2).setFiles({name:"backup.json",mimeType:"application/json",
     buffer:Buffer.from(JSON.stringify(incoming))});
   expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
+});
+
+test("MobaXterm import adds only supported plain endpoints without saving secrets",async({page})=>{
+  await page.addInitScript(value=>localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value)),
+    catalog([connection("existing","Existing")]));
+  await page.goto("/");
+  const moba=[
+    "[Bookmarks]","SubRep=","ImgNum=42",
+    "SSH server=#109#0%ssh.example.org%2222%admin%%0%0",
+    "Ignored telnet=#98#1%legacy.example.org%23%root",
+    "[Bookmarks_1]","SubRep=Clients\\Production","ImgNum=41",
+    "RDP server=#91#4%rdp.example.org%3389%operator%0%0",
+    "VNC server=#128#5%vnc.example.org%5900%-1%0",
+  ].join("\r\n");
+  const chooser=page.waitForEvent("filechooser");
+  await page.getByRole("button",{name:"Import MobaXterm"}).click();
+  page.once("dialog",dialog=>{expect(dialog.message()).toContain("3 imported, 1 skipped");dialog.accept();});
+  await (await chooser).setFiles({name:"sessions.mxtsessions",mimeType:"text/plain",buffer:Buffer.from(moba)});
+  await expect(page.getByRole("status").last()).toContainText("MobaXterm sessions added");
+  const imported=JSON.parse(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1")));
+  expect(imported.connections.map(c=>c.name)).toEqual(["Existing","SSH server","RDP server","VNC server"]);
+  expect(imported.connections.map(c=>c.protocol)).toEqual(["SSH","SSH","RDP","VNC"]);
+  expect(imported.groups.map(g=>g.name)).toEqual(["Clients","Production"]);
+  expect(imported.connections[2].groupId).toBe(imported.groups[1].id);
+  expect(imported.connections[3].groupId).toBe(imported.groups[1].id);
+  expect(imported.connections[1].id).not.toBe("moba-connection-1");
+  expect(JSON.stringify(imported)).not.toContain("never-export");
+
+  const unchanged=JSON.stringify(imported);
+  const chooser2=page.waitForEvent("filechooser");
+  await page.getByRole("button",{name:"Import MobaXterm"}).click();
+  await (await chooser2).setFiles({name:"invalid.mxtsessions",mimeType:"text/plain",
+    buffer:Buffer.from("[Bookmarks]\r\nUnsupported=#98#1%telnet.example%23\r\n")});
+  await expect(page.getByRole("status").last()).toContainText("catalog unchanged");
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(unchanged);
 });

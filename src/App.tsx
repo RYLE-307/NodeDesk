@@ -9,6 +9,7 @@ import { NetworkWorkspace } from "./NetworkWorkspace";
 import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
+import {parseMobaSessions} from "./mobaImport";
 import {
   Catalog,
   Connection,
@@ -32,6 +33,10 @@ const labels = {
     exportCatalog: "Экспорт каталога",
     importCatalog: "Импорт каталога",
     mergeCatalog: "Добавить из каталога",
+    importMoba: "Импорт MobaXterm",
+    mobaConfirm: "Добавить поддерживаемые SSH/RDP/VNC-сессии из MobaXterm? Переносим только имя, адрес, порт, пользователя и группы. Пароли, ключи, команды и прокси НЕ переносятся. Ничего не подключается автоматически.",
+    mobaDone: "Сессии MobaXterm добавлены",
+    mobaFailed: "Не удалось прочитать поддерживаемые сессии MobaXterm; каталог не изменён.",
     mergeConfirm: "Добавить группы и подключения из файла, не удаляя текущие? Все импортированные ID будут заменены новыми, чтобы не связывать записи с сохранёнными секретами. Повторный импорт создаст дубликаты. Настройки и открытые сессии сохранятся.",
     mergeDone: "Подключения добавлены в каталог",
     importFailed: "Файл каталога не прошёл проверку; данные не изменены.",
@@ -101,6 +106,10 @@ const labels = {
     exportCatalog: "Export catalog",
     importCatalog: "Import catalog",
     mergeCatalog: "Merge catalog",
+    importMoba: "Import MobaXterm",
+    mobaConfirm: "Append supported SSH/RDP/VNC sessions from MobaXterm? Only names, hosts, ports, users and folders are imported. Passwords, keys, commands and proxies are NOT imported. Nothing is connected automatically.",
+    mobaDone: "MobaXterm sessions added",
+    mobaFailed: "No supported MobaXterm sessions could be imported; catalog unchanged.",
     mergeConfirm: "Append groups and connections without replacing current entries? All imported IDs will be regenerated to avoid linking existing OS-vault credentials. Importing twice creates duplicates. Settings and open tabs are preserved.",
     mergeDone: "Catalog merged",
     importFailed: "Catalog file failed validation; nothing changed.",
@@ -230,6 +239,7 @@ export default function App() {
   const [sshConfigBusy,setSshConfigBusy]=useState(false);
   const importInput=useRef<HTMLInputElement>(null);
   const importMode=useRef<"replace"|"merge">("replace");
+  const mobaInput=useRef<HTMLInputElement>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
   function showMenu(id: string, x: number, y: number) {
@@ -304,6 +314,16 @@ export default function App() {
         setNotice(merge?t.mergeDone:t.importDone);
       }
     } catch {setNotice(t.importFailed);}
+  }
+  async function importMoba(file:File|undefined) {
+    if(!file)return;
+    try {
+      if(file.size>2_000_000)throw new Error("MobaXterm file too large");
+      const raw=new TextDecoder("windows-1252").decode(await file.arrayBuffer());
+      const parsed=parseMobaSessions(raw);
+      if(!window.confirm(`${t.mobaConfirm} (${parsed.imported} imported, ${parsed.skipped} skipped)`))return;
+      if(commit(mergeCatalog(data,parsed.catalog)))setNotice(t.mobaDone);
+    } catch {setNotice(t.mobaFailed);}
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -685,9 +705,12 @@ export default function App() {
                 <button type="button" onClick={exportCatalog} disabled={blocked}>{t.exportCatalog}</button>
                 <button type="button" onClick={()=>{importMode.current="replace";importInput.current?.click();}} disabled={blocked}>{t.importCatalog}</button>
                 <button type="button" onClick={()=>{importMode.current="merge";importInput.current?.click();}} disabled={blocked}>{t.mergeCatalog}</button>
+                <button type="button" onClick={()=>mobaInput.current?.click()} disabled={blocked}>{t.importMoba}</button>
               </div>
               <input ref={importInput} type="file" accept=".json,application/json" hidden
                 onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importCatalog(file);}}/>
+              <input ref={mobaInput} type="file" accept=".mxtsessions" hidden
+                onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importMoba(file);}}/>
               <input
                 type="search"
                 aria-label={t.search}

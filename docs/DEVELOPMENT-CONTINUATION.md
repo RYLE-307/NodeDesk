@@ -6,6 +6,23 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 conservative MobaXterm .mxtsessions import — pending exact-head CI
+
+- Parses local Windows-1252 MobaXterm bookmark exports, reading only the
+  documented SSH (type 0), RDP (type 4) and VNC (type 5) endpoint fields.
+  Folders in SubRep are mapped to NodeDesk group hierarchy.
+- Unsupported sessions including Telnet, SFTP-only and other types are skipped
+  and counted. No advanced SSH options, shell commands, proxy configuration,
+  client key paths, passwords, tokens, redirections or clipboard policies
+  transfer. Import never executes source content or connects to a host.
+- Requires explicit confirmation with supported/skipped counts, appends to
+  existing catalog through its safe-merge rekeying, and preserves current
+  sessions and preferences. Invalid/no-supported source fails closed.
+- Node parser and Playwright regression tests were added. Exact-head CI and
+  native Windows/Arch GUI acceptance remain pending. This is partial CAT-03,
+  not full MobaXterm feature parity. See docs/MOBAXTERM-IMPORT.md.
+
+
 ### 2026-11-18 P1 safe catalog merge implementation — pending exact-head CI
 
 - Starting feature-branch HEAD `c1b20c782162a2146d4be6c8cdfc7ac3490aa54e`

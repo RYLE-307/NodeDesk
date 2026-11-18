@@ -391,23 +391,42 @@ async fn plain_auth(
         ));
     }
 
-    let mut msg = Vec::with_capacity(8 + user.len() + password.len());
+    // A borrowed write can be cancelled while pending. Keep the serialized
+    // password in an RAII wiping buffer so task cancellation, write failures
+    // and normal completion all zeroize it, not only the successful await path.
+    let msg = plain_auth_message(&user, &password);
+    write_all(&mut stream, &msg).await?;
+
+    Ok(stream)
+}
+
+/// The wire message includes the password in plaintext *inside verified TLS*.
+/// Zeroizing owns the complete buffer across the asynchronous write, including
+/// cancellation at an await point; never return an unprotected Vec here.
+fn plain_auth_message(user: &str, password: &str) -> zeroize::Zeroizing<Vec<u8>> {
+    let mut msg = zeroize::Zeroizing::new(Vec::with_capacity(8 + user.len() + password.len()));
     msg.extend_from_slice(&(user.len() as u32).to_be_bytes());
     msg.extend_from_slice(&(password.len() as u32).to_be_bytes());
     msg.extend_from_slice(user.as_bytes());
     msg.extend_from_slice(password.as_bytes());
-
-    let r = write_all(&mut stream, &msg).await;
-    // The buffer held the password; don't leave it lying in the allocator.
-    zeroize::Zeroize::zeroize(&mut msg);
-    r?;
-
-    Ok(stream)
+    msg
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x509_plain_message_owns_secret_in_zeroizing_buffer() {
+        // This helper's return type enforces zeroization on every Drop path,
+        // including an async write future that is cancelled while pending.
+        let payload: zeroize::Zeroizing<Vec<u8>> =
+            plain_auth_message("operator", "fixture-only");
+        assert_eq!(&payload[..4], &8u32.to_be_bytes());
+        assert_eq!(&payload[4..8], &12u32.to_be_bytes());
+        assert_eq!(&payload[8..16], b"operator");
+        assert_eq!(&payload[16..], b"fixture-only");
+    }
 
     fn opts(allow_insecure: bool) -> ConnectOptions {
         let mut o = ConnectOptions::vnc("h", 5900);

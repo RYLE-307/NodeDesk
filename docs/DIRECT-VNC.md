@@ -48,3 +48,19 @@ wipes its input password when target or pin validation fails, before it can
 reach the VNC core. The credential prompt path clones a saved password only
 when that credential actually satisfies the selected security method. Other transient library copies still
 need review before guaranteed password zeroization can be claimed.
+
+## 2026-11-18 — VeNCrypt plaintext-auth write-buffer lifetime
+
+The serialized X509Plain username/password payload is now held in a
+`zeroize::Zeroizing<Vec<u8>>` across the asynchronous TLS write. If that
+write fails or the task is dropped mid-await (for example, on cancellation),
+the owned buffer is wiped on Drop; the previous explicit wipe ran only
+after `write_all` completed. The password string is separately held in
+`Zeroizing<String>`. A Rust unit test checks the wire payload and the
+RAII-protected type; existing disposable X509Plain/TLS/SPKI fixtures remain
+the protocol-level verification.
+
+This is a targeted reduction of one residual secret-copy risk, **not**
+proof that every password copy in the remote-core/transport/OS library is
+securely erased. Full RDP/VNC memory audit and native Windows/Arch acceptance
+remain open.

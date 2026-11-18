@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 VNC VeNCrypt async auth-buffer cleanup — exact-head CI pending
+
+- Parent HEAD `4d417fbdc6336f7bc3a29e085a929413bdf6ceb4`
+  removed the saved-secret read IPC and repaired Playwright bulk-edit
+  selector; its full CI must be checked before closing.
+- In the vendored VNC VeNCrypt X509Plain path, the serialized
+  username/password message previously used a normal `Vec<u8>` that was
+  explicitly zeroized only after awaiting the TLS write. A cancelled write
+  future could drop it before the wipe. The message now uses
+  `Zeroizing<Vec<u8>>` across `write_all`, so normal completion,
+  failures and cancellation all run zeroization on Drop.
+- Added a Rust unit test for the exact bounded fixture wire representation
+  and for the RAII-protected return type; existing disposable TLS/SPKI
+  handshake tests must still pass. No real server or credential used.
+- This closes one **specific** VNC secret-copy risk, not the complete
+  RDP/VNC third-party memory audit. Native Windows/Arch GUI QA remains
+  **NOT TESTED**. See docs/DIRECT-VNC.md.
+- Next: check exact-head CI; continue open P0/P1, no main merge or release.
+
+
 ### 2026-11-18 P0 Vault secret read IPC removal — exact-head CI pending
 
 - Starting branch HEAD `df2bc5626fc94b164995bb689f954392056d5a7a`

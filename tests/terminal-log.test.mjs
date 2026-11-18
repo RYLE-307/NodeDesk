@@ -56,7 +56,7 @@ test("terminal log bounds line scans and rejects corrupt length",()=>{
 
 test("bounded export favors latest terminal lines over outdated history",()=>{
   const data=collectTerminalScrollback(buffer([
-    line("old-prefix".repeat(10000)),
+    line("old-prefix".repeat(60000)),
     line("recent terminal data"),
     line("prompt$"),
   ]));

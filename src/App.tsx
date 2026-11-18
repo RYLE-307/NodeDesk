@@ -10,6 +10,7 @@ import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
 import {parseMobaSessions} from "./mobaImport";
+import {sshConfigPreviewToCatalog} from "./sshConfigImport";
 import {
   Catalog,
   Connection,
@@ -34,6 +35,11 @@ const labels = {
     importCatalog: "Импорт каталога",
     mergeCatalog: "Добавить из каталога",
     importMoba: "Импорт MobaXterm",
+    importSshConfig: "Импорт SSH config",
+    importSshConfirm: "Добавить Host-записи из локального OpenSSH config? Переносятся только псевдоним, адрес, порт и пользователь. Ключи, команды, ProxyCommand и настройки аутентификации НЕ переносятся. Записи без User потребуют ручного заполнения. Существующий каталог сохраняется, все новые ID изменяются. Повторный импорт создаст дубликаты.",
+    importSshDone: "Записи SSH config добавлены",
+    importSshEmpty: "Нет поддерживаемых Host-записей SSH config",
+    importSshFailed: "Не удалось импортировать SSH config; каталог не изменён.",
     mobaConfirm: "Добавить поддерживаемые SSH/RDP/VNC-сессии из MobaXterm? Переносим только имя, адрес, порт, пользователя и группы. Пароли, ключи, команды и прокси НЕ переносятся. Ничего не подключается автоматически.",
     mobaDone: "Сессии MobaXterm добавлены",
     mobaFailed: "Не удалось прочитать поддерживаемые сессии MobaXterm; каталог не изменён.",
@@ -107,6 +113,11 @@ const labels = {
     importCatalog: "Import catalog",
     mergeCatalog: "Merge catalog",
     importMoba: "Import MobaXterm",
+    importSshConfig: "Import SSH config",
+    importSshConfirm: "Append Host entries from local OpenSSH config? Only aliases, hosts, ports and users are transferred. Keys, commands, ProxyCommand and authentication settings are NOT imported. Entries without User must be edited manually. Existing entries are preserved and imported IDs are replaced. Repeated import creates duplicates.",
+    importSshDone: "SSH config entries added",
+    importSshEmpty: "No supported SSH config Host entries",
+    importSshFailed: "SSH config could not be imported; catalog unchanged.",
     mobaConfirm: "Append supported SSH/RDP/VNC sessions from MobaXterm? Only names, hosts, ports, users and folders are imported. Passwords, keys, commands and proxies are NOT imported. Nothing is connected automatically.",
     mobaDone: "MobaXterm sessions added",
     mobaFailed: "No supported MobaXterm sessions could be imported; catalog unchanged.",
@@ -237,6 +248,7 @@ export default function App() {
   const [sshConfigHosts,setSshConfigHosts]=useState<{alias:string;host:string;port:number;username:string}[]|null>(null);
   const [sshConfigError,setSshConfigError]=useState("");
   const [sshConfigBusy,setSshConfigBusy]=useState(false);
+  const [sshBulkImportBusy,setSshBulkImportBusy]=useState(false);
   const importInput=useRef<HTMLInputElement>(null);
   const importMode=useRef<"replace"|"merge">("replace");
   const mobaInput=useRef<HTMLInputElement>(null);
@@ -324,6 +336,22 @@ export default function App() {
       if(!window.confirm(`${t.mobaConfirm} (${parsed.imported} imported, ${parsed.skipped} skipped)`))return;
       if(commit(mergeCatalog(data,parsed.catalog)))setNotice(t.mobaDone);
     } catch {setNotice(t.mobaFailed);}
+  }
+  async function importLocalSshConfig() {
+    if(blocked || sshBulkImportBusy)return;
+    if(!isTauri()){
+      setNotice(t.importSshFailed);
+      return;
+    }
+    setSshBulkImportBusy(true);
+    try {
+      const preview=await invoke<unknown>("ssh_config_preview");
+      const incoming=sshConfigPreviewToCatalog(preview);
+      if(!incoming.connections.length){setNotice(t.importSshEmpty);return;}
+      if(!window.confirm(`${t.importSshConfirm} (${incoming.connections.length})`))return;
+      if(commit(mergeCatalog(data,incoming)))setNotice(t.importSshDone);
+    }catch{setNotice(t.importSshFailed);}
+    finally{setSshBulkImportBusy(false);}
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -706,6 +734,7 @@ export default function App() {
                 <button type="button" onClick={()=>{importMode.current="replace";importInput.current?.click();}} disabled={blocked}>{t.importCatalog}</button>
                 <button type="button" onClick={()=>{importMode.current="merge";importInput.current?.click();}} disabled={blocked}>{t.mergeCatalog}</button>
                 <button type="button" onClick={()=>mobaInput.current?.click()} disabled={blocked}>{t.importMoba}</button>
+                <button type="button" disabled={blocked || sshBulkImportBusy} onClick={()=>void importLocalSshConfig()}>{t.importSshConfig}</button>
               </div>
               <input ref={importInput} type="file" accept=".json,application/json" hidden
                 onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importCatalog(file);}}/>

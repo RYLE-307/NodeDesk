@@ -6,6 +6,25 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P1 OpenSSH config bulk import — CI pending
+
+- Added explicitly triggered **Import SSH config** action to the catalog.
+  It uses existing safe `ssh_config_preview` backend and imports only
+  validated Host alias, HostName, port and username. No private key paths,
+  passwords, proxy commands or SSH configuration execution is imported.
+- Imported records are appended through `mergeCatalog` with entirely new
+  UUIDs, so they cannot automatically reuse saved OS Vault credentials.
+  Existing sessions/settings remain. A confirmation shows the count;
+  repeat imports append duplicates. Missing User needs manual editing.
+- Pure Node and Playwright test fixtures cover normal, invalid, duplicate
+  and secret-like preview data. No real user SSH config, remote server,
+  credentials or VPN profiles accessed. Exact-head CI and native GUI
+  acceptance are pending. See docs/SSH-CONFIG-IMPORT.md.
+- Parent terminal TXT export HEAD `e55d1aed823333090935496c8e4dab36728fed43`
+  CI should be checked before closing its corresponding gate.
+- Continue P0/P1 functions, keep draft PR #13 open; no main merge or release.
+
+
 ### 2026-11-18 P1 explicit terminal scrollback TXT export — exact-head CI pending
 
 - Verified prior HEAD `d3e7ca10e40585fdcc8834472b1a3ce760db41a6`

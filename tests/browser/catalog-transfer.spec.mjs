@@ -96,3 +96,59 @@ test("MobaXterm import adds only supported plain endpoints without saving secret
   await expect(page.getByRole("status").last()).toContainText("catalog unchanged");
   expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(unchanged);
 });
+
+
+test("bulk SSH config import appends safe previews without reading keys or auto-connect",async({page})=>{
+  const original=connection("first","Existing");
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;
+    window.sshCalls=[];let next=0;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return ++next;},unregisterCallback(){},
+      async invoke(command){
+        window.sshCalls.push(command);
+        if(command==="ssh_config_preview")return [
+          {alias:"LAB",host:"lab.example.test",port:2222,username:"operator",
+            identityFile:"/private/secret-key",proxyCommand:"not-imported"},
+          {alias:"WEB",host:"web.example.test",port:22,username:""}
+        ];
+      },
+    };
+  },catalog([original]));
+  await page.goto("/");
+  const importButton=page.getByRole("button",{name:"Import SSH config"});
+  page.once("dialog",dialog=>{expect(dialog.message()).toContain("(2)");dialog.accept();});
+  await importButton.click();
+  await expect(page.getByRole("status").last()).toContainText("SSH config entries added");
+  const saved=JSON.parse(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1")));
+  expect(saved.connections.map(c=>c.name)).toEqual(["Existing","LAB","WEB"]);
+  expect(saved.connections[1]).toMatchObject({host:"lab.example.test",port:2222,username:"operator",protocol:"SSH"});
+  expect(saved.connections[2].username).toBe("");
+  expect(saved.connections[1].id).not.toBe("ssh-preview-1");
+  expect(JSON.stringify(saved)).not.toContain("secret-key");
+  expect(JSON.stringify(saved)).not.toContain("proxyCommand");
+  expect(await page.evaluate(()=>window.sshCalls)).toEqual(["ssh_config_preview"]);
+  const before=JSON.stringify(saved);
+  page.once("dialog",dialog=>dialog.dismiss());
+  await importButton.click();
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
+});
+test("malformed SSH config preview fails without modifying the catalog",async({page})=>{
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd){
+        if(cmd==="ssh_config_preview")
+          return [{alias:"bad",host:"-oProxyCommand=evil",port:22,username:"root"}];
+      },
+    };
+  },catalog([connection("first","Existing")]));
+  await page.goto("/");
+  const before=await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"));
+  await page.getByRole("button",{name:"Import SSH config"}).click();
+  await expect(page.getByRole("status").last()).toContainText("catalog unchanged");
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).toBe(before);
+});

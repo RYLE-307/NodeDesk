@@ -241,7 +241,10 @@ pub async fn vnc_direct_connect(
     clipboard: bool,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    let config = options(&target, password, spki_sha256)?;
+    // Do not construct an unguarded library credential until after the
+    // session registry accepts this ID. Duplicate/poisoned-lock failures
+    // must wipe the incoming password without ever allocating VNC options.
+    let mut password = zeroize::Zeroizing::new(password);
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
     let handle = {
         let mut active = sessions
@@ -251,6 +254,7 @@ pub async fn vnc_direct_connect(
         if active.contains_key(&target.id) {
             return Err("VNC connection already active".into());
         }
+        let config = options(&target, std::mem::take(&mut *password), spki_sha256)?;
         let handle = Arc::new(Session::spawn(target.id.clone(), config, tx));
         active.insert(
             target.id.clone(),

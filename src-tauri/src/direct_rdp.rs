@@ -265,24 +265,14 @@ pub async fn rdp_direct_connect(
     certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    // Config owns the transient password after IPC; no catalog, WebView storage,
-    // command line, URL, file or log contains it. The pinned IronRDP revision
-    // stores it as a String, so memory wiping remains an open security gate.
-    let settings = config_pinned(
-        &target,
-        password,
-        width,
-        height,
-        clipboard,
-        certificate_sha256,
-    )?;
+    // Keep the IPC password wipe-on-drop until the native registry accepts
+    // this target. Previously, rejecting a duplicate dropped an IronRDP
+    // Config/Client that held an ordinary, non-wiping String password.
+    // The pinned IronRDP revision still retains password copies after
+    // a *successful* construction; full memory wiping remains an open gate.
+    let mut password = Zeroizing::new(password);
     let (output, mut receiver) = output_channel(8);
-    let client = RdpClient::new(settings, output).with_auto_reconnect(3);
-    let session = Arc::new(Session {
-        sender: client.input_sender(),
-        input: Mutex::new(Database::new()),
-    });
-    {
+    let (client, session) = {
         let mut all = sessions
             .0
             .lock()
@@ -290,8 +280,22 @@ pub async fn rdp_direct_connect(
         if all.contains_key(&target.id) {
             return Err("RDP connection already active".into());
         }
+        let settings = config_pinned(
+            &target,
+            std::mem::take(&mut *password),
+            width,
+            height,
+            clipboard,
+            certificate_sha256,
+        )?;
+        let client = RdpClient::new(settings, output).with_auto_reconnect(3);
+        let session = Arc::new(Session {
+            sender: client.input_sender(),
+            input: Mutex::new(Database::new()),
+        });
         all.insert(target.id.clone(), Arc::clone(&session));
-    }
+        (client, session)
+    };
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
     std::thread::Builder::new()

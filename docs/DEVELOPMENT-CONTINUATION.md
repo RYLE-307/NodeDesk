@@ -6,6 +6,25 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 RDP/VNC duplicate-session credential lifetime — CI pending
+
+- On duplicate session ID or registry lock failure, the direct RDP/VNC
+  entrypoints previously constructed password-bearing protocol objects
+  before refusal. IronRDP's `Config` holds a plain String that was
+  dropped without a guaranteed wipe. The entrypoints now wrap the incoming
+  password in `Zeroizing<String>`, acquire and inspect the session registry
+  first, then create the library config only when the ID is accepted.
+- No changed network policy, trust prompts, session IDs or vault secret IPC.
+  Existing duplicate, lifecycle and disposable TLS/CLIPRDR test suites
+  remain part of the Windows/Ubuntu/Arch CI gate.
+- Incomplete third-party secret-copy audit remains an explicit RC blocker.
+  Native GUI QA **NOT TESTED**. No production target or credentials used.
+- Previous VNC VeNCrypt auth-buffer HEAD
+  `87cf684c2d59e3cafb00b9864bc42ce86c23e093` has a separate
+  exact-head CI run; check it and this new final HEAD before marking green.
+- No changes to main, draft PR #13 remains unmerged; no release or redesign.
+
+
 ### 2026-11-18 P0 VNC VeNCrypt async auth-buffer cleanup — exact-head CI pending
 
 - Parent HEAD `4d417fbdc6336f7bc3a29e085a929413bdf6ceb4`

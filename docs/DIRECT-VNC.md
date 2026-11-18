@@ -64,3 +64,14 @@ This is a targeted reduction of one residual secret-copy risk, **not**
 proof that every password copy in the remote-core/transport/OS library is
 securely erased. Full RDP/VNC memory audit and native Windows/Arch acceptance
 remain open.
+
+## 2026-11-18 — duplicate-session rejection
+
+The direct VNC entrypoint now holds the incoming password in
+`Zeroizing<String>` **before** acquiring the active-session registry
+mutex. A duplicate ID or poisoned registry returns without creating
+library `ConnectOptions`; no unguarded password-bearing configuration
+is dropped on these refusal paths. Once accepted, the options are
+transferred to the VNC session supervisor (which wipes its stored
+credential when the session is torn down). This does not prove all
+third-party temporary copies are eliminated.

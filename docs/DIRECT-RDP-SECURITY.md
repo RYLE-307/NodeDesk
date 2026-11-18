@@ -40,3 +40,14 @@ so this does not establish complete password zeroization.
 Native Windows and Arch GUI acceptance, clipboard round-trip, reconnect
 acceptance, and guaranteed zeroization of all IronRDP password copies remain
 **NOT TESTED**. No release may claim these gates as complete based only on CI.
+
+## 2026-11-18 — duplicate-session rejection
+
+The direct RDP entrypoint now wraps the incoming IPC password in
+`Zeroizing<String>` before locking the native session registry. The
+duplicate-session check occurs **before** constructing an IronRDP
+`Config` or `RdpClient`, so a rejected request cannot drop a client
+with a non-wiping password copy. The accepted session uses the same
+certificate and CredSSP policy as before. IronRDP's own password
+lifecycle after a successful connection still requires a separate
+memory audit; this change must not be represented as complete wiping.

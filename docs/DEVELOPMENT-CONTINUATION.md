@@ -6,6 +6,25 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 private SFTP download partial identity check — CI pending
+
+- Both ordinary and readback-verified downloads now re-inspect the
+  private local partial immediately before final no-overwrite hard-link
+  publication. Refuse missing/changed size, symlink, unexpected Unix
+  inode/device/hard-link count or Windows reparse point, or modified-time
+  mismatch. Verified resume already had similar checks.
+- Rust disposable tempdir tests cover original, missing, replaced,
+  symlink and hard-linked partials without network access.
+- This narrows a local replacement race but does not provide an
+  atomic file-descriptor-to-path binding across the last check and
+  hard_link. Do not claim the remaining TOCTOU is eliminated.
+- Parent HEAD `34b819bdb89db307ddf867e514005067a8599cd3`
+  CI run 44330141381 passed frontend and browser at the check; desktop
+  and Arch preview still pending. New exact-head CI pending.
+- Native Windows/Arch manual QA NOT TESTED. PR #13 remains draft;
+  main and releases untouched, no real servers used.
+
+
 ### 2026-11-18 P1 SFTP verified batch queues — exact-head CI pending
 
 - Parent HEAD `73e27901b0966b3335acf5e2b4eaf4fbc500b0d2`

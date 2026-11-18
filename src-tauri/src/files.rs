@@ -703,6 +703,39 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
 fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool) -> Result<()> {
     copy_download_with_verify(c,remote,target,temp,op,events,keep_partial,false)
 }
+/// A private temporary download must still be the same file that was
+/// opened and synced. Check immediately before no-overwrite publication.
+/// This narrows a local filesystem replacement race; it cannot eliminate
+/// concurrent changes in the interval between this check and hard_link.
+fn check_download_partial_before_publish(
+    temp:&Path,opened:&fs::Metadata,expected:u64
+)->Result<()> {
+    let current=fs::symlink_metadata(temp)
+        .map_err(|_|"Private download partial disappeared before publication")?;
+    if !opened.is_file() || opened.len()!=expected ||
+       !current.is_file() || current.is_symlink() || current.len()!=expected {
+        return Err("Private download partial changed before publication".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev()!=current.dev() || opened.ino()!=current.ino() ||
+           opened.nlink()!=1 || current.nlink()!=1 {
+            return Err("Private download partial was replaced or hard linked".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if current.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point download partial refused".into());
+        }
+    }
+    if opened.modified().map_err(|_|"Private download metadata unavailable")? !=
+       current.modified().map_err(|_|"Private download metadata unavailable")? {
+        return Err("Private download partial changed before publication".into());
+    }
+    Ok(())
+}
+
 fn copy_download_with_verify(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool,verify:bool) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
@@ -719,7 +752,9 @@ fn copy_download_with_verify(c: &mut Sftp, remote: &str, target: &Path, temp: &P
     if a.size.is_some_and(|size| size != offset) { return Err("Remote source changed during download".into()); }
     f.sync_all().map_err(|_| "Local sync failed")?;
     if verify {verify_sftp_readback(c,remote,&mut f,offset,op)?;}
+    let open_metadata=f.metadata().map_err(|_|"Private download partial unavailable")?;
     drop(f); op.check()?;
+    check_download_partial_before_publish(temp,&open_metadata,offset)?;
     // Atomic no-replace publication (rename would overwrite on Unix).
     fs::hard_link(temp,target).map_err(|_| "Cannot publish download: destination exists or filesystem lacks hard links".to_string())?;
     if keep_partial {
@@ -1025,6 +1060,28 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn private_download_publication_requires_same_regular_partial() {
+        let dir=tempfile::tempdir().unwrap();
+        let partial=dir.path().join(".nodedesk-test.part");
+        fs::write(&partial,b"test").unwrap();
+        let opened=fs::File::open(&partial).unwrap().metadata().unwrap();
+        assert!(check_download_partial_before_publish(&partial,&opened,4).is_ok());
+        assert!(check_download_partial_before_publish(&partial,&opened,5).is_err());
+        fs::remove_file(&partial).unwrap();
+        assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+        #[cfg(unix)] {
+            let old=dir.path().join("old");
+            fs::write(&old,b"test").unwrap();
+            fs::write(&partial,b"test").unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+            fs::remove_file(&partial).unwrap();
+            std::os::unix::fs::symlink(&old,&partial).unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+            fs::remove_file(&partial).unwrap();
+            fs::hard_link(&old,&partial).unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+        }
+    }
     #[test] fn readback_detects_corrupt_or_truncated_bytes() {
         let dir=tempfile::tempdir().unwrap();
         let path=dir.path().join("sample");

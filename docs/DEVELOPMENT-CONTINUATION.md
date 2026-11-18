@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-18 P0 Vault secret read IPC removal — exact-head CI pending
+
+- Starting branch HEAD `df2bc5626fc94b164995bb689f954392056d5a7a`
+  failed only browser job in [CI 44292520192](https://github.com/RYLE-307/NodeDesk/actions/runs/44292520192):
+  Playwright strict selector for **Favorite selected** also matched **Unfavorite selected**.
+  All five other Windows/Ubuntu/Arch jobs passed. Corrected selector with
+  `exact:true` in the same block.
+- Closed a concrete stored credential exposure: removed `vault_get`
+  from Tauri's command registration and implementation, removed Vault GUI
+  **Reveal** (formerly returning credentials to WebView), and updated the
+  browser fixture to assert that no reveal UI or read call is available.
+  Saving/checking/deleting credentials is unchanged. Native RDP/VNC
+  retrieval remains target-bound and does not return stored secrets over IPC.
+- No real credentials, servers, profiles or keyring used during this block.
+  Exact-head CI and Windows/Arch native GUI vault acceptance are **NOT TESTED**
+  until confirmed; RDP/VNC library memory-copy cleanup remains open.
+- Next: check full exact-head CI, continue P0 security and P1 by bounded
+  functional blocks. PR #13 remains draft; do not merge or release.
+
+
 ### 2026-11-18 P1 CAT-04 bounded bulk catalog editing — exact-head CI pending
 
 - Added explicit bulk selection (maximum 50 connections) with group move

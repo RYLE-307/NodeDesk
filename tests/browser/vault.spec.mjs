@@ -20,7 +20,6 @@ test("OS vault locks by default, stores no WebView secret and binds the saved ta
         if(!f.open)throw Error("Vault is locked");
         if(cmd==="vault_has")return !!f.record;
         if(cmd==="vault_put"){f.record={target:args.target,secret:args.secret};return;}
-        if(cmd==="vault_get")return f.record?.secret??null;
         if(cmd==="vault_delete"){f.record=null;return;}
         throw Error("Unexpected command: "+cmd);
       }};
@@ -36,6 +35,9 @@ test("OS vault locks by default, stores no WebView secret and binds the saved ta
   await vault.getByLabel("New credential").fill("fixture-private-password");
   await vault.getByRole("button",{name:"Save in OS store"}).click();
   await expect(vault).toContainText("Credential saved");
+  await expect(vault.getByRole("button",{name:"Reveal for 15 seconds"})).toHaveCount(0);
+  await expect(vault.getByLabel("Temporary reveal")).toHaveCount(0);
+  expect(await page.evaluate(()=>window.fixture.calls.map(c=>c.cmd))).not.toContain("vault_get");
   expect(await page.evaluate(()=>Object.values(localStorage).join(" "))).not.toContain("fixture-private-password");
   expect(await page.evaluate(()=>Object.values(sessionStorage).join(" "))).not.toContain("fixture-private-password");
   const record=await page.evaluate(()=>window.fixture.record);

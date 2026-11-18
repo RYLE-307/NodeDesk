@@ -29,19 +29,27 @@ GUI and Arch Secret Service QA remain **NOT TESTED**.
   UTF-8 byte secrets. It returns generic errors without secret contents.
   Secrets in the native process are zeroized where owned; the OS library and
   WebView runtime may make additional transient copies.
-- The UI keeps password inputs outside React state and clears them after use.
-  Explicit **Reveal** copies a credential into the current WebView for at most
-  15 seconds. It must be used only on a trusted local desktop. Neither this
-  path nor save writes a secret to localStorage, sessionStorage, catalog JSON,
-  URLs, process arguments or logs.
+- The UI keeps newly entered password values out of React state and clears
+  the input after use. **Saved credentials cannot be revealed or returned to
+  the WebView.** The formerly supported `vault_get` IPC endpoint and
+  **Reveal** control were removed on 2026-11-18 to close a credential-exposure
+  path. Credential retrieval for embedded RDP/VNC is native-only, bound to
+  the exact catalog ID, protocol, host, port and username after vault unlock.
+  User-entered passwords still necessarily pass through the input WebView
+  when initially saved; the OS store and third-party libraries may create
+  additional temporary copies. Stored secrets are not included in catalog
+  export, localStorage, sessionStorage, process arguments or logs.
 
 ## Current limits and acceptance
 
-This is a working CRUD vault, **not yet automatic protocol credential use**.
-SSH password/PAM remains at the terminal prompt; external RDP/VNC viewers
-retain their own credential handling. Future embedded clients must bind the
-saved credential to the authenticated gateway and target before use. Do not
-send a saved password merely in response to an untrusted remote prompt.
+The vault provides write, presence-check and delete operations to WebView,
+but **no secret-read IPC operation**. SSH password/PAM remains at the
+terminal's hidden prompt. Embedded direct RDP/VNC clients can retrieve the
+saved credential inside the native backend, tied to the validated target and
+certificate trust; the credential is never returned to WebView. The native
+RDP/VNC third-party protocol libraries may still retain additional password
+copies, which remains a separate open security gate. Do not send a stored
+password in response to an untrusted remote prompt.
 
 Before closing SEC-01, test native Windows Credential Manager and Arch Secret
 Service unlock/lock, save/read/delete, missing or locked OS store, restart,

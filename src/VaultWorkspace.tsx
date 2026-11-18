@@ -13,15 +13,10 @@ export function VaultWorkspace({connections,language}:{connections:Connection[];
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState("");
   const input=useRef<HTMLInputElement>(null);
-  const reveal=useRef<HTMLInputElement>(null);
-  const timer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const target=connections.find(c=>c.id===selected);
   const identity=target&&vaultTarget(target);
   function clear(){
     if(input.current)input.current.value="";
-    if(reveal.current)reveal.current.value="";
-    if(timer.current)clearTimeout(timer.current);
-    timer.current=null;
   }
   useEffect(()=>{if(isTauri())void invoke<boolean>("vault_status").then(setOpen).catch(()=>setOpen(false));
     return clear;},[]);
@@ -30,7 +25,7 @@ export function VaultWorkspace({connections,language}:{connections:Connection[];
       .then(value=>{if(current)setHas(value);}).catch(()=>{if(current)setHas(null);});
     return ()=>{current=false;};
   },[open,selected,target?.host,target?.port,target?.username,target?.protocol]);
-  async function action(kind:"unlock"|"lock"|"put"|"delete"|"reveal"){
+  async function action(kind:"unlock"|"lock"|"put"|"delete"){
     if(busy||!isTauri()){
       setMessage(ru?"Нужна настольная версия NodeDesk.":"NodeDesk desktop required.");return;
     }
@@ -52,13 +47,6 @@ export function VaultWorkspace({connections,language}:{connections:Connection[];
         if(!window.confirm(ru?"Удалить сохранённый секрет?":"Delete the saved credential?"))return;
         await invoke("vault_delete",{target:identity});clear();setHas(false);
         setMessage(ru?"Секрет удалён.":"Credential deleted.");
-      }else{
-        if(!window.confirm(ru?"Показать секрет на 15 секунд?":"Reveal the credential for 15 seconds?"))return;
-        const secret=await invoke<string|null>("vault_get",{target:identity});
-        if(!secret)throw new Error("Credential missing");
-        if(reveal.current)reveal.current.value=secret;
-        if(timer.current)clearTimeout(timer.current);
-        timer.current=setTimeout(()=>{if(reveal.current)reveal.current.value="";timer.current=null;},15000);
       }
     }catch{
       clear();setMessage(ru?"Операция не выполнена. Проверьте системное хранилище и блокировку.":
@@ -67,14 +55,14 @@ export function VaultWorkspace({connections,language}:{connections:Connection[];
   }
   return <section className="pane vault-workspace" aria-label={ru?"Защищённое хранилище":"Credential vault"}>
     <h2>{ru?"Защищённое хранилище":"Credential vault"}</h2>
-    <p>{ru?"Секреты сохраняются только в Windows Credential Manager или Linux Secret Service. При отсутствии системного хранилища сохранение недоступно. Разблокировка открывает доступ в этом запущенном приложении; блокировка закрывает его, но не блокирует саму ОС.":
-      "Credentials are stored only in Windows Credential Manager or Linux Secret Service. Saving fails if the OS store is unavailable. Unlock enables access in this running app; Lock does not lock the OS store itself."}</p>
+    <p>{ru?"Секреты сохраняются только в Windows Credential Manager или Linux Secret Service. При отсутствии системного хранилища сохранение недоступно. Разблокировка открывает доступ в этом запущенном приложении; блокировка закрывает его, но не блокирует саму ОС. Сохранённый секрет нельзя вывести в WebView: для RDP/VNC его передаёт нативный backend.":
+      "Credentials are stored only in Windows Credential Manager or Linux Secret Service. Saving fails if the OS store is unavailable. Unlock enables access in this running app; Lock does not lock the OS store itself. Saved secrets cannot be revealed to WebView: native RDP/VNC clients retrieve them directly."}</p>
     <div className="actions">
       <button type="button" disabled={busy||open} onClick={()=>void action("unlock")}>{ru?"Разблокировать":"Unlock"}</button>
       <button type="button" disabled={busy||!open} onClick={()=>void action("lock")}>{ru?"Заблокировать":"Lock"}</button>
     </div>
     <label>{ru?"Подключение":"Connection"}
-      <select aria-label={ru?"Подключение для секрета":"Credential connection"} value={selected}
+      <select aria-label={ru?"Подключение для секрета":"Credential connection"} value={selected} disabled={busy}
         onChange={e=>setSelected(e.target.value)}>
         <option value="">{ru?"Выберите сохранённое подключение":"Select a saved connection"}</option>
         {connections.map(c=><option key={c.id} value={c.id}>{c.name} · {c.protocol} · {c.host}:{c.port}</option>)}
@@ -91,11 +79,8 @@ export function VaultWorkspace({connections,language}:{connections:Connection[];
         <button type="submit" disabled={busy}>{ru?"Сохранить в ОС":"Save in OS store"}</button>
       </form>
       <div className="actions">
-        <button type="button" disabled={busy||!has} onClick={()=>void action("reveal")}>{ru?"Показать на 15 секунд":"Reveal for 15 seconds"}</button>
         <button type="button" disabled={busy} onClick={()=>void action("delete")}>{ru?"Удалить секрет":"Delete credential"}</button>
       </div>
-      <label>{ru?"Временный показ":"Temporary reveal"}<input ref={reveal} type="text" readOnly
-        aria-label={ru?"Временный показ":"Temporary reveal"} autoComplete="off"/></label>
     </>}
     {message&&<p role="status">{message}</p>}
     <p className="ssh-help">{ru?"Смена адреса, пользователя или протокола не переносит секрет на новую цель. Удалите старую запись явно. Экспорт каталога никогда не включает секреты.":

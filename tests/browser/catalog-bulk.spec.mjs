@@ -31,7 +31,7 @@ test("bulk move and favorite edit only selected rows with explicit consent",asyn
   expect(result.connections[1].port).toBe(3389);
   await page.getByRole("checkbox",{name:"Select connection: SSH lab"}).check();
   page.once("dialog",d=>d.accept());
-  await page.getByRole("button",{name:"Favorite selected"}).click();
+  await page.getByRole("button",{name:"Favorite selected",exact:true}).click();
   await expect(page.getByRole("status").last()).toContainText("Bulk update saved");
   result=JSON.parse(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1")));
   expect(result.connections.map(c=>c.favorite)).toEqual([true,false,false]);

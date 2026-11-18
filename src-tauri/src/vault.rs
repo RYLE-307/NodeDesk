@@ -161,12 +161,6 @@ pub async fn vault_put(state:State<'_,Vault>,target:Target,secret:String)->Resul
         .map_err(|_|"Vault worker failed".to_string())?
 }
 #[tauri::command]
-pub async fn vault_get(state:State<'_,Vault>,target:Target)->Result<Option<String>,String> {
-    let vault=state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move ||vault.read(&target).map(|v|v.map(|s|s.to_string()))).await
-        .map_err(|_|"Vault worker failed".to_string())?
-}
-#[tauri::command]
 pub async fn vault_delete(state:State<'_,Vault>,target:Target)->Result<(),String> {
     let vault=state.inner().clone();
     tauri::async_runtime::spawn_blocking(move ||vault.remove(&target)).await

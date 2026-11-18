@@ -108,7 +108,7 @@ test("terminal snippet inserts exact text without Enter, consent or persistence 
   expect((await page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write")))[0].args.data).toBe("printf 'hello'");
   expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("printf 'hello'");
   await expect(input).toHaveValue("");
-  await input.fill("pwd\nwhoami");
+  await input.fill("pwd\u202eunsafe");
   await button.click();
   await expect(pane.getByRole("status")).toContainText("Invalid snippet");
   expect(await page.evaluate(()=>window.calls.filter(c=>c.cmd==="ssh_write"))).toHaveLength(1);

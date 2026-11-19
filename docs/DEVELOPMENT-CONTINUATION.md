@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-19 SSH forwarded-agent actual second-hop authentication — CI pending
+
+- Parent HEAD `b1b1a305493a78bb3e50c8e60975325d6d41f4cd`
+  passed [CI 44498239712](https://github.com/RYLE-307/NodeDesk/actions/runs/44498239712)
+  6/6 (Linux disposable agent/sshd, native desktop Windows/Ubuntu,
+  Arch build and Playwright).
+- Extended the disposable Linux agent integration: an initial direct
+  SSH session connects to loopback sshd:22229, then invokes a second
+  isolated SSH client to loopback sshd:22230. The second client receives
+  only a public-key identity with no private-key counterpart, strict
+  host-key trust, batch mode and disabled password/PAM fallback.
+- With agent forwarding **off**, the second authentication must fail;
+  with forwarding **on**, it must sign via the forwarded agent and
+  authenticate. This explicitly tests use of the forwarding capability
+  for a second hop without ever exporting a private key.
+- All fixture identities, processes and ports are ephemeral/local. Native
+  Windows/Arch manual acceptance remains NOT TESTED. Exact-head CI is
+  pending. Keep PR #13 Draft; do not change main or publish a release.
+
+
 ### 2026-11-19 SSH agent forwarding — disposable real-agent CI gate
 
 - Fixed a Playwright expectation typo: the confirmed warning says

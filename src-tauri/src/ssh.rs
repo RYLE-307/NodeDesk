@@ -790,6 +790,49 @@ Host local
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr));
         }
+
+        // Probe a SECOND disposable sshd over loopback. The second SSH
+        // client has only a .pub identity (there is no matching private
+        // file) and IdentitiesOnly=yes, so it cannot fall back to keys
+        // on the remote runner. Signing must come from the forwarded agent.
+        let nested=format!(
+            "ssh -F none -oUserKnownHostsFile={dir}/trusted-hop-22230 \
+             -oGlobalKnownHostsFile=/dev/null -oStrictHostKeyChecking=yes \
+             -oBatchMode=yes -oPreferredAuthentications=publickey \
+             -oPasswordAuthentication=no -oKbdInteractiveAuthentication=no \
+             -oIdentitiesOnly=yes -oConnectTimeout=8 \
+             -i {dir}/agent-only-key.pub -p 22230 {user}@127.0.0.1 \
+             'printf AGENT_SECOND_HOP_AUTHENTICATED'"
+        );
+        for enabled in [false,true] {
+            let args=with_agent_forwarding(
+                arguments("127.0.0.1",22229,&user,AuthMode::Key).unwrap(),
+                enabled,TerminalKind::Ssh,AuthMode::Key,None,
+            ).unwrap();
+            let result=std::process::Command::new("ssh")
+                .args([
+                    format!("-oUserKnownHostsFile={dir}/trusted-gui"),
+                    "-oGlobalKnownHostsFile=/dev/null".into(),
+                    "-oStrictHostKeyChecking=yes".into(),
+                    "-oConnectTimeout=10".into(),
+                ])
+                .args(args).arg(&nested)
+                .env("SSH_AUTH_SOCK",&socket)
+                .env_remove("SSH_AGENT_PID")
+                .stdin(std::process::Stdio::null())
+                .output().expect("disposable two-server SSH chain");
+            let stdout=String::from_utf8_lossy(&result.stdout);
+            let stderr=String::from_utf8_lossy(&result.stderr);
+            if enabled {
+                assert!(result.status.success() &&
+                        stdout.contains("AGENT_SECOND_HOP_AUTHENTICATED"),
+                        "Forwarded agent did not authenticate to second sshd: stdout={stdout} stderr={stderr}");
+            }else{
+                assert!(!result.status.success() &&
+                        !stdout.contains("AGENT_SECOND_HOP_AUTHENTICATED"),
+                        "Second sshd authenticated without forwarding: stdout={stdout} stderr={stderr}");
+            }
+        }
     }
     // Real OpenSSH/sshd integration; CI supplies an isolated server and identity.
     #[cfg(unix)]

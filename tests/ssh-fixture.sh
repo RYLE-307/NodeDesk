@@ -76,6 +76,10 @@ for hop_port in 22230 22231; do
     exit 1
   fi
 done
+# The remote second-hop ssh client receives *only* a public identity.
+# No private-key filename matching this identity exists at the remote path.
+cp "$fixture/client.pub" "$fixture/agent-only-key.pub"
+printf '[127.0.0.1]:22230 %s\n' "$(cat "$fixture/host-22230.pub")" > "$fixture/trusted-hop-22230"
 NODEDESK_SSH_FIXTURE="$fixture" cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
 filename='binary пробел ;$(x).bin'
 cmp "$fixture/gui-local/$filename" "$fixture/gui-local/download.bin"

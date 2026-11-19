@@ -6,6 +6,27 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-19 P1 SSH agent forwarding with explicit per-session consent — CI pending
+
+- Previous HEAD `f37dad943d9f3e56b28dc3967fd8efb85fe0269c`
+  passed [CI 44389514338](https://github.com/RYLE-307/NodeDesk/actions/runs/44389514338)
+  6/6, including browser, Windows/Ubuntu desktop and Arch preview.
+- Added opt-in direct SSH agent forwarding for key-only sessions, with
+  a new per-session checkbox (default off) and an explicit warning
+  before **each** connection. The setting is never persisted. Declining
+  consent does not start SSH.
+- The native command validates `kind=ssh`, `auth=key`, no jump host;
+  rejects forwarding via SFTP/FilesAuth/local/auto/password or ProxyJump.
+  Allowed requests change only OpenSSH `ForwardAgent` from no to yes;
+  strict host-key trust and all other security flags remain unchanged.
+- Rust policy tests cover the allowed and refused combinations; browser
+  tests cover default-off, accepted/declined consent, repeated consent,
+  password/jump invalidation and SFTP prohibition. No real SSH agents or
+  endpoints used. CI exact-head and native Windows/Arch operator
+  acceptance **PENDING/NOT TESTED**. See docs/V0.3-SSH.md.
+- Leave draft PR #13 open; do not change main, merge or publish release.
+
+
 ### 2026-11-18 P0 resumed SFTP upload terminal EOF/metadata — CI pending
 
 - Parent `7a06c737b2ff893b247204d739be0f504cc6170e`

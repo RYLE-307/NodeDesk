@@ -311,9 +311,30 @@ fn local_command(kind: TerminalKind) -> Result<(String, Vec<String>), String> {
         Ok((path.into(),vec!["-i".into()]))
     }
 }
+/// Agent forwarding exposes a signing capability to the SSH server; keep
+/// it opt-in, direct-only and key-only. Other TerminalKind commands must not
+/// be able to turn it on through native IPC or local SSH config.
+fn with_agent_forwarding(
+    mut args:Vec<String>,enabled:bool,kind:TerminalKind,
+    auth:AuthMode,jump:Option<&JumpHost>,
+)->Result<Vec<String>,String>{
+    if !enabled {return Ok(args);}
+    if kind!=TerminalKind::Ssh || auth!=AuthMode::Key || jump.is_some() {
+        return Err("SSH agent forwarding requires direct key-only SSH".into());
+    }
+    let positions:Vec<_>=args.iter().enumerate()
+        .filter(|(_,value)|value.as_str()=="-oForwardAgent=no")
+        .map(|(index,_)|index).collect();
+    if positions.len()!=1 {
+        return Err("Missing restricted SSH agent forwarding option".into());
+    }
+    args[positions[0]]="-oForwardAgent=yes".into();
+    Ok(args)
+}
 #[tauri::command]
 pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: AuthMode,
-    kind: TerminalKind, jump: Option<JumpHost>, identity: Option<String>, cols: u16, rows: u16, events: Channel<Event>,
+    kind: TerminalKind, jump: Option<JumpHost>, identity: Option<String>, agent_forwarding: bool,
+    cols: u16, rows: u16, events: Channel<Event>,
     app: tauri::AppHandle, state: State<'_, Sessions>) -> Result<(), String> {
     if jump.is_some() && !matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp){
         return Err("Jump host is supported only in SSH/SFTP console tabs".into());
@@ -332,6 +353,7 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
         TerminalKind::FilesAuth => ("ssh".into(), bridge.as_ref().unwrap().arguments(auth)?),
         TerminalKind::Local | TerminalKind::LocalCmd => local_command(kind)?,
     };
+    let args=with_agent_forwarding(args,agent_forwarding,kind,auth,jump.as_ref())?;
     let mut sessions = state.0.lock().map_err(|_| "Session lock failed")?;
     if sessions.contains_key(&id) || sessions.len() >= 16 { return Err("Session already exists or limit reached".into()); }
     let pair = native_pty_system().openpty(size(cols, rows)?).map_err(|e| e.to_string())?;
@@ -514,6 +536,31 @@ Host local
         std::fs::remove_file(path).unwrap();
     }
     #[test] fn reject_injection() { for host in ["-oProxyCommand=evil", "a b", "x\n", "a;sh", ""] { assert!(arguments(host,22,"user",AuthMode::Auto).is_err()); } assert!(arguments("host",22,"-root",AuthMode::Auto).is_err()); }
+    #[test]
+    fn agent_forwarding_is_explicit_direct_key_only_and_preserves_host_trust() {
+        let base=arguments("trusted.example.test",22,"operator",AuthMode::Key).unwrap();
+        let enabled=with_agent_forwarding(base.clone(),true,TerminalKind::Ssh,AuthMode::Key,None).unwrap();
+        assert!(enabled.contains(&"-oForwardAgent=yes".into()));
+        assert!(!enabled.contains(&"-oForwardAgent=no".into()));
+        assert!(enabled.contains(&"-oStrictHostKeyChecking=ask".into()));
+        assert!(enabled.contains(&"-oClearAllForwardings=yes".into()));
+        assert_eq!(&enabled[..2],["-F","none"]);
+        assert_eq!(enabled.last().unwrap(),"trusted.example.test");
+        assert_eq!(with_agent_forwarding(base.clone(),false,TerminalKind::Ssh,AuthMode::Key,None).unwrap(),base);
+        assert!(with_agent_forwarding(base.clone(),true,TerminalKind::Ssh,AuthMode::Auto,None).is_err());
+        assert!(with_agent_forwarding(base.clone(),true,TerminalKind::Ssh,AuthMode::Password,None).is_err());
+        for kind in [TerminalKind::Sftp,TerminalKind::FilesAuth,TerminalKind::Local,TerminalKind::LocalCmd] {
+            assert!(with_agent_forwarding(base.clone(),true,kind,AuthMode::Key,None).is_err());
+        }
+        let jump=JumpHost{host:"gateway.example.test".into(),port:2222,username:"operator".into(),next:None};
+        assert!(with_agent_forwarding(base.clone(),true,TerminalKind::Ssh,AuthMode::Key,Some(&jump)).is_err());
+        let mut missing=base.clone();
+        missing.retain(|item|item!="-oForwardAgent=no");
+        assert!(with_agent_forwarding(missing,true,TerminalKind::Ssh,AuthMode::Key,None).is_err());
+        let mut duplicate=base;
+        duplicate.push("-oForwardAgent=no".into());
+        assert!(with_agent_forwarding(duplicate,true,TerminalKind::Ssh,AuthMode::Key,None).is_err());
+    }
     #[test] fn enforce_security() { let a = arguments("::1",22,"user",AuthMode::Auto).unwrap(); for option in ["-oStrictHostKeyChecking=ask", "-oPasswordAuthentication=yes", "-oKbdInteractiveAuthentication=yes", "-oBatchMode=no", "-oNumberOfPasswordPrompts=3", "-oForwardAgent=no"] { assert!(a.contains(&option.into())); } assert_eq!(&a[..2], ["-F", "none"]); }
     #[test]
     fn auth_modes_allow_only_requested_methods() {

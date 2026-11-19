@@ -26,6 +26,8 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState(""), [busy, setBusy] = useState(false);
   const [auth, setAuth] = useState<AuthMode>(passwordOnly ? "password" : "auto");
+  // Opt-in for this tab only. Never saved in catalog/recovery preferences.
+  const [agentForwarding,setAgentForwarding]=useState(false);
   const [jumpEnabled,setJumpEnabled]=useState(false);
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUser,setJumpUser]=useState("");
@@ -94,6 +96,14 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     if (id) await invoke("ssh_disconnect", { id }).catch(e => setStatus(String(e)));
   }
   async function connect() {
+    const canForwardAgent=kind==="ssh" && !local && auth==="key" && !jumpEnabled && !passwordOnly;
+    if(agentForwarding && !canForwardAgent){
+      setStatus(ru?"Проброс агента доступен только для прямого SSH с входом по ключу":
+        "Agent forwarding requires direct key-only SSH");return;
+    }
+    if(agentForwarding && !window.confirm(ru
+      ?"Разрешить удалённому SSH-серверу использовать ваш локальный SSH-agent для подписей? Администратор удалённого сервера сможет запрашивать аутентификацию от вашего имени, пока сессия открыта. Включайте только для полностью доверенного сервера."
+      :"Allow the remote SSH server to use your local SSH agent for signatures? Remote administrators may request authentication on your behalf while this session is open. Enable only for a fully trusted server."))return;
     if (!isTauri()) { setStatus(ru ? "Терминал доступен в настольном приложении" : "Terminal requires the desktop app"); return; }
     const term = terminal.current!;
     const id = crypto.randomUUID(); session.current = id;
@@ -114,7 +124,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, agentForwarding:agentForwarding && canForwardAgent, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
       else { setSessionLaunched(true); sessionCallback.current?.(id); }
     } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setSessionLaunched(false); setStatus(String(e)); } }
@@ -217,7 +227,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     <div className="ssh-toolbar"><strong>{local ? (kind === "localcmd" ? "CMD" : navigator.userAgent.includes("Windows") ? "PowerShell" : (ru ? "Локальная оболочка" : "Local shell")) : kind === "filesauth" ? (ru ? "Вход для файлов" : "Files login") : kind === "sftp" ? "SFTP" : "SSH"} · {c.name}</strong>{!local && <span>{c.username}@{c.host}:{c.port}</span>}
       {!local && <label className="ssh-auth">
         <span>{ru ? "Вход" : "Authentication"}</span>
-        <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => setAuth(e.target.value as AuthMode)}>
+        <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => {const next=e.target.value as AuthMode;setAuth(next);if(next!=="key")setAgentForwarding(false);}}>
           <option value="auto">{ru ? "Авто" : "Auto"}</option>
           <option value="key" disabled={passwordOnly}>{ru ? "SSH-ключ / агент" : "SSH key / agent"}</option>
           <option value="password">{ru ? "Пароль / PAM" : "Password / PAM"}</option>
@@ -236,11 +246,20 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       {auth==="key" && <label>{ru?"Путь к файлу SSH-ключа (необязательно)":"SSH identity file path (optional)"}
         <input aria-label="SSH identity file path" value={identity} disabled={busy} maxLength={4096}
           autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/></label>}
+      {kind==="ssh" && <label>
+        <input type="checkbox" aria-label={ru?"Проброс SSH-agent":"Forward SSH agent"}
+          checked={agentForwarding} disabled={busy || auth!=="key" || jumpEnabled}
+          onChange={e=>setAgentForwarding(e.target.checked)}/>
+        {ru?"Разрешить SSH-agent forwarding для этой сессии":"Enable SSH agent forwarding for this session"}
+      </label>}
+      {kind==="ssh" && <p className="ssh-help">{ru
+        ?"По умолчанию отключено. Прямое SSH-подключение с ключом, без ProxyJump. Сервер может использовать ваш агент для аутентификации от вашего имени; подтверждение требуется при каждом подключении."
+        :"Off by default. Direct key-only SSH without ProxyJump. A remote server can use your agent to authenticate on your behalf; confirmation is required on every connection."}</p>}
       {auth==="key" && <p className="ssh-help">{ru
         ?"Укажите абсолютный путь к локальному приватному ключу. Путь не сохраняется; OpenSSH проверяет права файла и запрашивает passphrase в терминале. При использовании шлюза этот файл применяется только к конечному серверу; шлюз использует собственный агент или стандартные ключи."
         :"Enter an absolute path to a local private key. The path is not saved; OpenSSH checks file permissions and prompts for its passphrase in the terminal. With a jump host, this file applies only to the target; the gateway uses its own agent or default keys."}</p>}
       <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-        onChange={e=>{setJumpEnabled(e.target.checked);if(!e.target.checked)setSecondHop(false);}}/>
+        onChange={e=>{setJumpEnabled(e.target.checked);if(e.target.checked)setAgentForwarding(false);if(!e.target.checked)setSecondHop(false);}}/>
         {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}
       </label>
       {jumpEnabled && <>

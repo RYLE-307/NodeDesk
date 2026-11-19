@@ -80,3 +80,75 @@ test("two-hop SSH uses ordered validated jump fields without persisting them",as
   });
   expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("edge.example.org");
 });
+
+
+test("SSH agent forwarding is default-off and requires explicit consent on each direct key-only connection",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+      version:1,groups:[],connections:[{id:"ssh",name:"Agent lab",host:"fixture.example.test",
+        port:2222,username:"operator",protocol:"SSH",groupId:null,favorite:false}],
+      language:"en",theme:"dark",monitoring:false
+    }));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];let callback=0;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return ++callback;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args:{...args,events:undefined}});
+        if(cmd==="files_capabilities")return {interactiveLogin:false,keyAgent:true};}
+    };
+  });
+  await page.goto("/");
+  await page.locator(".connection-open").filter({hasText:"Agent lab"}).click();
+  await page.getByRole("tab",{name:"SSH",exact:true}).click();
+  const panel=page.locator(".ssh-tool-panel:not([hidden])");
+  const forward=panel.getByRole("checkbox",{name:"Forward SSH agent"});
+  await expect(forward).toBeDisabled();
+  await panel.getByRole("combobox",{name:"SSH authentication method"}).selectOption("key");
+  await expect(forward).toBeEnabled();
+  await expect(forward).not.toBeChecked();
+  await forward.check();
+  page.once("dialog",d=>{expect(d.message()).toContain("authenticate on your behalf");d.dismiss();});
+  await panel.getByRole("button",{name:"Connect / reconnect"}).click();
+  expect(await page.evaluate(()=>window.calls.filter(x=>x.cmd==="ssh_connect"))).toHaveLength(0);
+  page.once("dialog",d=>d.accept());
+  await panel.getByRole("button",{name:"Connect / reconnect"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.filter(x=>x.cmd==="ssh_connect").length)).toBe(1);
+  const args=await page.evaluate(()=>window.calls.find(x=>x.cmd==="ssh_connect").args);
+  expect(args).toMatchObject({kind:"ssh",auth:"key",jump:null,agentForwarding:true});
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("agentForwarding");
+  await panel.getByRole("button",{name:"Disconnect / cancel"}).click();
+  page.once("dialog",d=>d.dismiss());
+  await panel.getByRole("button",{name:"Connect / reconnect"}).click();
+  expect(await page.evaluate(()=>window.calls.filter(x=>x.cmd==="ssh_connect"))).toHaveLength(1);
+});
+
+test("SSH agent forwarding cannot stay active for password login, ProxyJump or SFTP",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
+      version:1,groups:[],connections:[{id:"ssh",name:"Agent lab",host:"fixture.example.test",
+        port:22,username:"operator",protocol:"SSH",groupId:null,favorite:false}],
+      language:"en",theme:"dark",monitoring:false
+    }));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];let callback=0;
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return ++callback;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args:{...args,events:undefined}});}
+    };
+  });
+  await page.goto("/");
+  await page.locator(".connection-open").filter({hasText:"Agent lab"}).click();
+  await page.getByRole("tab",{name:"SSH",exact:true}).click();
+  const ssh=page.locator(".ssh-tool-panel:not([hidden])");
+  await ssh.getByRole("combobox",{name:"SSH authentication method"}).selectOption("key");
+  const forward=ssh.getByRole("checkbox",{name:"Forward SSH agent"});
+  await forward.check();
+  await ssh.getByRole("combobox",{name:"SSH authentication method"}).selectOption("password");
+  await expect(forward).not.toBeChecked();
+  await expect(forward).toBeDisabled();
+  await ssh.getByRole("combobox",{name:"SSH authentication method"}).selectOption("key");
+  await forward.check();
+  await ssh.getByRole("checkbox",{name:"Via SSH jump host (ProxyJump)"}).check();
+  await expect(forward).not.toBeChecked();
+  await expect(forward).toBeDisabled();
+  await page.getByRole("tab",{name:"SFTP",exact:true}).click();
+  await expect(page.locator(".ssh-tool-panel:not([hidden])").getByRole("checkbox",{name:"Forward SSH agent"})).toHaveCount(0);
+});

@@ -42,6 +42,7 @@ StrictModes no
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 UsePAM yes
+AllowAgentForwarding yes
 AllowUsers $(id -un) $auth_user
 LogLevel VERBOSE
 Subsystem sftp internal-sftp

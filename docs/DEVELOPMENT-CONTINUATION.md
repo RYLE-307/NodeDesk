@@ -6,6 +6,26 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-19 SSH agent forwarding — disposable real-agent CI gate
+
+- Fixed a Playwright expectation typo: the confirmed warning says
+  `request authentication on your behalf`; previous run
+  [44488081529](https://github.com/RYLE-307/NodeDesk/actions/runs/44488081529)
+  failed only its browser job (the other five jobs passed). The
+  corrected browser test is on HEAD since `728b8d627103f66c230a952584416610ec3bc40a`.
+- Added a localhost-only Linux test using a dedicated disposable
+  `ssh-agent -D`, the existing disposable client ed25519 key, pinned
+  sshd host key and direct OpenSSH arguments. With forwarding off,
+  the remote shell must observe `AGENT_ABSENT`; with forwarding on,
+  remote `ssh-add -l` must succeed via the forwarded socket. No real
+  machine or agent is contacted; test agent is killed after each run.
+- Added explicit `AllowAgentForwarding yes` only to the isolated
+  sshd fixture. Key/host-trust, consent, auth and jump-host restrictions
+  remain unchanged. Exact-head CI is pending; native Windows/Arch GUI
+  agent acceptance remains NOT TESTED.
+- PR #13 remains Draft; no main merge or release.
+
+
 ### 2026-11-19 P1 SSH agent forwarding with explicit per-session consent — CI pending
 
 - Previous HEAD `f37dad943d9f3e56b28dc3967fd8efb85fe0269c`

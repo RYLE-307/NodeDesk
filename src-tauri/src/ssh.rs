@@ -726,6 +726,71 @@ Host local
         }
         panic!("Child survived session close");
     }
+
+    // Real localhost-only agent forwarding. NODEDESK_SSH_FIXTURE is created
+    // by tests/ssh-fixture.sh and is absent in all ordinary unit tests.
+    // The agent socket and key live exclusively inside disposable fixtures.
+    #[cfg(unix)]
+    #[test]
+    fn real_disposable_agent_forwarding_requires_explicit_flag() {
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let user=std::env::var("USER").unwrap();
+        let sandbox=tempfile::tempdir().unwrap();
+        let socket=sandbox.path().join("agent.sock");
+        let mut child=std::process::Command::new("ssh-agent")
+            .args(["-D","-a"]).arg(&socket)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn().expect("Disposable ssh-agent must start");
+        for _ in 0..100 {
+            if socket.exists(){break;}
+            if child.try_wait().unwrap().is_some(){panic!("Disposable ssh-agent exited");}
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        assert!(socket.exists(),"Disposable agent socket was not created");
+        struct AgentGuard(std::process::Child);
+        impl Drop for AgentGuard {
+            fn drop(&mut self){let _=self.0.kill();let _=self.0.wait();}
+        }
+        let _agent=AgentGuard(child);
+        let add=std::process::Command::new("ssh-add")
+            .arg(format!("{dir}/client"))
+            .env("SSH_AUTH_SOCK",&socket)
+            .env_remove("SSH_AGENT_PID")
+            .output().expect("ssh-add fixture");
+        assert!(add.status.success(),"Failed to add disposable identity to the agent");
+
+        // This command performs a real remote ssh-add against the forwarded
+        // socket. A public-key listing succeeds only while forwarding is on.
+        // No real shell input, agent sockets or key material are persisted.
+        let remote=r#"if test -n "$SSH_AUTH_SOCK" && ssh-add -l >/dev/null 2>&1; then printf AGENT_VISIBLE; else printf AGENT_ABSENT; fi"#;
+        for (enabled,expected) in [(false,"AGENT_ABSENT"),(true,"AGENT_VISIBLE")] {
+            let args=with_agent_forwarding(
+                arguments("127.0.0.1",22229,&user,AuthMode::Key).unwrap(),
+                enabled,TerminalKind::Ssh,AuthMode::Key,None,
+            ).unwrap();
+            let output=std::process::Command::new("ssh")
+                .args([
+                    format!("-oUserKnownHostsFile={dir}/trusted-gui"),
+                    "-oGlobalKnownHostsFile=/dev/null".into(),
+                    "-oStrictHostKeyChecking=yes".into(),
+                    "-oConnectTimeout=10".into(),
+                ])
+                .args(args).arg(remote)
+                .env("SSH_AUTH_SOCK",&socket)
+                .env_remove("SSH_AGENT_PID")
+                .stdin(std::process::Stdio::null())
+                .output().expect("loopback ssh");
+            assert!(output.status.success(),
+                "Disposable SSH failed with forwarding={enabled}: {}",
+                String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains(expected),
+                "Missing {expected} with forwarding={enabled}: stdout={:?} stderr={:?}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr));
+        }
+    }
     // Real OpenSSH/sshd integration; CI supplies an isolated server and identity.
     #[cfg(unix)]
     #[test]

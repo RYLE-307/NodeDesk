@@ -342,6 +342,11 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
     if identity.is_some() && (!matches!(kind,TerminalKind::Ssh|TerminalKind::Sftp) || auth!=AuthMode::Key) {
         return Err("Identity file requires key-only SSH/SFTP console".into());
     }
+    // Enforce at the native IPC boundary too, before Windows FilesAuth's
+    // early return: no alternate client path may bypass the restriction.
+    if agent_forwarding && (kind!=TerminalKind::Ssh || auth!=AuthMode::Key || jump.is_some()) {
+        return Err("SSH agent forwarding requires direct key-only SSH".into());
+    }
     #[cfg(windows)] if kind==TerminalKind::FilesAuth {return app.state::<crate::native_auth::Logins>().start(id,host,port,username,auth,events);}
     if id.len() > 100 || id.is_empty() { return Err("Invalid session ID".into()); }
     let bridge = if kind == TerminalKind::FilesAuth { Some(Bridge::new(&id, &host, port, &username)?) } else { None };

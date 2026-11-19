@@ -7,8 +7,12 @@ use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
+pub struct Destination { host: String, port: u16, username: String, #[serde(default)] auth_session: Option<String>, #[serde(default)] identity: Option<String>, #[serde(default)] jump: Option<ssh::JumpHost>, #[serde(skip)] control: Option<String>, #[serde(skip)] native: Option<Arc<crate::native_auth::Login>> }
 fn resolve_auth(d: &mut Destination, app: &tauri::AppHandle) -> Result<()> {
+    if d.jump.is_some() && d.auth_session.is_some() { return Err("Gateway Files requires agent-only, not interactive login".into()); }
+    if d.identity.is_some() && d.auth_session.is_some() {
+        return Err("Identity file cannot be combined with interactive Files login".into());
+    }
     if let Some(id)=&d.auth_session {
         #[cfg(windows)] {d.native=Some(app.state::<crate::native_auth::Logins>().get(id,&d.host,d.port,&d.username)?);}
         #[cfg(not(windows))] {d.control=Some(ssh::files_socket(&app.state::<ssh::Sessions>(),id,&d.host,d.port,&d.username)?);}
@@ -97,11 +101,21 @@ fn transport_args(d: &Destination) -> Result<Vec<String>> {
     args.retain(|a| a != "-tt" && a != "-oBatchMode=no" && a != "-oStrictHostKeyChecking=ask");
     // Insert before destination/options end. First value wins in OpenSSH.
     let mut strict = vec!["-T".into(),"-s".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oLogLevel=ERROR".into()];
-    strict.extend(args); strict.push("sftp".into()); Ok(strict)
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
+    let args=ssh::with_jump(args,d.jump.as_ref(),&d.host,d.port,&d.username)?;
+    strict.extend(ssh::with_identity(args,d.identity.as_deref())?); strict.push("sftp".into()); Ok(strict)
 }
 type Sftp = crate::native_auth::StreamClient;
 fn connect(d: &Destination, op: &Operation) -> Result<Sftp> {
     op.check()?;
+    if d.jump.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Gateway Files requires agent-only transport".into());
+    }
+    if d.identity.is_some() && (d.auth_session.is_some() || d.control.is_some() || d.native.is_some()) {
+        return Err("Identity file requires direct key-only Files connection".into());
+    }
     if let Some(login)=&d.native {
         *op.native.lock().map_err(|_|"Operation lock failed")?=Some(login.clone());
         op.check()?;
@@ -523,7 +537,92 @@ impl Drop for PartialLocal {
         if !self.keep_on_error { let _ = fs::remove_file(&self.path); }
     }
 }
+
+fn verify_local_chunk(local:&mut fs::File,remote_bytes:&[u8])->Result<()> {
+    let mut expected=vec![0;remote_bytes.len()];
+    local.read_exact(&mut expected).map_err(|_|"Local file shortened during integrity verification")?;
+    if expected!=remote_bytes {return Err("SFTP byte verification failed; file not published".into());}
+    Ok(())
+}
+// Optional reread through the same authenticated SFTP channel before
+// publication; no shell, external hashing or overwrite.
+fn verify_sftp_readback(
+    c:&mut Sftp,remote:&str,local:&mut fs::File,total:u64,op:&Operation
+)->Result<()> {
+    op.check()?;
+    let before=c.lstat(remote)?;
+    if before.kind()!="file" || before.size!=Some(total) {
+        return Err("Remote file size/type changed before integrity verification".into());
+    }
+    local.seek(SeekFrom::Start(0)).map_err(|_|"Cannot rewind local file for verification")?;
+    let handle=c.open(remote,1)?;
+    let mut at=0_u64;
+    while at<total {
+        op.check()?;
+        let chunk=c.read(&handle,at)?.ok_or("Remote file truncated during verification")?;
+        if chunk.len() as u64>total-at {
+            return Err("Remote file grew during integrity verification".into());
+        }
+        verify_local_chunk(local,&chunk)?;
+        at+=chunk.len() as u64;
+    }
+    // The expected prefix must also be the end of the remote file.
+    // A server returning more DATA after the advertised size is inconsistent
+    // and must not cause a verified partial to be published.
+    op.check()?;
+    if c.read(&handle,total)?.is_some() {
+        return Err("Remote file grew during integrity verification".into());
+    }
+    c.close(&handle)?;
+    op.check()?;
+    let after=c.lstat(remote)?;
+    if after.kind()!="file" || after.size!=Some(total) || after.modified!=before.modified ||
+        local.metadata().map_err(|_|"Local file missing after verification")?.len()!=total {
+        return Err("File changed during integrity verification; not published".into());
+    }
+    Ok(())
+}
+fn private_new_readable(path:&Path)->Result<fs::File>{
+    let mut options=OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    options.open(path).map_err(|_|"Cannot create local file (destination may exist)".into())
+}
 fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>) -> Result<()> {
+    copy_upload_with_verify(c,source,remote,temp,op,events,false)
+}
+/// Reject source path replacement, size change and metadata-visible edits
+/// before publishing an upload. This is not an atomic file snapshot.
+fn check_upload_source_stable(source:&Path,open:&fs::File,initial:&fs::Metadata)->Result<()> {
+    let current=fs::symlink_metadata(source)
+        .map_err(|_|"Upload source disappeared during transfer")?;
+    let held=open.metadata().map_err(|_|"Cannot inspect open upload source")?;
+    if !current.is_file() || current.is_symlink() || !held.is_file() ||
+        current.len()!=initial.len() || held.len()!=initial.len() {
+        return Err("Local upload source changed during transfer".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if current.dev()!=initial.dev() || current.ino()!=initial.ino() ||
+            held.dev()!=initial.dev() || held.ino()!=initial.ino() {
+            return Err("Local upload source was replaced during transfer".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if current.file_attributes() & 0x400 != 0 || held.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point upload source refused".into());
+        }
+    }
+    let original_mtime=initial.modified()
+        .map_err(|_|"Upload source modification time unavailable")?;
+    if current.modified().map_err(|_|"Upload source metadata unavailable")?!=original_mtime ||
+        held.modified().map_err(|_|"Open source metadata unavailable")?!=original_mtime {
+        return Err("Local upload source was modified during transfer".into());
+    }
+    Ok(())
+}
+fn copy_upload_with_verify(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Operation, events: &Channel<Progress>,verify:bool) -> Result<()> {
     let before = fs::symlink_metadata(source).map_err(|_| "Local source unavailable")?;
     if !before.is_file() || before.is_symlink() { return Err("Only regular files can be uploaded".into()); }
     let mut options = OpenOptions::new(); options.read(true);
@@ -535,25 +634,53 @@ fn copy_upload(c: &mut Sftp, source: &Path, remote: &str, temp: &str, op: &Opera
         use std::os::unix::fs::MetadataExt;
         if before.dev() != opened.dev() || before.ino() != opened.ino() { return Err("Local source changed before open".into()); }
     }
+    check_upload_source_stable(source,&f,&opened)?;
     let size = opened.len();
+    // Refuse a stale client-side listing or pre-existing target before
+    // writing any bytes to a remote temporary file. A compliant v3 server
+    // also refuses collision on RENAME; the recheck below narrows races.
+    op.check()?;
+    if !c.missing(remote)? {return Err("Remote destination exists; overwrite disabled".into());}
     // EXCL|CREAT|WRITE; never opens/clobbers an existing remote path.
     let h = c.open(temp,2|8|32)?;
-    let mut offset = 0; let mut bytes = vec![0;CHUNK];
+    let mut offset: u64 = 0; let mut bytes = vec![0;CHUNK];
     loop {
         op.check()?;
         let n = f.read(&mut bytes).map_err(|_| "Local read failed")?; if n == 0 { break; }
-        c.write(&h,offset,&bytes[..n])?; offset += n as u64;
+        let next=offset.checked_add(n as u64).ok_or("Upload size overflow")?;
+        if next>size {return Err("Local source grew during upload".into());}
+        c.write(&h,offset,&bytes[..n])?; offset=next;
         events.send(Progress { bytes:offset,total:Some(size) }).map_err(|_| "Transfer view closed")?;
     }
-    if offset != size || f.metadata().map_err(|_| "Cannot inspect source")?.len() != size { return Err("Source changed during upload".into()); }
+    if offset!=size {return Err("Source changed during upload".into());}
     c.close(&h)?; op.check()?;
-    let mut b = vec![]; wire::string(&mut b,temp.as_bytes()); wire::string(&mut b,remote.as_bytes());
-    // SFTP v3 RENAME must fail if newpath already exists. Never use posix-rename.
-    Client::<std::process::ChildStdout,std::process::ChildStdin>::ok(&c.request(18,b)?)
+    check_upload_source_stable(source,&f,&opened)?;
+    if verify {verify_sftp_readback(c,temp,&mut f,size,op)?;}
+    op.check()?;
+    check_upload_source_stable(source,&f,&opened)?;
+    if !c.missing(remote)? {return Err("Remote destination appeared during upload; no overwrite".into());}
+    // The standard v3 RENAME has no overwrite flag; deliberately avoid
+    // OpenSSH's posix-rename extension. A noncompliant or racing server
+    // may still overwrite, so this is not an atomic server-side guarantee.
+    c.rename(temp,remote)
 }
 /// Explicit resume: verify every byte of a remote partial against the opened
 /// local source before writing, then recheck the entire file before publication.
 /// Only previous NodeDesk operation IDs are accepted by the caller UI.
+/// Check a remote partial against its *post-write* baseline once the
+/// verified readback is complete. The remote server is trusted to report
+/// metadata consistently; this is not an atomic filesystem snapshot.
+fn check_uploaded_partial_stable(
+    before:&wire::Attrs,after:&wire::Attrs,size:u64
+)->Result<()> {
+    if before.kind()!="file" || before.size!=Some(size) ||
+        after.kind()!="file" || after.size!=Some(size) ||
+        after.modified!=before.modified ||
+        after.permissions!=before.permissions {
+        return Err("Remote partial changed during upload verification".into());
+    }
+    Ok(())
+}
 fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
     op:&Operation,events:&Channel<Progress>)->Result<()> {
     let before=fs::symlink_metadata(source).map_err(|_|"Local source unavailable")?;
@@ -569,6 +696,7 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
             return Err("Local source changed".into());
         }
     }
+    check_upload_source_stable(source,&f,&opened)?;
     let size=opened.len();op.check()?;
     if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
     let attrs=c.lstat(temp)?;
@@ -610,9 +738,7 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
             .map_err(|_|"Transfer view closed")?;
     }
     c.close(&h)?;op.check()?;
-    if f.metadata().map_err(|_|"Cannot inspect local source")?.len()!=size {
-        return Err("Local source changed during resume".into());
-    }
+    check_upload_source_stable(source,&f,&opened)?;
     let full=c.lstat(temp)?;
     if full.kind()!="file"||full.size!=Some(size){
         return Err("Remote file size changed; not published".into());
@@ -631,7 +757,16 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
         if chunk!=expected{return Err("Remote data mismatch; no publication".into());}
         at+=chunk.len() as u64;
     }
+    // A matching prefix is insufficient: the server must return EOF at
+    // the expected length, and the post-write file must still be stable.
+    op.check()?;
+    if c.read(&reader,size)?.is_some() {
+        return Err("Remote upload partial has trailing data".into());
+    }
     c.close(&reader)?;op.check()?;
+    let after=c.lstat(temp)?;
+    check_uploaded_partial_stable(&full,&after,size)?;
+    check_upload_source_stable(source,&f,&opened)?;
     if !c.missing(remote)? {return Err("Target already exists; no overwrite".into());}
     // SFTP v3 rename (not overwrite-capable posix-rename); hostile concurrent
     // writers cannot be excluded atomically by this protocol.
@@ -639,19 +774,99 @@ fn copy_upload_resume(c:&mut Sftp,source:&Path,remote:&str,temp:&str,
 }
 
 fn copy_download(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool) -> Result<()> {
+    copy_download_with_verify(c,remote,target,temp,op,events,keep_partial,false)
+}
+/// A private temporary download must still be the same file that was
+/// opened and synced. Check immediately before no-overwrite publication.
+/// This narrows a local filesystem replacement race; it cannot eliminate
+/// concurrent changes in the interval between this check and hard_link.
+fn check_download_partial_before_publish(
+    temp:&Path,opened:&fs::Metadata,expected:u64
+)->Result<()> {
+    let current=fs::symlink_metadata(temp)
+        .map_err(|_|"Private download partial disappeared before publication")?;
+    if !opened.is_file() || opened.len()!=expected ||
+       !current.is_file() || current.is_symlink() || current.len()!=expected {
+        return Err("Private download partial changed before publication".into());
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev()!=current.dev() || opened.ino()!=current.ino() ||
+           opened.nlink()!=1 || current.nlink()!=1 {
+            return Err("Private download partial was replaced or hard linked".into());
+        }
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        if current.file_attributes() & 0x400 != 0 {
+            return Err("Windows reparse-point download partial refused".into());
+        }
+    }
+    if opened.modified().map_err(|_|"Private download metadata unavailable")? !=
+       current.modified().map_err(|_|"Private download metadata unavailable")? {
+        return Err("Private download partial changed before publication".into());
+    }
+    Ok(())
+}
+
+// An SFTP server may return DATA past its advertised file size or EOF early.
+// Refuse both before writing. Some servers omit size: limit unknown-size
+// streams to keep a malformed endpoint from filling a local filesystem.
+const MAX_UNSIZED_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+fn checked_download_progress(
+    offset:u64, declared:Option<u64>, received:Option<&[u8]>
+)->Result<Option<u64>> {
+    match received {
+        None => {
+            if declared.is_some_and(|size|offset!=size){
+                return Err("Remote SFTP file ended before its declared size".into());
+            }
+            Ok(None)
+        }
+        Some(chunk) => {
+            if chunk.is_empty() || chunk.len()>CHUNK {
+                return Err("Invalid SFTP download data chunk".into());
+            }
+            let next=offset.checked_add(chunk.len() as u64)
+                .ok_or("Remote SFTP download offset overflow")?;
+            if declared.is_some_and(|size|next>size){
+                return Err("Remote SFTP file exceeds its declared size".into());
+            }
+            if declared.is_none() && next>MAX_UNSIZED_DOWNLOAD_BYTES {
+                return Err("Unknown-size SFTP download exceeds safety limit".into());
+            }
+            Ok(Some(next))
+        }
+    }
+}
+
+fn copy_download_with_verify(c: &mut Sftp, remote: &str, target: &Path, temp: &Path, op: &Operation, events: &Channel<Progress>, keep_partial: bool,verify:bool) -> Result<()> {
     let a = c.lstat(remote)?; if a.kind() != "file" { return Err("Only regular remote files can be downloaded".into()); }
+    if verify && a.size.is_none() {return Err("SFTP file size required for verified download".into());}
     if target.symlink_metadata().is_ok() { return Err("Local destination already exists".into()); }
-    let mut f = private_new(temp)?; let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
+    let mut f = if verify {private_new_readable(temp)?} else {private_new(temp)?};
+    let _partial = PartialLocal {path:temp.into(),keep_on_error:keep_partial}; let h = c.open(remote,1)?;
     let mut offset = 0;
     loop {
         op.check()?;
-        let Some(bytes) = c.read(&h,offset)? else { break; };
-        f.write_all(&bytes).map_err(|_| "Local write failed")?; offset += bytes.len() as u64;
+        let bytes=c.read(&h,offset)?;
+        let Some(next)=checked_download_progress(offset,a.size,bytes.as_deref())? else {break;};
+        let bytes=bytes.ok_or("SFTP data missing after validation")?;
+        f.write_all(&bytes).map_err(|_| "Local write failed")?;
+        offset=next;
         events.send(Progress {bytes:offset,total:a.size}).map_err(|_| "Transfer view closed")?;
     }
     c.close(&h)?;
-    if a.size.is_some_and(|size| size != offset) { return Err("Remote source changed during download".into()); }
-    f.sync_all().map_err(|_| "Local sync failed")?; drop(f); op.check()?;
+    op.check()?;
+    let after=c.lstat(remote)?;
+    if after.kind()!="file" || after.size!=a.size || after.modified!=a.modified {
+        return Err("Remote source metadata changed during download".into());
+    }
+    f.sync_all().map_err(|_| "Local sync failed")?;
+    if verify {verify_sftp_readback(c,remote,&mut f,offset,op)?;}
+    let open_metadata=f.metadata().map_err(|_|"Private download partial unavailable")?;
+    drop(f); op.check()?;
+    check_download_partial_before_publish(temp,&open_metadata,offset)?;
     // Atomic no-replace publication (rename would overwrite on Unix).
     fs::hard_link(temp,target).map_err(|_| "Cannot publish download: destination exists or filesystem lacks hard links".to_string())?;
     if keep_partial {
@@ -821,7 +1036,7 @@ fn copy_download_resume(c:&mut Sftp,remote:&str,target:&Path,temp:&Path,
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String>, #[serde(default)] retain_partial: bool }
+pub struct Transfer { destination: Destination, local_directory: String, remote_directory: String, name: String, upload: bool, #[serde(default)] resume_id: Option<String>, #[serde(default)] retain_partial: bool, #[serde(default)] verify: bool }
 #[tauri::command]
 pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<Progress>, app: tauri::AppHandle) -> Result<()> {
     resolve_auth(&mut request.destination,&app)?;
@@ -843,7 +1058,7 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
                     .map_err(|e|format!("{e}; partial remains at {old}"))
             } else {
                 let temp=wire::join(&parent,&partial)?;
-                copy_upload(&mut c,&target,&remote,&temp,&g.op,&events)
+                copy_upload_with_verify(&mut c,&target,&remote,&temp,&g.op,&events,request.verify)
                     .map_err(|e|format!("{e}; incomplete upload may remain at {temp}"))
             }
         } else if let Some(previous)=request.resume_id.as_deref() {
@@ -851,13 +1066,13 @@ pub async fn files_transfer(id: String, mut request: Transfer, events: Channel<P
             copy_download_resume(&mut c,&remote,&target,&old,&g.op,&events)
                 .map_err(|e|format!("{e}; partial remains at {}",old.display()))
         } else {
-            copy_download(&mut c,&remote,&target,&local.join(partial),&g.op,&events,request.retain_partial)
+            copy_download_with_verify(&mut c,&remote,&target,&local.join(partial),&g.op,&events,request.retain_partial,request.verify)
         }
     }).await.map_err(|_| "Transfer task failed".to_string())?
 }
 #[cfg(all(test,unix))]
 pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &str) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:Some(socket.into()),native:None};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:Some(socket.into()),native:None};
     let op=Arc::new(Operation::default());
     let result=(|| -> Result<()> {
         // Exercise the production connect/list/copy functions, not a parallel
@@ -871,9 +1086,9 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
         let remote=wire::join(&home,&format!("bridge-{case}.bin"))?;
         let temp=wire::join(&home,&format!(".bridge-{case}.part"))?;
         let events=Channel::<Progress>::new(|_|Ok(()));
-        copy_upload(&mut c,&source,&remote,&temp,&op,&events)?;
+        copy_upload_with_verify(&mut c,&source,&remote,&temp,&op,&events,true)?;
         let target=local.join("download.bin"); let partial=local.join(".download.part");
-        copy_download(&mut c,&remote,&target,&partial,&op,&events,false)?;
+        copy_download_with_verify(&mut c,&remote,&target,&partial,&op,&events,false,true)?;
         assert_eq!(fs::read(&target).unwrap(),bytes);
         assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
         let cancelled=Arc::new(Operation::default()); let mut slave=connect(&d,&cancelled)?;
@@ -888,7 +1103,7 @@ pub(crate) fn verify_auth_bridge(socket: &str, user: &str, case: i32, fixture: &
 }
 #[cfg(test)]
 pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:&str, fixture:&str, case:usize) {
-    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,control:None,native:Some(login)};
+    let d=Destination {host:"127.0.0.1".into(),port:22229,username:user.into(),auth_session:None,identity:None,jump:None,control:None,native:Some(login)};
     let op=Arc::new(Operation::default());
     let mut c=connect(&d,&op).unwrap();
     let home=c.realpath(".").unwrap(); remote_list(&mut c,&home,&op).unwrap();
@@ -896,7 +1111,19 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     let source=local.join("source.bin");let bytes:Vec<u8>=(0..65537).map(|n|(n%256)as u8).collect();fs::write(&source,&bytes).unwrap();
     let remote=wire::join(&home,&format!("native-{case}.bin")).unwrap();let temp=wire::join(&home,&format!(".native-{case}.part")).unwrap();
     let events=Channel::<Progress>::new(|_|Ok(()));
-    copy_upload(&mut c,&source,&remote,&temp,&op,&events).unwrap();
+    copy_upload_with_verify(&mut c,&source,&remote,&temp,&op,&events,true).unwrap();
+    // Exercise collision safety through the native Windows adapter without
+    // relying on direct filesystem access to the fixture's SFTP root.
+    let collision=wire::join(&home,&format!("native-existing-{case}.bin")).unwrap();
+    let blocked=wire::join(&home,&format!(".native-blocked-{case}.part")).unwrap();
+    let collision_handle=c.open(&collision,2|8|32).unwrap();
+    c.write(&collision_handle,0,b"untouched").unwrap();
+    c.close(&collision_handle).unwrap();
+    assert!(copy_upload_with_verify(&mut c,&source,&collision,&blocked,&op,&events,true).is_err());
+    assert!(c.missing(&blocked).unwrap());
+    let collision_read=c.open(&collision,1).unwrap();
+    assert_eq!(c.read(&collision_read,0).unwrap().unwrap(),b"untouched".to_vec());
+    c.close(&collision_read).unwrap();
     // Native Windows ssh2 adapter also verifies the real partial-resume path.
     let resume_remote=wire::join(&home,&format!("native-resumed-{case}.bin")).unwrap();
     let resume_part=wire::join(&home,&format!(".native-resume-{case}.part")).unwrap();
@@ -908,7 +1135,7 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
     copy_download(&mut c,&resume_remote,&resume_local,&resume_tmp,&op,&events,false).unwrap();
     assert_eq!(fs::read(&resume_local).unwrap(),bytes);
     let target=local.join("download.bin");let partial=local.join(".download.part");
-    copy_download(&mut c,&remote,&target,&partial,&op,&events,false).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
+    copy_download_with_verify(&mut c,&remote,&target,&partial,&op,&events,false,true).unwrap();assert_eq!(fs::read(&target).unwrap(),bytes);
     assert!(copy_download(&mut c,&remote,&target,&partial,&op,&events,false).is_err());
     assert!(copy_upload(&mut c,&source,&remote,&temp,&op,&events).is_err());
     let folder=format!("native-folder-{case}");
@@ -957,13 +1184,297 @@ pub(crate) fn verify_native_adapter(login: Arc<crate::native_auth::Login>, user:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn private_download_publication_requires_same_regular_partial() {
+        let dir=tempfile::tempdir().unwrap();
+        let partial=dir.path().join(".nodedesk-test.part");
+        fs::write(&partial,b"test").unwrap();
+        let opened=fs::File::open(&partial).unwrap().metadata().unwrap();
+        assert!(check_download_partial_before_publish(&partial,&opened,4).is_ok());
+        assert!(check_download_partial_before_publish(&partial,&opened,5).is_err());
+        fs::remove_file(&partial).unwrap();
+        assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+        #[cfg(unix)] {
+            let old=dir.path().join("old");
+            fs::write(&old,b"test").unwrap();
+            fs::write(&partial,b"test").unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+            fs::remove_file(&partial).unwrap();
+            std::os::unix::fs::symlink(&old,&partial).unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+            fs::remove_file(&partial).unwrap();
+            fs::hard_link(&old,&partial).unwrap();
+            assert!(check_download_partial_before_publish(&partial,&opened,4).is_err());
+        }
+    }
+    #[test] fn download_never_writes_past_declared_size_or_accepts_early_eof() {
+        let data=b"data";
+        assert_eq!(checked_download_progress(0,Some(4),Some(data)).unwrap(),Some(4));
+        assert_eq!(checked_download_progress(4,Some(4),None).unwrap(),None);
+        assert_eq!(checked_download_progress(0,Some(0),None).unwrap(),None);
+        assert!(checked_download_progress(0,Some(3),Some(data)).is_err());
+        assert!(checked_download_progress(2,Some(4),Some(data)).is_err());
+        assert!(checked_download_progress(2,Some(4),None).is_err());
+        assert!(checked_download_progress(4,Some(4),Some(b"x")).is_err());
+        assert!(checked_download_progress(0,Some(4),Some(b"")).is_err());
+        assert!(checked_download_progress(u64::MAX,None,Some(b"x")).is_err());
+        assert!(checked_download_progress(0,None,Some(&vec![0;CHUNK+1])).is_err());
+    }
+    #[test] fn unknown_size_download_is_bounded_and_requires_eof() {
+        assert_eq!(checked_download_progress(0,None,Some(b"abc")).unwrap(),Some(3));
+        assert_eq!(checked_download_progress(3,None,None).unwrap(),None);
+        assert_eq!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES-1,None,Some(b"x")).unwrap(),
+            Some(MAX_UNSIZED_DOWNLOAD_BYTES));
+        assert!(checked_download_progress(MAX_UNSIZED_DOWNLOAD_BYTES,None,Some(b"x")).is_err());
+    }
+    #[test] fn upload_resume_partial_changes_block_publication() {
+        let baseline=wire::Attrs{
+            size:Some(4),permissions:Some(0o100600),modified:Some(100),
+        };
+        assert!(check_uploaded_partial_stable(&baseline,&baseline,4).is_ok());
+        assert!(check_uploaded_partial_stable(&baseline,&baseline,3).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            size:Some(5),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            permissions:Some(0o120777),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            modified:Some(101),..baseline.clone()
+        },4).is_err());
+        assert!(check_uploaded_partial_stable(&baseline,&wire::Attrs{
+            permissions:Some(0o100644),..baseline.clone()
+        },4).is_err());
+    }
+    #[test] fn upload_source_recheck_rejects_in_place_size_change() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("upload-source.bin");
+        fs::write(&path,b"1234").unwrap();
+        let handle=fs::File::open(&path).unwrap();
+        let initial=handle.metadata().unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_ok());
+        fs::write(&path,b"longer bytes").unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn upload_source_recheck_rejects_same_size_replacement_and_symlink() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("upload-source.bin");
+        fs::write(&path,b"same").unwrap();
+        let handle=fs::File::open(&path).unwrap();
+        let initial=handle.metadata().unwrap();
+        let saved=dir.path().join("original.bin");
+        fs::rename(&path,&saved).unwrap();
+        fs::write(&path,b"same").unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&saved,&path).unwrap();
+        assert!(check_upload_source_stable(&path,&handle,&initial).is_err());
+    }
+    #[test] fn readback_detects_corrupt_or_truncated_bytes() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("sample");
+        fs::write(&path,b"abcd").unwrap();
+        let mut good=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut good,b"ab").is_ok());
+        assert!(verify_local_chunk(&mut good,b"cd").is_ok());
+        let mut bad=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut bad,b"abce").is_err());
+        let mut short=fs::File::open(&path).unwrap();
+        assert!(verify_local_chunk(&mut short,b"abcde").is_err());
+    }
     #[test] fn strict_transport_no_password_or_shell() {
-        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,control:None,native:None };
+        let d = Destination { host:"localhost".into(),port:22,username:"user".into(),auth_session:None,identity:None,jump:None,control:None,native:None };
         let a = transport_args(&d).unwrap();
         for s in ["-T","-s","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] { assert!(a.contains(&s.into())); }
         assert_eq!(a.last().unwrap(),"sftp"); assert!(!a.contains(&"-tt".into()));
         assert!(!a.iter().any(|s|s.contains("StrictHostKeyChecking=ask") || s.contains("BatchMode=no")));
         assert!(transport_args(&Destination {host:"-oProxyCommand=evil".into(),..d}).is_err());
+    }
+    #[test] fn direct_identity_is_explicit_and_preserves_strict_transport() {
+        let path=std::env::temp_dir().join(format!("nodedesk-files-key-{}",std::process::id()));
+        fs::write(&path,b"fixture key").unwrap();
+        let raw=path.to_str().unwrap().to_string();
+        let d=Destination {host:"localhost".into(),port:22,username:"user".into(),auth_session:None,
+            identity:Some(raw.clone()),jump:None,control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-i",raw.as_str()]));
+        for required in ["-oIdentitiesOnly=yes","-oBatchMode=yes","-oStrictHostKeyChecking=yes",
+            "-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert_eq!(args.last().unwrap(),"sftp");
+        assert!(transport_args(&Destination {identity:Some("relative-key".into()),..d.clone()}).is_err());
+        assert!(connect(&Destination {auth_session:Some("login".into()),..d.clone()},&Operation::default()).is_err());
+        fs::remove_file(path).unwrap();
+        assert!(transport_args(&d).is_err());
+    }
+    #[test] fn single_hop_files_gateway_validates_key_agent_transport() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"operator"
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let j=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[j+1],"operator@bastion.example.org:2201");
+        assert_eq!(args.last().unwrap(),"sftp");
+        for required in ["-F","-oStrictHostKeyChecking=yes","-oBatchMode=yes",
+            "-oForwardAgent=no","-oPasswordAuthentication=no"] {
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(connect(&Destination{auth_session:Some("interactive".into()),..d.clone()},
+            &Operation::default()).is_err());
+        // Selected identity applies to the destination, never the separate
+        // OpenSSH -J child. The jump uses the SSH agent/default keys.
+        let key=std::env::temp_dir().join(format!("nodedesk-target-key-{}",std::process::id()));
+        fs::write(&key,b"fixture-only").unwrap();
+        let key_path=key.to_string_lossy().to_string();
+        let with_key=transport_args(&Destination{identity:Some(key_path.clone()),..d.clone()}).unwrap();
+        let pos=with_key.iter().position(|arg|arg=="-i").unwrap();
+        assert_eq!(with_key[pos+1],key_path);
+        assert!(with_key.contains(&"-oIdentitiesOnly=yes".into()));
+        fs::remove_file(&key).unwrap();
+        assert!(transport_args(&Destination{identity:Some(key_path),..d.clone()}).is_err());
+        for invalid in ["bad;sh","-ProxyCommand=evil","a b","bad\nhost"] {
+            let jump=serde_json::from_value(serde_json::json!({
+                "host":invalid,"port":2201,"username":"operator"
+            })).unwrap();
+            assert!(transport_args(&Destination{jump:Some(jump),..d.clone()}).is_err());
+        }
+        let same:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"target.example.org","port":22,"username":"admin"
+        })).unwrap();
+        assert!(transport_args(&Destination{jump:Some(same),..d}).is_err());
+    }
+    #[test] fn files_two_hop_gateway_uses_only_explicit_validated_ssh_arguments() {
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"bastion.example.org","port":2201,"username":"jump1",
+            "next":{"host":"edge.example.org","port":2202,"username":"jump2"}
+        })).unwrap();
+        let d=Destination{host:"target.example.org".into(),port:22,username:"admin".into(),
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let args=transport_args(&d).unwrap();
+        let index=args.iter().position(|arg|arg=="-J").unwrap();
+        assert_eq!(args[index+1],"jump1@bastion.example.org:2201,jump2@edge.example.org:2202");
+        for required in ["-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oForwardAgent=no"]{
+            assert!(args.contains(&required.to_string()));
+        }
+        assert!(transport_args(&Destination{auth_session:Some("login".into()),..d.clone()}).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn real_files_gateway_uses_disposable_sshd_and_rejects_untrusted_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let user=std::env::var("USER").unwrap();
+        let root=PathBuf::from(&dir);
+        // Use a disposable config only inside this fixture: the real Files
+        // transport always keeps -F none. ProxyJump launches a separate ssh
+        // process, and OpenSSH forwards the -F argument to that child.
+        let host_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let known=root.join("gateway-known");
+        fs::write(&known,format!("[127.0.0.1]:22229 {host_key}[localhost]:22229 {host_key}")).unwrap();
+        let config=root.join("gateway-ssh-config");
+        fs::write(&config,format!(
+            "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+            known.display(),root.join("client").display())).unwrap();
+        fs::set_permissions(&config,fs::Permissions::from_mode(0o600)).unwrap();
+        // One disposable sshd represents both SSH hops using different host
+        // names. Each hop must authenticate and validate its host key.
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22229,"username":user
+        })).unwrap();
+        let d=Destination{host:"localhost".into(),port:22229,username:user,
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|trusted_hosts:&std::path::Path| {
+            let mut cmd=Command::new("/usr/bin/ssh");
+            // The outer target's trust is explicitly selected, separately
+            // from the gateway's trust in the fixture-only config.
+            cmd.arg(format!("-oUserKnownHostsFile={}",trusted_hosts.display()));
+            cmd.arg("-oGlobalKnownHostsFile=/dev/null");
+            let mut args=transport_args(&d).unwrap();
+            let pos=args.iter().position(|arg|arg=="-F").unwrap();
+            assert_eq!(args[pos+1],"none");
+            args[pos+1]=config.to_string_lossy().into_owned();
+            cmd.args(args);
+            cmd
+        };
+        let op=Operation::default();
+        let mut client=spawn_transport(make_command(&known),&op).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        let listing=client.list(&home).unwrap();
+        assert!(listing.len()<=wire::MAX_ENTRIES);
+        drop(client);op.stop();
+        // Gateway remains trusted, but target becomes untrusted. No prompt,
+        // automatic acceptance or successful SFTP handshake is permitted.
+        let unknown=root.join("gateway-unknown-target");
+        fs::write(&unknown,"").unwrap();
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&unknown),&bad).is_err());
+        bad.stop();
+    }
+    #[cfg(unix)]
+    #[test] fn real_two_hop_sftp_via_three_disposable_sshd_listeners() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir)=std::env::var("NODEDESK_SSH_FIXTURE") else {return;};
+        let root=PathBuf::from(dir);
+        let user=std::env::var("USER").unwrap();
+        // All three listeners have different, disposable host keys.
+        let target_key=fs::read_to_string(root.join("host.pub")).unwrap();
+        let first_key=fs::read_to_string(root.join("host-22230.pub")).unwrap();
+        let second_key=fs::read_to_string(root.join("host-22231.pub")).unwrap();
+        let known=root.join("twohop-known");
+        let lines=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}[127.0.0.1]:22231 {second_key}");
+        fs::write(&known,lines).unwrap();
+        let known_without_second=root.join("twohop-missing-second");
+        let partial=format!("[127.0.0.1]:22229 {target_key}[127.0.0.1]:22230 {first_key}");
+        fs::write(&known_without_second,partial).unwrap();
+        let make_config=|path:&std::path::Path,trust:&std::path::Path,identity:&std::path::Path| {
+            fs::write(path,format!(
+                "Host *\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  BatchMode yes\n  IdentityFile {}\n  IdentitiesOnly yes\n",
+                trust.display(),identity.display())).unwrap();
+            fs::set_permissions(path,fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        let full_config=root.join("twohop-ssh-config");
+        let missing_config=root.join("twohop-second-untrusted-config");
+        make_config(&full_config,&known,&root.join("client"));
+        make_config(&missing_config,&known_without_second,&root.join("client"));
+        let rejected_identity_config=root.join("twohop-wrong-identity-config");
+        make_config(&rejected_identity_config,&known,&root.join("other"));
+        let jump:ssh::JumpHost=serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1","port":22230,"username":user,
+            "next":{"host":"127.0.0.1","port":22231,"username":user}
+        })).unwrap();
+        let d=Destination{host:"127.0.0.1".into(),port:22229,username:user,
+            auth_session:None,identity:None,jump:Some(jump),control:None,native:None};
+        let make_command=|config:&std::path::Path| {
+            let mut args=transport_args(&d).unwrap();
+            let at=args.iter().position(|v|v=="-F").unwrap();
+            assert_eq!(args[at+1],"none"); // production remains fail-closed
+            args[at+1]=config.to_string_lossy().into_owned();
+            let mut command=Command::new("/usr/bin/ssh");
+            command.arg(format!("-oUserKnownHostsFile={}",known.display()));
+            command.arg("-oGlobalKnownHostsFile=/dev/null");
+            command.args(args);
+            command
+        };
+        let good=Operation::default();
+        let mut client=spawn_transport(make_command(&full_config),&good).unwrap();
+        let home=client.realpath(".").unwrap();
+        assert!(!home.is_empty());
+        assert!(client.list(&home).unwrap().len()<=wire::MAX_ENTRIES);
+        drop(client);good.stop();
+        // The target and first hop remain trusted. The second is untrusted.
+        // A noninteractive client must refuse before reaching SFTP.
+        let bad=Operation::default();
+        assert!(spawn_transport(make_command(&missing_config),&bad).is_err());
+        bad.stop();
+        // All host keys are trusted, but none of the disposable listeners
+        // accepts this unrelated private key. A failed first-hop login must
+        // not open an SFTP stream or request an interactive fallback.
+        let denied=Operation::default();
+        assert!(spawn_transport(make_command(&rejected_identity_config),&denied).is_err());
+        denied.stop();
     }
     #[test] fn text_preview_rejects_binary_invalid_utf8_controls_and_oversize(){
         assert_eq!(decode_preview("Привет\nworld".as_bytes().to_vec()).unwrap(),"Привет\nworld");
@@ -1041,10 +1552,11 @@ mod tests {
     #[test]
     fn real_structured_sftp_binary_trust_and_cancel() {
         let Ok(dir) = std::env::var("NODEDESK_SSH_FIXTURE") else { return; };
-        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,control:None,native:None};
+        let d = Destination {host:"127.0.0.1".into(),port:22229,username:std::env::var("USER").unwrap(),auth_session:None,
+            identity:Some(format!("{dir}/client")),jump:None,control:None,native:None};
         let open = |known: &str, op: &Operation| {
             let mut cmd = Command::new("ssh");
-            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into(),"-oIdentitiesOnly=yes".into(),"-i".into(),format!("{dir}/client")]);
+            cmd.args([format!("-oUserKnownHostsFile={dir}/{known}"),"-oGlobalKnownHostsFile=/dev/null".into()]);
             cmd.args(transport_args(&d).unwrap()); spawn_transport(cmd,op)
         };
         for known in ["unknown-gui","changed","revoked"] {
@@ -1063,6 +1575,31 @@ mod tests {
         let source = local.join(filename); fs::write(&source,&bytes).unwrap();
         let dest = wire::join(remote_path,filename).unwrap(); let temp = wire::join(remote_path,".upload.part").unwrap();
         let events = Channel::<Progress>::new(|_| Ok(()));
+        // A stale listing cannot cause any write when the final filename
+        // already exists, even if the SFTP implementation permits overwrite.
+        let collision_dest=wire::join(remote_path,"preexisting-upload.bin").unwrap();
+        let collision_part=wire::join(remote_path,".preexisting-upload.part").unwrap();
+        fs::write(&collision_dest,b"untouched").unwrap();
+        assert!(copy_upload_with_verify(&mut c,&source,&collision_dest,&collision_part,&op,&events,true).is_err());
+        assert_eq!(fs::read(&collision_dest).unwrap(),b"untouched");
+        assert!(!Path::new(&collision_part).exists());
+        // A second collision can appear *while* an upload is in flight.
+        // Inject one only into the disposable fixture after the first
+        // progress event, then require the publication-time recheck to
+        // leave the concurrently created final file untouched.
+        let late_dest=wire::join(remote_path,"late-upload-collision.bin").unwrap();
+        let late_part=wire::join(remote_path,".late-upload-collision.part").unwrap();
+        let late_path=PathBuf::from(&late_dest);
+        let late_writer=late_path.clone();
+        assert!(!late_path.exists());
+        let late_events=Channel::<Progress>::new(move |_| {
+            if !late_writer.exists() { fs::write(&late_writer,b"late owner").unwrap(); }
+            Ok(())
+        });
+        assert!(copy_upload_with_verify(&mut c,&source,&late_dest,&late_part,&op,&late_events,true).is_err());
+        assert_eq!(fs::read(&late_path).unwrap(),b"late owner");
+        assert!(Path::new(&late_part).exists(),"refused upload retains its private partial");
+        fs::remove_file(&late_part).unwrap();
         copy_upload(&mut c,&source,&dest,&temp,&op,&events).unwrap();
         assert_eq!(fs::read(&dest).unwrap(),bytes);
         // Verified byte-offset upload: prefix is written through real SFTP v3,
@@ -1258,7 +1795,7 @@ mod tests {
         let different=if original_mode & 0o777==0o640 {0o600} else {0o640};
         let chmod=ChangePermissions {
             destination:Destination{host:String::new(),port:0,username:String::new(),
-                auth_session:None,control:None,native:None},
+                auth_session:None,identity:None,jump:None,control:None,native:None},
             directory:remote_path.to_string(),name:filename.to_string(),
             expected_kind:"file".into(),expected_permissions:original_mode,
             expected_size:chmod_before.size,expected_modified:chmod_before.modified.map(u64::from),

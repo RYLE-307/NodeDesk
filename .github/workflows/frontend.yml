@@ -6,6 +6,66 @@ on:
 permissions:
   contents: read
 jobs:
+  arch-preview:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arch build prerequisites
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake curl wget file openssl pkgconf rustup nodejs npm dbus \
+            webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3 librsvg xdotool \
+            openssh hicolor-icon-theme desktop-file-utils
+          rustup default stable
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: npm run tauri build -- --no-bundle
+      - name: Pack Arch binary preview
+        run: |
+          tar -czf nodedesk-arch-portable-preview.tar.gz \
+            -C src-tauri/target/release nodedesk \
+            -C "$GITHUB_WORKSPACE" LICENSE README.md
+          sha256sum nodedesk-arch-portable-preview.tar.gz > SHA256SUMS-arch.txt
+      - name: Build Arch package preview
+        run: |
+          useradd -m nodedesk-builder
+          chown -R nodedesk-builder:nodedesk-builder ops/packaging/arch
+          runuser -u nodedesk-builder -- env NODEDESK_SOURCE_ROOT="$GITHUB_WORKSPACE" \
+            bash -c 'cd "$NODEDESK_SOURCE_ROOT/ops/packaging/arch" && makepkg --noconfirm'
+          sha256sum ops/packaging/arch/*.pkg.tar.zst > SHA256SUMS-arch-package.txt
+      - name: Disposable Arch package and portable install checks
+        run: |
+          sha256sum -c SHA256SUMS-arch.txt
+          sha256sum -c SHA256SUMS-arch-package.txt
+          portable_dir="$(mktemp -d)"
+          tar -xzf nodedesk-arch-portable-preview.tar.gz -C "$portable_dir"
+          test -x "$portable_dir/nodedesk"
+          test -f "$portable_dir/LICENSE"
+          pacman -U --noconfirm ops/packaging/arch/*.pkg.tar.zst
+          pacman -Qkk nodedesk-preview
+          test -x /usr/bin/nodedesk
+          desktop-file-validate /usr/share/applications/nodedesk.desktop
+          pacman -R --noconfirm nodedesk-preview
+          test ! -e /usr/bin/nodedesk
+          test ! -e /usr/share/applications/nodedesk.desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-arch-portable-preview
+          path: |
+            nodedesk-arch-portable-preview.tar.gz
+            SHA256SUMS-arch.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-arch-package-preview
+          path: |
+            ops/packaging/arch/*.pkg.tar.zst
+            SHA256SUMS-arch-package.txt
+          if-no-files-found: error
   browser:
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +125,7 @@ jobs:
             fi
           done
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf openssh-server
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev patchelf openssh-server
       - run: npm ci
       - name: Rust tests (Windows)
         if: runner.os == 'Windows'
@@ -84,10 +144,57 @@ jobs:
         if: runner.os == 'Linux'
         run: bash tests/ssh-fixture.sh
       - run: npm run tauri build -- --no-bundle
+      - name: Prepare verified NSIS tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./ops/packaging/prepare-nsis.ps1
+      - name: Bundle Windows installer preview
+        if: runner.os == 'Windows'
+        run: npm run tauri bundle -- --config ops/packaging/preview-windows.json --bundles nsis --no-sign --ci
+      - name: Bundle Linux package preview
+        if: runner.os == 'Linux'
+        run: npm run tauri bundle -- --config ops/packaging/preview-linux.json --bundles deb --ci
+      - name: Checksum Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $folder = 'src-tauri/target/release/bundle/nsis'
+          Get-ChildItem -LiteralPath $folder -Filter '*.exe' | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content -LiteralPath "$folder/SHA256SUMS.txt"
+      - name: Disposable Windows NSIS install and uninstall smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./ops/packaging/test-nsis.ps1
+      - name: Checksum Linux package
+        if: runner.os == 'Linux'
+        run: cd src-tauri/target/release/bundle/deb && sha256sum ./*.deb > SHA256SUMS.txt
       - name: Windows preview for read-only desktop QA
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: nodedesk-windows-preview
           path: src-tauri/target/release/nodedesk.exe
+          if-no-files-found: error
+      - name: Windows installer preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-windows-nsis-preview
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Linux package preview
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodedesk-linux-deb-preview
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/deb/SHA256SUMS.txt
           if-no-files-found: error

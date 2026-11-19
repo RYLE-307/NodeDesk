@@ -161,3 +161,50 @@ export function moveConnection(data: Catalog, id: string, groupId: string | null
   if (data.connections.find(c => c.id === id)!.groupId === groupId) return data;
   return { ...data, connections: data.connections.map(c => c.id === id ? { ...c, groupId } : c) };
 }
+
+/**
+ * Append a verified NodeDesk catalog without overwriting existing sessions,
+ * local preferences or credentials. All imported IDs are regenerated, so an
+ * imported UUID can never acquire an existing OS-vault secret automatically.
+ * Repeated merges intentionally append copies; they are never auto-connected.
+ */
+export function mergeCatalog(
+  current: Catalog,
+  imported: Catalog,
+  nextId: () => string = () => crypto.randomUUID(),
+): Catalog {
+  const base = decode(JSON.stringify(current));
+  const addition = decode(JSON.stringify(imported));
+  if (base.groups.length + addition.groups.length > 1000 ||
+      base.connections.length + addition.connections.length > 10000)
+    throw new Error("catalog capacity exceeded");
+
+  const used = new Set(
+    [...base.groups, ...base.connections, ...addition.groups, ...addition.connections]
+      .map((item) => item.id),
+  );
+  function allocate(): string {
+    const id = nextId();
+    if (!text(id) || !id || used.has(id))
+      throw new Error("invalid generated catalog ID");
+    used.add(id);
+    return id;
+  }
+
+  const groupIds = new Map(addition.groups.map((g) => [g.id, allocate()]));
+  const groups = addition.groups.map((g) => ({
+    ...g,
+    id: groupIds.get(g.id)!,
+    parentId: g.parentId === null ? null : groupIds.get(g.parentId)!,
+  }));
+  const connections = addition.connections.map((c) => ({
+    ...c,
+    id: allocate(),
+    groupId: c.groupId === null ? null : groupIds.get(c.groupId)!,
+  }));
+  return decode(JSON.stringify({
+    ...base,
+    groups: [...base.groups, ...groups],
+    connections: [...base.connections, ...connections],
+  }));
+}

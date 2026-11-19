@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Connection } from "./catalog";
 import { EmbeddedRdp } from "./EmbeddedRdp";
+import { DirectRdp } from "./DirectRdp";
 
 type LaunchInfo = {client:string;externalWindow:boolean};
 
@@ -40,6 +41,7 @@ export function RdpWorkspace({ connection, language }: {connection:Connection;la
   }
   return <section className="rdp-workspace" aria-label={ru ? "Удалённый рабочий стол RDP" : "RDP remote desktop"}>
     <h2>{connection.name}</h2>
+    <DirectRdp connection={connection} language={language}/>
     <EmbeddedRdp language={language}/>
     <h3>{ru ? "Внешний RDP-клиент" : "External RDP client"}</h3>
     <p>{ru ? "Адрес" : "Host"}: <strong>{connection.host}:{connection.port}</strong></p>

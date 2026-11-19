@@ -22,6 +22,30 @@ serde_json = "1"
 ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
 base64 = "0.22"
 zeroize = "1"
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native", "sync-secret-service"] }
+sysinfo = "=0.39.6"
+ironrdp-client = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", version = "0.1.0", default-features = false, features = ["rustls", "clipboard"] }
+ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["input", "pdu"] }
+ironrdp-tls = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["rustls"] }
+tokio = { version = "1", features = ["sync", "time"] }
+png = "0.18"
+vnc-core = { path = "vendor/deskvnc-vnc-core" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[patch."https://github.com/Devolutions/IronRDP.git"]
+ironrdp-tls = { path = "vendor/ironrdp-tls" }
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-cliprdr = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845" }
+ironrdp-cliprdr-native = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845" }
 
 [dev-dependencies]
 serde_json = "1"
+rcgen = "0.14"
+tokio-rustls = "0.26"
+ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "b553ed4315655d9003e37d7bcae13a029405b845", default-features = false, features = ["server", "connector", "cliprdr", "core"] }
+tempfile = "3"
+async-trait = "0.1"
+rdp-pdu = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }

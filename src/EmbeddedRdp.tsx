@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from "react";
 import Guacamole from "@pelotech/guacamole-common-js";
 import {isTauri} from "@tauri-apps/api/core";
+import {boundedRemoteClipboard} from "./remoteClipboard";
 import {
   guacBase, guacLogin, guacConnections, guacLogout, guacTunnelQuery,
   guacWssTunnel,
@@ -22,6 +23,8 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
   const [selected,setSelected]=useState("");
   const [phase,setPhase]=useState<Phase>("idle");
   const [viewOnly,setViewOnly]=useState(false);
+  const [clipboardEnabled,setClipboardEnabled]=useState(false);
+  const [remoteClipboardReady,setRemoteClipboardReady]=useState(false);
   const [acknowledged,setAcknowledged]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
@@ -36,9 +39,13 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
   const request=useRef<AbortController|null>(null);
   const phaseRef=useRef<Phase>("idle");
   const viewOnlyRef=useRef(false);
+  const clipboardEnabledRef=useRef(false);
+  const remoteClipboard=useRef("");
 
   function setCurrentPhase(p:Phase){phaseRef.current=p;setPhase(p);}
   function releaseClient(){
+    remoteClipboard.current="";setRemoteClipboardReady(false);
+    clipboardEnabledRef.current=false;setClipboardEnabled(false);
     displayObserver.current?.disconnect();
     displayObserver.current=null;
     const active=session.current;
@@ -174,6 +181,23 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
         setError(ru?"Шлюз отклонил или завершил RDP-сеанс.":
           "Guacamole gateway rejected or closed the RDP session.");
       };
+      client.onclipboard=(stream,mimetype)=>{
+        if(session.current!==client||!clipboardEnabledRef.current||!mimetype.startsWith("text/plain"))return;
+        const reader=new Guacamole.StringReader(stream);
+        let received="",valid=true;
+        reader.ontext=chunk=>{
+          if(!valid||session.current!==client)return;
+          try{received=boundedRemoteClipboard(received+chunk);}
+          catch{valid=false;received="";}
+        };
+        reader.onend=()=>{
+          if(session.current!==client||!clipboardEnabledRef.current)return;
+          if(valid&&received){remoteClipboard.current=received;setRemoteClipboardReady(true);}
+          else {remoteClipboard.current="";setRemoteClipboardReady(false);
+            setError(ru?"Удалённый буфер обмена пуст, небезопасен или слишком велик.":
+              "Remote clipboard is empty, unsafe or too large.");}
+        };
+      };
       const m=new Guacamole.Mouse(display);
       mouse.current=m;
       m.onEach(["mousedown","mouseup","mousemove"],(event)=>{
@@ -205,6 +229,27 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
     }
     viewOnlyRef.current=value;
     setViewOnly(value);
+  }
+  async function copyRemoteClipboard(){
+    if(phaseRef.current!=="connected"||!clipboardEnabledRef.current||!remoteClipboard.current)return;
+    try{
+      await navigator.clipboard.writeText(boundedRemoteClipboard(remoteClipboard.current));
+      setMessage(ru?"Удалённый текст скопирован по вашему запросу.":"Remote text copied on request.");
+    }catch{setError(ru?"Локальный буфер обмена недоступен.":"Local clipboard unavailable.");}
+  }
+  async function sendLocalClipboard(){
+    const client=session.current;
+    if(phaseRef.current!=="connected"||!client||!clipboardEnabledRef.current||viewOnlyRef.current)return;
+    if(!window.confirm(ru?"Передать текст из локального буфера обмена на удалённый компьютер?":
+      "Send local clipboard text to the remote desktop?"))return;
+    try{
+      const value=boundedRemoteClipboard(await navigator.clipboard.readText());
+      if(session.current!==client||!clipboardEnabledRef.current)return;
+      const writer=new Guacamole.StringWriter(client.createClipboardStream("text/plain"));
+      writer.sendText(value);writer.sendEnd();
+      setMessage(ru?"Локальный текст отправлен по вашему запросу.":"Local text sent on request.");
+    }catch{setError(ru?"Буфер обмена недоступен или текст небезопасен/слишком велик.":
+      "Clipboard unavailable or text unsafe/too large.");}
   }
 
   return <section className="rdp-embedded" aria-label={ru?"Встроенный RDP":"Embedded RDP"}>
@@ -255,6 +300,17 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
         onChange={e=>updateViewOnly(e.target.checked)}/>
         {ru?"Только просмотр":"View only"}
       </label>
+      {phase==="connected"&&<>
+        <label className="check"><input type="checkbox" checked={clipboardEnabled}
+          onChange={e=>{clipboardEnabledRef.current=e.target.checked;setClipboardEnabled(e.target.checked);
+            remoteClipboard.current="";setRemoteClipboardReady(false);}}/>
+          {ru?"Буфер обмена в этой сессии":"Clipboard in this session"}
+        </label>
+        <button type="button" disabled={!clipboardEnabled||!remoteClipboardReady}
+          onClick={()=>void copyRemoteClipboard()}>{ru?"Копировать удалённый текст":"Copy remote text"}</button>
+        <button type="button" disabled={!clipboardEnabled||viewOnly}
+          onClick={()=>void sendLocalClipboard()}>{ru?"Отправить локальный текст":"Send local text"}</button>
+      </>}
     </div>}
     {error&&<p role="alert" className="error">{error}</p>}
     {message&&<p role="status">{message}</p>}
@@ -263,5 +319,7 @@ export function EmbeddedRdp({language}:{language:"ru"|"en"}){
     <p className="ssh-help">{ru
       ?"Пароль вводится только для текущего входа. Токен Guacamole временно хранится в памяти и передаётся по зашифрованному WSS. TLS проверяет WebView; подлинность целевого Windows-сервера и NLA контролирует шлюз. Пароль и токен не сохраняются."
       :"Credentials are used for this login only. Guacamole's token stays in memory and is sent over encrypted WSS. The WebView verifies gateway TLS; the gateway controls Windows host identity and NLA. Credentials and token are not stored."}</p>
+    <p className="ssh-help">{ru?"Буфер обмена выключен до вашего выбора. Копирование и отправка текста требуют отдельных действий; максимум 64 КиБ UTF-8, управляющие и bidi-символы отклоняются. Шлюз должен разрешать clipboard для выбранного RDP-профиля.":
+      "Clipboard is off until enabled. Copying and sending text require separate actions; UTF-8 is limited to 64 KiB and control/bidi characters are rejected. The gateway must allow clipboard for the selected RDP profile."}</p>
   </section>;
 }

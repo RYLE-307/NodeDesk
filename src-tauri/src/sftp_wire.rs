@@ -273,6 +273,28 @@ mod tests {
         }
         assert!(Decoder(&[0,0,0,99]).bytes().is_err());
     }
+    #[test]
+    fn sftp_data_requires_nonempty_bounded_payload_and_explicit_eof() {
+        fn read_result(packet:Vec<u8>)->Result<Option<Vec<u8>>> {
+            let mut input=frame(&[2,0,0,0,3]);
+            input.extend(frame(&packet));
+            let mut client=Client::new(Cursor::new(input),Vec::new())?;
+            client.read(b"ephemeral-fixture-handle",0)
+        }
+        fn data_packet(data:&[u8])->Vec<u8> {
+            let mut response=vec![103];
+            u32b(&mut response,1);
+            string(&mut response,data);
+            response
+        }
+        assert_eq!(read_result(data_packet(b"abc")).unwrap(),Some(b"abc".to_vec()));
+        assert!(read_result(data_packet(b"")).is_err());
+        assert!(read_result(data_packet(&vec![0;CHUNK+1])).is_err());
+        let mut eof=vec![101];
+        u32b(&mut eof,1); u32b(&mut eof,1);
+        string(&mut eof,b""); string(&mut eof,b"");
+        assert_eq!(read_result(eof).unwrap(),None);
+    }
     #[test] fn response_ids_and_errors() {
         let mut stream = frame(&[2,0,0,0,3]); stream.extend(frame(&[101,0,0,0,2,0,0,0,3,0,0,0,0,0,0,0,0]));
         let mut c = Client::new(Cursor::new(stream),Vec::new()).unwrap(); assert!(c.request(7,vec![]).is_err());

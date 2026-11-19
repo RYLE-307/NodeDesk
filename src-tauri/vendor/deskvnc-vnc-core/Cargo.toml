@@ -1,0 +1,44 @@
+[package]
+name = "vnc-core"
+version = "0.35.3"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Adapted from DeskVNC e80c515d94c5d91ec16f3bdb4439ed83c949437f.
+# Keep the protocol core local so NodeDesk can prohibit cleartext VeNCrypt
+# subtypes. The other protocol-neutral crates are pinned to the same revision.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+zune-jpeg = "0.5"
+des = "0.8"
+cipher = "0.4"
+aes = "0.8"
+ecb = "0.1"
+eax = "0.5"
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+pbkdf2 = { version = "0.12.2", default-features = false, features = ["hmac"] }
+rsa = "0.10.0-rc.18"
+num-bigint-dig = "0.8"
+rand = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+bytes = "1"
+byteorder = "1"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+parking_lot = "0.12"
+remote-core = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }
+remote-pixel = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }
+vnc-transport = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }
+rdp-pdu = { git = "https://github.com/psmux/DeskVNC.git", rev = "e80c515d94c5d91ec16f3bdb4439ed83c949437f" }

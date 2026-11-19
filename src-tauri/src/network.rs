@@ -2,12 +2,70 @@
 //! No background scan, shell invocation, user-supplied executable or option.
 use serde::{Deserialize,Serialize};
 use std::{
+    collections::{HashMap,HashSet},
     io::Read,
     net::{IpAddr,SocketAddr,TcpStream,ToSocketAddrs},
-    process::{Command,Stdio},
+    process::{Child,Command,Stdio},
+    sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},
     thread,
     time::{Duration,Instant}
 };
+use tauri::{Manager,State};
+
+#[derive(Default)]
+struct Diagnostic {cancelled:AtomicBool,child:Mutex<Option<Child>>}
+impl Diagnostic {
+    fn check(&self)->Result<(),String>{
+        if self.cancelled.load(Ordering::SeqCst){Err("Diagnostic cancelled".into())}else{Ok(())}
+    }
+    fn cancel(&self){
+        self.cancelled.store(true,Ordering::SeqCst);
+        if let Ok(mut child)=self.child.lock(){if let Some(child)=child.as_mut(){let _=child.kill();}}
+    }
+    fn finish_child(&self){
+        if let Ok(mut slot)=self.child.lock(){if let Some(mut child)=slot.take(){
+            let _=child.kill();let _=child.wait();
+        }}
+    }
+}
+#[derive(Default)]
+struct DiagnosticRegistry {active:HashMap<String,Arc<Diagnostic>>,cancelled:HashSet<String>}
+#[derive(Default)]
+pub struct Diagnostics(Mutex<DiagnosticRegistry>);
+impl Diagnostics {
+    pub fn shutdown(&self){if let Ok(mut active)=self.0.lock(){
+        for (_,op) in active.active.drain(){op.cancel();}
+        active.cancelled.clear();
+    }}
+}
+struct ActiveDiagnostic {id:String,app:tauri::AppHandle,op:Arc<Diagnostic>}
+impl Drop for ActiveDiagnostic {
+    fn drop(&mut self){self.op.finish_child();
+        if let Ok(mut active)=self.app.state::<Diagnostics>().0.lock(){active.active.remove(&self.id);}
+    }
+}
+fn register(id:String,app:&tauri::AppHandle)->Result<ActiveDiagnostic,String>{
+    if id.len()!=36||!id.chars().all(|c|c.is_ascii_hexdigit()||c=='-'){
+        return Err("Invalid diagnostic ID".into());
+    }
+    let state=app.state::<Diagnostics>();
+    let mut active=state.0.lock().map_err(|_|"Diagnostic lock failed")?;
+    if active.active.contains_key(&id)||active.active.len()>=8{return Err("Diagnostic limit or duplicate ID".into());}
+    let op=Arc::new(Diagnostic::default());
+    if active.cancelled.remove(&id){op.cancel();}
+    active.active.insert(id.clone(),op.clone());
+    Ok(ActiveDiagnostic{id,app:app.clone(),op})
+}
+#[tauri::command]
+pub fn network_cancel(id:String,state:State<'_,Diagnostics>)->Result<(),String>{
+    if id.len()!=36||!id.chars().all(|c|c.is_ascii_hexdigit()||c=='-'){
+        return Err("Invalid diagnostic ID".into());
+    }
+    let mut registry=state.0.lock().map_err(|_|"Diagnostic lock failed")?;
+    if let Some(op)=registry.active.get(&id){op.cancel();}
+    else if registry.cancelled.len()<64{registry.cancelled.insert(id);}
+    Ok(())
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -39,19 +97,24 @@ fn resolve(target:&ProbeTarget)->Result<Vec<SocketAddr>,String>{
     if addresses.is_empty(){return Err("DNS returned no addresses".into());}
     Ok(addresses)
 }
-fn probe(target:ProbeTarget)->Result<ProbeResult,String>{
+fn probe(target:ProbeTarget,op:&Diagnostic)->Result<ProbeResult,String>{
     let started=Instant::now();
+    op.check()?;
     let addresses=resolve(&target)?;
+    op.check()?;
     let mut reachable=false;
     for address in addresses.iter().take(4){
+        op.check()?;
         if TcpStream::connect_timeout(address,Duration::from_secs(2)).is_ok(){reachable=true;break;}
     }
+    op.check()?;
     Ok(ProbeResult{addresses:addresses.iter().map(|a|a.ip().to_string()).collect(),
         tcp_reachable:reachable,elapsed_ms:started.elapsed().as_millis()})
 }
 #[tauri::command]
-pub async fn network_probe(target:ProbeTarget)->Result<ProbeResult,String>{
-    tauri::async_runtime::spawn_blocking(move||probe(target)).await
+pub async fn network_probe(id:String,target:ProbeTarget,app:tauri::AppHandle)->Result<ProbeResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||probe(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
@@ -64,7 +127,32 @@ fn ping_args(host:&str,windows:bool)->Result<Vec<String>,String>{
     let endpoint=host.strip_prefix('[').and_then(|v|v.strip_suffix(']')).unwrap_or(host);
     Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(endpoint.to_owned())).collect())
 }
-fn ping(target:PingTarget)->Result<PingResult,String>{
+fn process_output(op:&Diagnostic,child:Child,started:Instant,timeout:Duration,limit:u64,
+    timeout_error:&str,process_error:&str)->Result<(bool,String),String>{
+    *op.child.lock().map_err(|_|"Diagnostic process lock failed")?=Some(child);
+    let success=loop {
+        op.check()?;
+        let status=op.child.lock().map_err(|_|"Diagnostic process lock failed")?
+            .as_mut().ok_or("Diagnostic process closed")?.try_wait();
+        match status {
+            Ok(Some(status))=>break status.success(),
+            Ok(None) if started.elapsed()<timeout=>thread::sleep(Duration::from_millis(50)),
+            Ok(None)=>{op.cancel();return Err(timeout_error.into());},
+            Err(_)=>{op.cancel();return Err(process_error.into());}
+        }
+    };
+    let mut child=op.child.lock().map_err(|_|"Diagnostic process lock failed")?
+        .take().ok_or("Diagnostic process closed")?;
+    let mut bytes=Vec::new();
+    if let Some(stdout)=child.stdout.take(){
+        let _=stdout.take(limit).read_to_end(&mut bytes);
+    }
+    op.check()?;
+    let output=String::from_utf8_lossy(&bytes).chars()
+        .filter(|c|!c.is_control()||matches!(c,'\n'|'\r'|'\t')).collect();
+    Ok((success,output))
+}
+fn ping(target:PingTarget,op:&Diagnostic)->Result<PingResult,String>{
     let started=Instant::now();
     let args=ping_args(&target.host,cfg!(windows))?;
     #[cfg(windows)]
@@ -73,38 +161,17 @@ fn ping(target:PingTarget)->Result<PingResult,String>{
         .ok_or_else(||"Windows ping utility unavailable".to_string())?;
     #[cfg(not(windows))]
     let executable=std::path::PathBuf::from("/usr/bin/ping");
-    let mut child=Command::new(executable).args(args)
+    let child=Command::new(executable).args(args)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_|"System ping utility unavailable".to_string())?;
-    let success=loop {
-        match child.try_wait() {
-            Ok(Some(status))=>break status.success(),
-            Ok(None) if started.elapsed()<Duration::from_secs(10)=>{
-                thread::sleep(Duration::from_millis(50));
-            }
-            Ok(None)=>{
-                let _=child.kill();let _=child.wait();
-                return Err("Ping timed out".into());
-            }
-            Err(_)=>{
-                let _=child.kill();let _=child.wait();
-                return Err("Ping process failed".into());
-            }
-        }
-    };
-    // Two requests produce small output; cap and sanitize it before rendering.
-    let mut bytes=Vec::new();
-    if let Some(stdout)=child.stdout.take(){
-        let _=stdout.take(4096).read_to_end(&mut bytes);
-    }
-    let output=String::from_utf8_lossy(&bytes).chars()
-        .filter(|c|!c.is_control()||matches!(c,'\n'|'\r'|'\t'))
-        .collect();
+    let (success,output)=process_output(op,child,started,Duration::from_secs(10),4096,
+        "Ping timed out","Ping process failed")?;
     Ok(PingResult{reachable:success,elapsed_ms:started.elapsed().as_millis(),output})
 }
 #[tauri::command]
-pub async fn network_ping(target:PingTarget)->Result<PingResult,String>{
-    tauri::async_runtime::spawn_blocking(move||ping(target)).await
+pub async fn network_ping(id:String,target:PingTarget,app:tauri::AppHandle)->Result<PingResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||ping(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
@@ -125,7 +192,7 @@ fn trace_args(host:&str,windows:bool)->Result<Vec<String>,String>{
     let endpoint=host.strip_prefix('[').and_then(|v|v.strip_suffix(']')).unwrap_or(host);
     Ok(fixed.into_iter().map(str::to_string).chain(std::iter::once(endpoint.to_owned())).collect())
 }
-fn trace(target:TraceTarget)->Result<TraceResult,String>{
+fn trace(target:TraceTarget,op:&Diagnostic)->Result<TraceResult,String>{
     let started=Instant::now();
     let args=trace_args(&target.host,cfg!(windows))?;
     #[cfg(windows)]
@@ -134,36 +201,17 @@ fn trace(target:TraceTarget)->Result<TraceResult,String>{
         .ok_or_else(||"Windows traceroute utility unavailable".to_string())?;
     #[cfg(not(windows))]
     let executable=std::path::PathBuf::from("/usr/bin/traceroute");
-    let mut child=Command::new(executable).args(args)
+    let child=Command::new(executable).args(args)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_|"System traceroute utility unavailable".to_string())?;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_))=>break,
-            Ok(None) if started.elapsed()<Duration::from_secs(25)=>{
-                thread::sleep(Duration::from_millis(50));
-            }
-            Ok(None)=>{
-                let _=child.kill();let _=child.wait();
-                return Err("Traceroute timed out".into());
-            }
-            Err(_)=>{
-                let _=child.kill();let _=child.wait();
-                return Err("Traceroute process failed".into());
-            }
-        }
-    }
-    let mut bytes=Vec::new();
-    if let Some(stdout)=child.stdout.take(){
-        let _=stdout.take(8192).read_to_end(&mut bytes);
-    }
-    let output=String::from_utf8_lossy(&bytes).chars()
-        .filter(|c|!c.is_control()||matches!(c,'\n'|'\r'|'\t')).collect();
+    let (_,output)=process_output(op,child,started,Duration::from_secs(25),8192,
+        "Traceroute timed out","Traceroute process failed")?;
     Ok(TraceResult{elapsed_ms:started.elapsed().as_millis(),output})
 }
 #[tauri::command]
-pub async fn network_trace(target:TraceTarget)->Result<TraceResult,String>{
-    tauri::async_runtime::spawn_blocking(move||trace(target)).await
+pub async fn network_trace(id:String,target:TraceTarget,app:tauri::AppHandle)->Result<TraceResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||trace(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
@@ -193,20 +241,27 @@ fn validate_port_list(target:&PortScanTarget)->Result<(),String>{
     }
     Ok(())
 }
-fn scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
+fn scan_ports(target:PortScanTarget,op:&Diagnostic)->Result<PortScanResult,String>{
     validate_port_list(&target)?;
     let started=Instant::now();
+    op.check()?;
     // Resolve once, then check only the specified ports; never scan ranges.
     let addresses=resolve(&ProbeTarget{host:target.host,port:1})?
         .into_iter().take(2).collect::<Vec<_>>();
-    let results=target.ports.into_iter().map(|port|{
-        let reachable=addresses.iter().any(|address|{
+    op.check()?;
+    let mut results=Vec::new();
+    for port in target.ports {
+        op.check()?;
+        let mut reachable=false;
+        for address in &addresses {
+            op.check()?;
             let mut endpoint=*address;
             endpoint.set_port(port);
-            TcpStream::connect_timeout(&endpoint,Duration::from_millis(400)).is_ok()
-        });
-        PortStatus{port,reachable}
-    }).collect();
+            if TcpStream::connect_timeout(&endpoint,Duration::from_millis(400)).is_ok(){reachable=true;break;}
+        }
+        results.push(PortStatus{port,reachable});
+    }
+    op.check()?;
     Ok(PortScanResult{
         addresses:addresses.iter().map(|address|address.ip().to_string()).collect(),
         results,
@@ -214,14 +269,33 @@ fn scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
     })
 }
 #[tauri::command]
-pub async fn network_scan_ports(target:PortScanTarget)->Result<PortScanResult,String>{
-    tauri::async_runtime::spawn_blocking(move||scan_ports(target)).await
+pub async fn network_scan_ports(id:String,target:PortScanTarget,app:tauri::AppHandle)->Result<PortScanResult,String>{
+    let active=register(id,&app)?;
+    tauri::async_runtime::spawn_blocking(move||scan_ports(target,&active.op)).await
         .map_err(|_|"Diagnostic worker failed".to_string())?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelling_a_running_diagnostic_stops_its_child(){
+        #[cfg(windows)]
+        let child=Command::new("ping").args(["-n","30","127.0.0.1"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+        #[cfg(not(windows))]
+        let child=Command::new("/usr/bin/sleep").arg("30")
+            .stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+        let op=Arc::new(Diagnostic::default());
+        let cancel=op.clone();
+        let worker=thread::spawn(move||process_output(&op,child,Instant::now(),
+            Duration::from_secs(40),4096,"timeout","failed"));
+        thread::sleep(Duration::from_millis(150));
+        cancel.cancel();
+        let result=worker.join().unwrap();
+        assert_eq!(result.unwrap_err(),"Diagnostic cancelled");
+        cancel.finish_child();
+    }
     #[test]
     fn endpoint_validation_rejects_urls_commands_and_empty_ports(){
         for good in ["localhost","example.org","127.0.0.1","::1","[::1]"]{assert!(valid_host(good));}
@@ -232,9 +306,17 @@ mod tests {
     fn loopback_probe_reports_an_open_port_without_external_network(){
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port=listener.local_addr().unwrap().port();
-        let result=probe(ProbeTarget{host:"127.0.0.1".into(),port}).unwrap();
+        let result=probe(ProbeTarget{host:"127.0.0.1".into(),port},&Diagnostic::default()).unwrap();
         assert!(result.tcp_reachable);
         assert_eq!(result.addresses,vec!["127.0.0.1".to_string()]);
+    }
+    #[test]
+    fn cancelled_tcp_checks_do_not_start_a_connection(){
+        let op=Diagnostic::default();op.cancel();
+        assert_eq!(probe(ProbeTarget{host:"127.0.0.1".into(),port:443},&op)
+            .err().unwrap(),"Diagnostic cancelled");
+        assert_eq!(scan_ports(PortScanTarget{host:"127.0.0.1".into(),ports:vec![443]},&op)
+            .err().unwrap(),"Diagnostic cancelled");
     }
     #[test]
     fn multiport_rejects_invalid_hosts_duplicates_empty_large_lists_and_zero(){
@@ -255,7 +337,7 @@ mod tests {
         let port=listener.local_addr().unwrap().port();
         let result=scan_ports(PortScanTarget{
             host:"127.0.0.1".into(),ports:vec![port]
-        }).unwrap();
+        },&Diagnostic::default()).unwrap();
         assert_eq!(result.results.len(),1);
         assert_eq!(result.results[0].port,port);
         assert!(result.results[0].reachable);

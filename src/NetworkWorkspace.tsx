@@ -1,5 +1,8 @@
 import {useEffect,useRef,useState} from "react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
+import {createNetworkReport} from "./networkReport";
+import {planCatalogNetworkBatch,MAX_NETWORK_BATCH} from "./networkBatch";
+import type {Connection} from "./catalog";
 
 type ProbeResult={addresses:string[];tcpReachable:boolean;elapsedMs:number};
 type PingResult={reachable:boolean;elapsedMs:number;output:string};
@@ -14,7 +17,7 @@ function parseExplicitPorts(text:string):number[]|null {
   return ports;
 }
 
-export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
+export function NetworkWorkspace({language,connections=[]}:{language:"ru"|"en";connections?:Connection[]}) {
   const ru=language==="ru";
   const [host,setHost]=useState("");
   const [port,setPort]=useState(443);
@@ -31,90 +34,217 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
   const [scanBusy,setScanBusy]=useState(false);
   const [scanResult,setScanResult]=useState<PortScanResult|null>(null);
   const [scanError,setScanError]=useState("");
-  // Async backend diagnostics may finish after the operator changes the
-  // host/ports or closes the tool. Never present a stale result as belonging
-  // to the new target. This discards UI results; it is NOT process cancellation.
+  const [includeSensitive,setIncludeSensitive]=useState(false);
+  const [catalogQuery,setCatalogQuery]=useState("");
+  const [selectedCatalogIds,setSelectedCatalogIds]=useState<string[]>([]);
+  const [batchBusy,setBatchBusy]=useState(false);
+  const [batchError,setBatchError]=useState("");
+  const [batchResults,setBatchResults]=useState<{id:string;name:string;port:number;reachable:boolean|null;elapsedMs:number|null}[]>([]);
+  const batchCurrent=useRef<{cancelled:boolean;id:string|null}|null>(null);
+  // Invalidate stale results and stop native diagnostic processes when the
+  // target changes or the workspace closes.
   const targetVersion=useRef(0);
   const mounted=useRef(true);
+  const probeId=useRef<string|null>(null);
+  const pingId=useRef<string|null>(null);
+  const traceId=useRef<string|null>(null);
+  const scanId=useRef<string|null>(null);
+  function cancelProbe(showMessage:boolean){
+    const id=probeId.current;if(!id)return;
+    probeId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setBusy(false);setError(ru?"Проверка TCP отменена":"TCP check cancelled");}
+  }
+  function cancelPing(showMessage:boolean){
+    const id=pingId.current;if(!id)return;
+    pingId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setPingBusy(false);setPingError(ru?"Ping отменён":"Ping cancelled");}
+  }
+  function cancelTrace(showMessage:boolean){
+    const id=traceId.current;if(!id)return;
+    traceId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setTraceBusy(false);setTraceError(ru?"Трассировка отменена":"Traceroute cancelled");}
+  }
+  function cancelScan(showMessage:boolean){
+    const id=scanId.current;if(!id)return;
+    scanId.current=null;
+    void invoke("network_cancel",{id}).catch(()=>{});
+    if(showMessage){setScanBusy(false);setScanError(ru?"Проверка портов отменена":"Port check cancelled");}
+  }
   useEffect(()=>{
     mounted.current=true;
-    return ()=>{mounted.current=false;targetVersion.current++;};
+    return ()=>{
+      mounted.current=false;targetVersion.current++;
+      for(const id of [probeId.current,pingId.current,traceId.current,scanId.current]){
+        if(id)void invoke("network_cancel",{id}).catch(()=>{});
+      }
+      probeId.current=null;pingId.current=null;traceId.current=null;scanId.current=null;
+      const batch=batchCurrent.current;
+      batchCurrent.current=null;
+      if(batch){batch.cancelled=true;if(batch.id)void invoke("network_cancel",{id:batch.id}).catch(()=>{});}
+    };
   },[]);
   function changeTarget(){
     targetVersion.current++;
+    cancelProbe(false);cancelPing(false);cancelTrace(false);cancelScan(false);
+    setBusy(false);setPingBusy(false);setTraceBusy(false);setScanBusy(false);
     setResult(null);setPingResult(null);setTraceResult(null);setScanResult(null);
+    setIncludeSensitive(false);
     setError("");setPingError("");setTraceError("");setScanError("");
+  }
+  function downloadReport(){
+    if((!result && !pingResult && !traceResult && !scanResult) ||
+       busy || pingBusy || traceBusy || scanBusy)return;
+    if(includeSensitive && !window.confirm(ru
+      ? "Полный отчёт содержит адреса и вывод сетевых команд. Скачать?"
+      : "The full report contains addresses and raw diagnostic output. Download?"))return;
+    const report=createNetworkReport({host,port,tcp:result,ping:pingResult,trace:traceResult,ports:scanResult},
+      {includeSensitive,createdAt:new Date().toISOString()});
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;link.download="nodedesk-network-report.json";
+    document.body.append(link);link.click();link.remove();
+    window.setTimeout(()=>URL.revokeObjectURL(url),10000);
   }
 
   async function run(){
-    if(busy)return;
+    if(probeId.current)return;
     setResult(null);setError("");
     if(!isTauri()){setError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),port};
+    const id=crypto.randomUUID();probeId.current=id;
     setBusy(true);
     try{
-      const received=await invoke<ProbeResult>("network_probe",{target:request});
-      if(mounted.current && version===targetVersion.current)setResult(received);
+      const received=await invoke<ProbeResult>("network_probe",{id,target:request});
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setError(String(e));
+      if(mounted.current && probeId.current===id && version===targetVersion.current)setError(String(e));
     }finally{
-      if(mounted.current)setBusy(false);
+      if(probeId.current===id){probeId.current=null;if(mounted.current)setBusy(false);}
     }
   }
   async function runPing(){
-    if(pingBusy)return;
+    if(pingId.current)return;
     setPingResult(null);setPingError("");
     if(!isTauri()){setPingError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();pingId.current=id;
     setPingBusy(true);
     try{
-      const received=await invoke<PingResult>("network_ping",{target:request});
-      if(mounted.current && version===targetVersion.current)setPingResult(received);
+      const received=await invoke<PingResult>("network_ping",{id,target:request});
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setPingError(String(e));
+      if(mounted.current && pingId.current===id && version===targetVersion.current)setPingError(String(e));
     }finally{
-      if(mounted.current)setPingBusy(false);
+      if(pingId.current===id){pingId.current=null;if(mounted.current)setPingBusy(false);}
     }
   }
 
   async function runTrace(){
-    if(traceBusy)return;
+    if(traceId.current)return;
     setTraceResult(null);setTraceError("");
     if(!isTauri()){setTraceError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim()};
+    const id=crypto.randomUUID();traceId.current=id;
     setTraceBusy(true);
     try{
-      const received=await invoke<TraceResult>("network_trace",{target:request});
-      if(mounted.current && version===targetVersion.current)setTraceResult(received);
+      const received=await invoke<TraceResult>("network_trace",{id,target:request});
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setTraceError(String(e));
+      if(mounted.current && traceId.current===id && version===targetVersion.current)setTraceError(String(e));
     }finally{
-      if(mounted.current)setTraceBusy(false);
+      if(traceId.current===id){traceId.current=null;if(mounted.current)setTraceBusy(false);}
     }
   }
 
   async function runScan(){
-    if(scanBusy)return;
+    if(scanId.current)return;
     setScanResult(null);setScanError("");
     const ports=parseExplicitPorts(portsText);
     if(!ports){setScanError(ru?"Укажи от 1 до 12 уникальных TCP-портов через запятую без диапазонов":"Enter 1–12 distinct TCP ports separated by commas; no ranges");return;}
     if(!isTauri()){setScanError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
     const version=targetVersion.current;
     const request={host:host.trim(),ports};
+    const id=crypto.randomUUID();scanId.current=id;
     setScanBusy(true);
     try{
-      const received=await invoke<PortScanResult>("network_scan_ports",{target:request});
-      if(mounted.current && version===targetVersion.current)setScanResult(received);
+      const received=await invoke<PortScanResult>("network_scan_ports",{id,target:request});
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanResult(received);
     }catch(e){
-      if(mounted.current && version===targetVersion.current)setScanError(String(e));
+      if(mounted.current && scanId.current===id && version===targetVersion.current)setScanError(String(e));
     }finally{
-      if(mounted.current)setScanBusy(false);
+      if(scanId.current===id){scanId.current=null;if(mounted.current)setScanBusy(false);}
     }
   }
 
+  const catalogMatches=connections.filter(c=>
+    c.name.toLowerCase().includes(catalogQuery.toLowerCase()) ||
+    c.host.toLowerCase().includes(catalogQuery.toLowerCase())
+  ).slice(0,50);
+
+  function toggleCatalogSelection(id:string,checked:boolean){
+    if(batchBusy)return;
+    setSelectedCatalogIds(before=>{
+      if(checked){
+        return before.includes(id) || before.length>=MAX_NETWORK_BATCH ?
+          before : [...before,id];
+      }
+      return before.filter(existing=>existing!==id);
+    });
+  }
+  function cancelBatch(){
+    const active=batchCurrent.current;
+    if(!active)return;
+    active.cancelled=true;
+    batchCurrent.current=null;
+    if(active.id)void invoke("network_cancel",{id:active.id}).catch(()=>{});
+    setBatchBusy(false);
+    setBatchError(ru?"Пакетная проверка отменена":"Batch check cancelled");
+  }
+  async function runCatalogBatch(){
+    if(batchCurrent.current || batchBusy)return;
+    let plan:ReturnType<typeof planCatalogNetworkBatch>;
+    try{plan=planCatalogNetworkBatch(connections,selectedCatalogIds);}
+    catch{setBatchError(ru?"Выбранные подключения устарели или некорректны":"Invalid or stale batch selection");return;}
+    if(!isTauri()){setBatchError(ru?"Нужна настольная версия NodeDesk":"NodeDesk desktop app required");return;}
+    if(!window.confirm(ru ?
+      `Проверить TCP-порты ${plan.length} выбранных подключений? Будут выполнены реальные DNS/TCP-запросы к этим адресам, по одному, только по вашему подтверждению.` :
+      `Check TCP ports for ${plan.length} selected connections? This makes real DNS/TCP requests to these targets, one at a time, only after your confirmation.`))return;
+    const state={cancelled:false,id:null as string|null};
+    batchCurrent.current=state;
+    setBatchBusy(true);setBatchError("");setBatchResults([]);
+    try{
+      for(const target of plan){
+        if(state.cancelled || batchCurrent.current!==state)break;
+        const id=crypto.randomUUID();
+        state.id=id;
+        try{
+          const reply=await invoke<ProbeResult>("network_probe",{id,target:{host:target.host,port:target.port}});
+          if(!mounted.current || state.cancelled || batchCurrent.current!==state)break;
+          setBatchResults(previous=>[...previous,{
+            id:target.id,name:target.name,port:target.port,
+            reachable:reply.tcpReachable,elapsedMs:reply.elapsedMs,
+          }]);
+        }catch{
+          if(!mounted.current || state.cancelled || batchCurrent.current!==state)break;
+          setBatchResults(previous=>[...previous,{
+            id:target.id,name:target.name,port:target.port,
+            reachable:null,elapsedMs:null,
+          }]);
+        }finally{state.id=null;}
+      }
+    }finally{
+      if(batchCurrent.current===state){
+        batchCurrent.current=null;
+        if(mounted.current)setBatchBusy(false);
+      }
+    }
+  }
   return <section className="vpn-workspace" aria-label={ru?"Диагностика сети":"Network diagnostics"}>
     <h2>{ru?"Диагностика сети":"Network diagnostics"}</h2>
     <p className="ssh-help">{ru?"DNS, TCP, Ping, трассировка и проверка до 12 явно указанных TCP-портов запускаются только по нажатию. Диапазоны и фоновые запросы не поддерживаются.":"DNS, TCP, Ping, traceroute and up to 12 explicitly specified TCP ports run only on click. No ranges or background requests."}</p>
@@ -122,8 +252,11 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <label>{ru?"Хост":"Host"}<input value={host} onChange={e=>{setHost(e.target.value);changeTarget();}} maxLength={253} autoComplete="off"/></label>
       <label>{ru?"Порт":"Port"}<input type="number" min={1} max={65535} value={port} onChange={e=>{setPort(Number(e.target.value));changeTarget();}}/></label>
       <button type="button" disabled={busy||!host.trim()||!Number.isInteger(port)||port<1||port>65535} onClick={()=>void run()}>{busy?(ru?"Проверка…":"Checking…"):(ru?"Проверить TCP":"Check TCP")}</button>
+      {busy&&<button type="button" onClick={()=>cancelProbe(true)}>{ru?"Отменить TCP":"Cancel TCP check"}</button>}
       <button type="button" disabled={pingBusy||!host.trim()} onClick={()=>void runPing()}>{pingBusy?(ru?"Ping…":"Pinging…"):"Ping"}</button>
+      {pingBusy&&<button type="button" onClick={()=>cancelPing(true)}>{ru?"Отменить Ping":"Cancel ping"}</button>}
       <button type="button" disabled={traceBusy||!host.trim()} onClick={()=>void runTrace()}>{traceBusy?(ru?"Трассировка…":"Tracing…"):(ru?"Трассировка":"Traceroute")}</button>
+      {traceBusy&&<button type="button" onClick={()=>cancelTrace(true)}>{ru?"Отменить трассировку":"Cancel traceroute"}</button>}
     </div>
     <div className="network-fields">
       <label>{ru?"TCP-порты (через запятую)":"TCP ports (comma-separated)"}
@@ -133,7 +266,45 @@ export function NetworkWorkspace({language}:{language:"ru"|"en"}) {
       <button type="button" disabled={scanBusy||!host.trim()} onClick={()=>void runScan()}>
         {scanBusy?(ru?"Проверка портов…":"Checking ports…"):(ru?"Проверить порты":"Check ports")}
       </button>
+      {scanBusy&&<button type="button" onClick={()=>cancelScan(true)}>{ru?"Отменить порты":"Cancel port check"}</button>}
     </div>
+    <details className="network-catalog-batch">
+      <summary>{ru?"Пакетная TCP-проверка подключений":"Catalog TCP batch checks"}</summary>
+      <p className="ssh-help">{ru
+        ?"Выберите не более 10 подключений. Проверки запускаются последовательно только после подтверждения. Это проверка доступности TCP-порта, не вход на сервер и не мониторинг."
+        :"Choose up to 10 connections. Checks run sequentially only after confirmation. This tests TCP-port reachability, not authentication or monitoring."}</p>
+      <label>{ru?"Поиск в каталоге":"Search catalog"}
+        <input aria-label={ru?"Поиск для пакетной проверки":"Catalog batch search"}
+          value={catalogQuery} autoComplete="off" maxLength={200}
+          onChange={event=>setCatalogQuery(event.target.value)}/>
+      </label>
+      <div className="catalog-bulk-hosts">
+        {catalogMatches.map(c=><label key={c.id}>
+          <input type="checkbox" aria-label={`${ru?"Проверить":"Probe"}: ${c.name}`}
+            checked={selectedCatalogIds.includes(c.id)}
+            disabled={batchBusy || (!selectedCatalogIds.includes(c.id) && selectedCatalogIds.length>=MAX_NETWORK_BATCH)}
+            onChange={event=>toggleCatalogSelection(c.id,event.target.checked)}/>
+          {c.name} · {c.protocol}:{c.port}
+        </label>)}
+      </div>
+      <p>{ru?"Выбрано":"Selected"}: {selectedCatalogIds.length}/{MAX_NETWORK_BATCH}</p>
+      <button type="button" disabled={batchBusy||!selectedCatalogIds.length}
+        onClick={()=>void runCatalogBatch()}>{ru?"Проверить выбранные TCP-порты":"Check selected TCP ports"}</button>
+      {batchBusy&&<button type="button" onClick={cancelBatch}>{ru?"Отменить пакетную проверку":"Cancel batch checks"}</button>}
+      {batchError&&<p role="alert">{batchError}</p>}
+      {batchResults.length>0&&<div role="status" aria-label={ru?"Результаты пакетной проверки":"Catalog batch results"}>
+        <ul>{batchResults.map(item=><li key={item.id}>{item.name} · TCP {item.port}: {
+          item.reachable===null?(ru?"ошибка":"error"):item.reachable?(ru?"доступен":"reachable"):(ru?"нет ответа":"no response")
+        }{item.elapsedMs!==null?` (${item.elapsedMs} ms)`:""}</li>)}</ul>
+      </div>}
+    </details>
+    <label><input type="checkbox" checked={includeSensitive} onChange={e=>setIncludeSensitive(e.target.checked)}/>
+      {ru?"Включить адреса целей и вывод утилит (конфиденциально)":"Include target addresses and tool output (sensitive)"}
+    </label>
+    <button type="button" disabled={busy||pingBusy||traceBusy||scanBusy||(!result&&!pingResult&&!traceResult&&!scanResult)}
+      onClick={downloadReport}>{ru?"Скачать отчёт":"Download report"}</button>
+    <p className="ssh-help">{ru?"По умолчанию отчёт скрывает имена хостов, IP-адреса и сырой вывод команд. Полные данные доступны только после включения опции и подтверждения. Никогда не отправляйте полный отчёт без проверки.":
+      "By default the report omits hostnames, IP addresses and raw tool output. Sensitive details require opting in and confirmation. Review any full report before sharing."}</p>
     {scanError&&<p role="alert" className="error">{scanError}</p>}
     {scanResult&&<div role="status" aria-label={ru?"Результат проверки портов":"Port check result"}>
       <p>{ru?"Адреса":"Addresses"}: {scanResult.addresses.join(", ")} ({scanResult.elapsedMs} ms)</p>

@@ -56,7 +56,7 @@ W = Windows, L = Linux. Приоритет не исключает функци�
 | PVE-01 | Proxmox: список VM/LXC, power actions с подтверждением, консоль, TLS, API token | План | План |
 | ZBX-01 | Zabbix: узлы, проблемы, фильтры, права API, opt-in polling и backoff | План | План |
 | MT-01 | MikroTik: RouterOS SSH/API, каталог, состояние, безопасная auth, журнал действий | План | План |
-| MON-01 | Необязательный мониторинг CPU/RAM/disk/network; выключен до выбора пользователя | План | План |
+| MON-01 | Необязательный мониторинг CPU/RAM/disk/network; выключен до выбора пользователя | Частично: локальные показатели по opt-in, native приёмка ожидается | Частично: локальные показатели по opt-in, native приёмка ожидается |
 
 ## Условия закрытия строки
 
@@ -219,3 +219,20 @@ still governs RDP target identity, NLA and server trust.
 The existing external FreeRDP/mstsc launcher remains unchanged.
 No real RDP screen or server-certificate identity has been manually accepted.
 [Architecture, native TLS blocker and QA](V0.6-RDP-EMBEDDED.md).
+
+
+### SSH/SFTP console target key through a jump host (2026-11-08)
+A single explicit ProxyJump session now permits a separately selected target
+identity file in the SSH and SFTP consoles. Gateway authentication remains
+separate (agent or default key files); the selected target key is not forwarded
+as an agent capability. No saved key paths, gateway chain, shell command or
+automatic login. Windows/Arch native acceptance remains open.
+
+
+### Bounded two-hop ProxyJump (2026-11-08 review increment)
+SSH/SFTP consoles and graphical Files now offer up to two explicit SSH hops,
+with per-hop host/user/port and the selected key applying only to the final
+target. Backends reject duplicate endpoints and any third hop. No arbitrary
+ProxyCommand, auto-connect, saved gateway routes or agent forwarding. Each
+hop must already have a trusted host key and working agent/default-key
+authentication. Real distinct-host and Windows/Arch GUI acceptance pending.

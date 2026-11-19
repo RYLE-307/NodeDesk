@@ -51,3 +51,27 @@ test("SSH jump-host settings are transient, explicit and never auto-connect",asy
   expect(call.args.host).toEqual('internal.lan');
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nodedesk.catalog.v1')).connections)).toHaveLength(0);
 });
+
+test("SSH identity path is sent only on explicit key login and never saved",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args});return null;}};
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Quick Connect"}).click();
+  const editor=page.getByRole("dialog");
+  await editor.getByLabel("Name",{exact:true}).fill("Fixture");
+  await editor.getByLabel("Host address").fill("example.org");
+  await editor.getByLabel("Username").fill("tester");
+  await editor.getByRole("button",{name:"Open tab"}).click();
+  const ssh=page.locator('.ssh-tool-panel:not([hidden])');
+  await ssh.getByLabel("SSH authentication method").selectOption("key");
+  await ssh.getByLabel("SSH identity file path").fill("/home/tester/.ssh/id_ed25519");
+  expect(await page.evaluate(()=>window.calls.some(x=>x.cmd==='ssh_connect'))).toBe(false);
+  await ssh.getByRole("button",{name:"Connect / reconnect"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.filter(x=>x.cmd==='ssh_connect').length)).toBe(1);
+  expect((await page.evaluate(()=>window.calls.find(x=>x.cmd==='ssh_connect'))).args.identity).toBe("/home/tester/.ssh/id_ed25519");
+  expect(await page.evaluate(()=>localStorage.getItem("nodedesk.catalog.v1"))).not.toContain("id_ed25519");
+});

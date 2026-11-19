@@ -106,7 +106,7 @@ test("SSH agent forwarding is default-off and requires explicit consent on each 
   await expect(forward).toBeEnabled();
   await expect(forward).not.toBeChecked();
   await forward.check();
-  page.once("dialog",d=>{expect(d.message()).toContain("authenticate on your behalf");d.dismiss();});
+  page.once("dialog",d=>{expect(d.message()).toContain("request authentication on your behalf");d.dismiss();});
   await panel.getByRole("button",{name:"Connect / reconnect"}).click();
   expect(await page.evaluate(()=>window.calls.filter(x=>x.cmd==="ssh_connect"))).toHaveLength(0);
   page.once("dialog",d=>d.accept());

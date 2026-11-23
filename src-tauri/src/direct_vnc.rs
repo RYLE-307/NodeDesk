@@ -56,6 +56,7 @@ pub enum Event {
 struct Active {
     handle: Arc<SessionHandle>,
     clipboard: bool,
+    display: Arc<Mutex<(u16,u16)>>,
 }
 
 #[derive(Default)]
@@ -285,15 +286,18 @@ async fn vnc_direct_connect_guarded(
         }
         let config = options(&target, std::mem::take(&mut *password), spki_sha256)?;
         let handle = Arc::new(Session::spawn(target.id.clone(), config, tx));
+        let display=Arc::new(Mutex::new((0,0)));
         active.insert(
             target.id.clone(),
             Active {
                 handle: Arc::clone(&handle),
                 clipboard,
+                display:Arc::clone(&display),
             },
         );
-        handle
+        (handle,display)
     };
+    let (handle,display_state)=handle;
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
     tauri::async_runtime::spawn(async move {
@@ -308,17 +312,30 @@ async fn vnc_direct_connect_guarded(
                     events.send(Event::Status { phase: "connected" })
                 }
                 SessionEvent::StateChanged(SessionState::Reconnecting { .. }) => {
+                    if let Ok(mut current)=display_state.lock() {*current=(0,0);} else {break;}
                     events.send(Event::Status {
                         phase: "reconnecting",
                     })
                 }
                 SessionEvent::StateChanged(SessionState::Disconnected { .. }) => {
+                    if let Ok(mut current)=display_state.lock() {*current=(0,0);}
                     let _ = events.send(Event::Status { phase: "closed" });
                     break;
                 }
                 SessionEvent::DesktopResize { width, height } => {
                     match frame.resize(width, height) {
-                        Ok(()) => events.send(Event::Resize { width, height }),
+                        Ok(()) => match display_state.lock() {
+                            Ok(mut current) => {
+                                *current=(width,height);
+                                events.send(Event::Resize { width, height })
+                            }
+                            Err(_) => {
+                                let _ = events.send(Event::Error {
+                                    message: "VNC display state unavailable",
+                                });
+                                break;
+                            }
+                        },
                         Err(_) => {
                             let _ = events.send(Event::Error {
                                 message: "Invalid VNC framebuffer",
@@ -411,6 +428,12 @@ pub enum Input {
     ReleaseKeys,
 }
 
+fn valid_vnc_pointer(x:u16,y:u16,button_mask:u16,dimensions:(u16,u16))->bool {
+    let (width,height)=dimensions;
+    width>0 && height>0 && width<=MAX_WIDTH && height<=MAX_HEIGHT
+        && x<width && y<height && button_mask<=0xff
+}
+
 #[tauri::command]
 pub fn vnc_direct_input(
     sessions: State<'_, Sessions>,
@@ -423,9 +446,12 @@ pub fn vnc_direct_input(
         .map_err(|_| "VNC session state unavailable")?;
     let session = active.get(&id).ok_or("VNC session closed")?;
     let command = match input {
-        Input::Pointer { x, y, button_mask }
-            if x < MAX_WIDTH && y < MAX_HEIGHT && button_mask <= 0xff =>
-        {
+        Input::Pointer { x, y, button_mask } => {
+            let dimensions=*session.display.lock()
+                .map_err(|_|"VNC display state unavailable")?;
+            if !valid_vnc_pointer(x,y,button_mask,dimensions) {
+                return Err("VNC pointer is outside the current framebuffer".into());
+            }
             ClientCommand::Pointer { x, y, button_mask }
         }
         Input::Key { keysym, down } if keysym != 0 => ClientCommand::Key {
@@ -509,6 +535,20 @@ mod tests {
             &Target{username:"bad\nname".into(),..target}, &"A".repeat(64)
         ).is_err());
     }
+    #[test]
+    fn vnc_pointer_requires_current_server_framebuffer_dimensions() {
+        assert!(!valid_vnc_pointer(0,0,0,(0,0)));
+        assert!(valid_vnc_pointer(0,0,0,(800,600)));
+        assert!(valid_vnc_pointer(799,599,0,(800,600)));
+        assert!(!valid_vnc_pointer(800,599,0,(800,600)));
+        assert!(!valid_vnc_pointer(799,600,0,(800,600)));
+        assert!(!valid_vnc_pointer(1000,700,0,(800,600)));
+        assert!(valid_vnc_pointer(1000,700,0,(1280,720)));
+        assert!(!valid_vnc_pointer(1000,720,0,(1280,720)));
+        assert!(!valid_vnc_pointer(1,1,256,(800,600)));
+        assert!(!valid_vnc_pointer(0,0,0,(MAX_WIDTH+1,MAX_HEIGHT)));
+    }
+
     #[test]
     fn framebuffer_rejects_out_of_bounds_and_copies_overlap_safely() {
         let mut frame = Framebuffer {

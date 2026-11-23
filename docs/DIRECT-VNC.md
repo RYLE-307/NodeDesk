@@ -96,3 +96,22 @@ check after the read to protect against concurrent starts. The same
 public preflight runs when creating VNC protocol options; all earlier
 certificate trust requirements are unchanged. This does not prove
 third-party memory zeroization.
+
+
+## 2026-11-23 — VNC pointer input follows the live server framebuffer
+
+Native VNC pointer input is now checked against the framebuffer size most
+recently announced by the server, rather than only against the library's
+maximum supported dimensions. Until the first valid DesktopResize event,
+pointer input is rejected. The active viewport is reset when the session
+enters reconnecting or disconnected state and becomes valid again only after
+the server announces its framebuffer size. Keyboard, clipboard and explicit
+resize-request handling are unchanged.
+
+The current dimensions are shared between the native session event consumer
+and the Tauri input command. The input check is independent of WebView
+validation. Rust tests cover unknown dimensions, exact last pixels, each
+out-of-bounds edge, post-resize dimensions and invalid button masks.
+This verifies client-side input bounds; it does not prove the remote OS
+accepted an input event or a requested resize. Native Windows/Arch GUI
+acceptance remains NOT TESTED.

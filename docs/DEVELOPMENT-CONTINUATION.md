@@ -6,6 +6,24 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-23 P0 VNC pointer bounds follow live server framebuffer — CI pending
+
+- Latest verified parent 1bfdbfa91b7cf1fb903410a1b5b920ee634a15e4
+  passed [CI 45209318441](https://github.com/RYLE-307/NodeDesk/actions/runs/45209318441)
+  6/6; the preceding VPN route-family commit 30c9fb6 passed
+  [CI 45208931701](https://github.com/RYLE-307/NodeDesk/actions/runs/45208931701)
+  6/6.
+- VNC pointer input now requires the current server-announced framebuffer
+  dimensions. Input is disabled before the first size event and while
+  reconnecting; dimensions are refreshed only by a valid DesktopResize
+  event. Input no longer relies only on the library maximum size.
+- Disposable Rust tests cover unknown/known viewport, edge coordinates,
+  resize dimensions and invalid pointer masks. No external VNC endpoint
+  or credentials used.
+- Exact-head CI pending; native Windows/Arch GUI acceptance NOT TESTED.
+  PR #13 remains Draft; no merge or release.
+
+
 ### 2026-11-23 P0 RDP per-session pointer bounds — exact-head CI pending
 
 - Added a native per-session RDP size state, initialized from

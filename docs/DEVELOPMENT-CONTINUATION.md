@@ -6,6 +6,22 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-23 P0 RDP per-session pointer bounds — exact-head CI pending
+
+- Added a native per-session RDP size state, initialized from
+  explicitly requested dimensions; accepted resize messages update
+  state only when successfully queued.
+- Mouse motion and press/release events are now bounded by the current
+  native session viewport instead of an unrelated 4095x2159 limit.
+  Unit cases cover first/last pixel, oversize and subsequent resize.
+- No remote RDP host, credential, cert or VPN used; this remains a
+  request-size input guard rather than remote-size acknowledgement.
+- VPN route-family change at parent 30c9fb649d1e51ad2dc87341ad05f440fcad27fc
+  had CI 45208931701 still running when this change was prepared.
+- Exact-head CI pending; native Windows/Arch GUI acceptance NOT TESTED.
+  Draft PR #13 only, no merge or release.
+
+
 ### 2026-11-23 P0 VPN route-family agreement — CI pending
 
 - Parent HEAD 545e5baa33c1f1e977c992ac6cea38c75666a044

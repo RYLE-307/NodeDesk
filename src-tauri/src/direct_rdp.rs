@@ -63,6 +63,7 @@ pub enum Event {
 struct Session {
     sender: RdpInputSender,
     input: Mutex<Database>,
+    dimensions: Mutex<(u16,u16)>,
 }
 #[derive(Default)]
 pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Session>>>>);
@@ -344,6 +345,7 @@ async fn rdp_direct_connect_guarded(
         let session = Arc::new(Session {
             sender: client.input_sender(),
             input: Mutex::new(Database::new()),
+            dimensions: Mutex::new((width,height)),
         });
         all.insert(target.id.clone(), Arc::clone(&session));
         (client, session)
@@ -495,6 +497,8 @@ pub fn rdp_direct_resize(
         .lock()
         .map_err(|_| "RDP session state unavailable")?;
     let session = all.get(&id).ok_or("RDP session closed")?;
+    let mut dimensions=session.dimensions.lock()
+        .map_err(|_|"RDP display state unavailable")?;
     session
         .sender
         .try_send(RdpInputEvent::Resize {
@@ -503,7 +507,9 @@ pub fn rdp_direct_resize(
             scale_factor: 100,
             physical_size: None,
         })
-        .map_err(|_| "RDP input busy or closed".into())
+        .map_err(|_| "RDP input busy or closed")?;
+    *dimensions=(width,height);
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -611,6 +617,13 @@ fn key_scancode(code: &str) -> Option<Scancode> {
     Some(Scancode::from_u8(extended, value))
 }
 
+// Reject off-desktop coordinates for the current per-session viewport.
+// The input queue still owns the eventual RDP protocol delivery.
+fn valid_pointer_for_display(x:u16,y:u16,dimensions:(u16,u16))->bool{
+    let (width,height)=dimensions;
+    width>=320 && height>=240 && width<=1920 && height<=1080
+        && x<width && y<height
+}
 #[tauri::command]
 pub fn rdp_direct_input(
     sessions: State<'_, Sessions>,
@@ -636,7 +649,9 @@ pub fn rdp_direct_input(
             }
         }
         Input::Mouse { x, y, button, down } => {
-            if x > 4095 || y > 2159 {
+            let dimensions=*session.dimensions.lock()
+                .map_err(|_|"RDP display state unavailable")?;
+            if !valid_pointer_for_display(x,y,dimensions) {
                 return Err("Invalid RDP pointer".into());
             }
             match (button, down) {
@@ -700,6 +715,20 @@ pub fn rdp_direct_release_input(sessions: State<'_, Sessions>, id: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rdp_pointer_is_bounded_by_session_viewport_and_resize_dimensions() {
+        assert!(valid_pointer_for_display(0,0,(800,600)));
+        assert!(valid_pointer_for_display(799,599,(800,600)));
+        assert!(!valid_pointer_for_display(800,599,(800,600)));
+        assert!(!valid_pointer_for_display(799,600,(800,600)));
+        assert!(!valid_pointer_for_display(1920,1080,(800,600)));
+        assert!(!valid_pointer_for_display(1000,700,(800,600)));
+        assert!(valid_pointer_for_display(1000,700,(1280,720)));
+        assert!(!valid_pointer_for_display(1000,720,(1280,720)));
+        assert!(!valid_pointer_for_display(0,0,(0,0)));
+        assert!(!valid_pointer_for_display(0,0,(4096,2160)));
+        assert!(valid_pointer_for_display(1919,1079,(1920,1080)));
+    }
     #[test]
     fn saved_connect_rejects_bad_public_rdp_metadata_before_vault_read() {
         let target = Target {

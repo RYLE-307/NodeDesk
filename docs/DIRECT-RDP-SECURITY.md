@@ -72,3 +72,19 @@ The native session registry repeats its duplicate check after the read
 to handle races with concurrent callers. No stored credential is returned
 to WebView. These early checks avoid unnecessary secret materialization;
 the existing TLS/CredSSP trust and credential-copy limitations remain.
+
+## 2026-11-23 — native RDP pointer coordinates respect session size
+
+Direct RDP input previously accepted mouse coordinates up to a broad
+4095×2159 range even for sessions negotiated at smaller dimensions.
+Each native RDP session now stores its requested display size, and
+pointer motion/button events are checked against its own dimensions.
+A successful, bounded resize request updates that per-session size;
+a refused or saturated resize leaves the prior dimensions unchanged.
+
+The check is applied by the Rust input command independently of the
+WebView, uses no remote data or secrets, and does not alter keyboard
+operation or clipboard policy. Pure Rust tests cover edge pixels,
+out-of-bounds positions and different session sizes. This is an input
+guard, not proof that the remote server accepted the resize.
+Native Windows/Arch interactive acceptance remains NOT TESTED.

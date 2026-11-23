@@ -85,3 +85,18 @@ Native Windows/Arch operator acceptance is still **NOT TESTED**.
 An active NetworkManager profile's IPv4/IPv6 DNS addresses now must match the full set reported by systemd-resolved on the exact link. A different address, a missing one or an additional link DNS address yields a false indicator, not a positive DNS presence claim. If NetworkManager reports no DNS, its indicator is false. Unsupported or malformed output, ambiguous device names and unavailable tools still return unknown. Addresses are not sent to WebView and no OS configuration is modified.
 
 This verifies configuration agreement only, not actual DNS query routing, split DNS, leak resistance or encryption. Rust tests exercise synthetic mixed IPv4/IPv6, wrong-link, mismatch, extra-address and malformed-output scenarios through a fake read-only resolver command. Native Windows/Arch manual acceptance remains NOT TESTED.
+
+## 2026-11-23 — Linux VPN route-family agreement
+
+NetworkManager IPv4 and IPv6 route presence is now inspected
+separately for the active UUID. The route indicator requires at
+least one kernel unicast route on the same selected device and in
+an address family also reported by NetworkManager. An unrelated IPv6
+route cannot validate an IPv4-only claim (or vice versa). No routes
+reported gives false; tooling failure and ambiguous output give
+unknown. All checks remain bounded, read-only, and shell-free.
+
+This is family-level agreement, not a check of exact route CIDR,
+default-route selection, effective traffic forwarding, kill-switch
+status or leak protection. Disposable mock ip tools and Rust tests
+cover mismatched families; no real VPN profile was accessed.

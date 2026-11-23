@@ -6,6 +6,22 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-23 P0 VPN route-family agreement — CI pending
+
+- Parent HEAD 545e5baa33c1f1e977c992ac6cea38c75666a044
+  passed CI https://github.com/RYLE-307/NodeDesk/actions/runs/45183677349
+  6/6, including Windows/Ubuntu desktop, browser and Arch preview.
+- Linux now collects NetworkManager IPv4 and IPv6 route-presence
+  separately and compares them only with same-family kernel unicast
+  routes on the exact interface. A route from the opposite address
+  family alone no longer yields a false successful health status.
+- Disposable Rust mock-ip tests cover family mismatch, matched
+  family, missing device, empty route sets, invalid tool input.
+- This does not prove actual traffic routing or exact CIDR matching.
+  Exact-head CI pending, native Windows/Arch manual QA NOT TESTED.
+  PR #13 Draft; no main edits, merge, release or real VPN access.
+
+
 ### 2026-11-23 P0 VPN exact DNS-link matching — exact-head CI pending
 
 - Starting HEAD 0781239900613a9016127d8dfb64307761896402 passed [CI 44514986300](https://github.com/RYLE-307/NodeDesk/actions/runs/44514986300) 6/6, including disposable real second-hop SSH agent authentication on Linux.

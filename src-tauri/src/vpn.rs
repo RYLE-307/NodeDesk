@@ -418,14 +418,17 @@ fn health_impl(profile:&VpnProfile)->VpnHealth {
     // Both an active NetworkManager route and an installed kernel route on
     // its exact device are required. A missing tool or ambiguous device is
     // unknown, not a false claim that traffic traverses the VPN.
-    let configured=nmcli_until(&["-g","IP4.ROUTE,IP6.ROUTE", "connection",
+    let nm4=nmcli_until(&["-g","IP4.ROUTE","connection",
+        "show","--active","uuid",&profile.id],deadline).ok();
+    let nm6=nmcli_until(&["-g","IP6.ROUTE","connection",
         "show","--active","uuid",&profile.id],deadline).ok();
     let device=nmcli_until(&["-g","GENERAL.DEVICES", "connection",
         "show","--active","uuid",&profile.id],deadline).ok();
-    health.route_configured=match (configured.as_deref(),device.as_deref()) {
-        (Some(routes),Some(device)) if !routes.trim().is_empty() =>
-            route_on_device_with_tool(std::path::Path::new("/usr/bin/ip"),device.trim(),deadline),
-        (Some(routes),_) if routes.trim().is_empty() => Some(false),
+    health.route_configured=match (nm4.as_deref(),nm6.as_deref(),device.as_deref()) {
+        (Some(v4),Some(v6),_) if v4.trim().is_empty() && v6.trim().is_empty() => Some(false),
+        (Some(v4),Some(v6),Some(device)) =>
+            route_on_device_with_tool(std::path::Path::new("/usr/bin/ip"),device.trim(),
+                !v4.trim().is_empty(),!v6.trim().is_empty(),deadline),
         _=>None,
     };
     let nm_dns=nmcli_until(&["-g","IP4.DNS,IP6.DNS", "connection",
@@ -448,18 +451,23 @@ fn safe_vpn_device(device:&str)->bool {
 }
 
 #[cfg(target_os="linux")]
-fn route_on_device_with_tool(tool:&std::path::Path,device:&str,deadline:Instant)->Option<bool> {
+fn route_on_device_with_tool(
+    tool:&std::path::Path,device:&str,nm4:bool,nm6:bool,deadline:Instant
+)->Option<bool> {
     if !safe_vpn_device(device) {return None;}
+    if !nm4 && !nm6 {return Some(false);}
     let mut observed=false;
-    for family in ["-4","-6"] {
+    for (family,configured) in [("-4",nm4),("-6",nm6)] {
+        if !configured {continue;}
         let mut command=Command::new(tool);
         command.args(["-j",family,"route","show","dev",device,"table","all"]);
         let raw=output_with_timeout(&mut command,remaining(deadline).ok()?).ok()?;
         let routes:Vec<serde_json::Value>=serde_json::from_str(&raw).ok()?;
+        if routes.len()>4096 {return None;}
         observed |= routes.iter().any(|route| {
             route.get("dev").and_then(|v|v.as_str())==Some(device)
                 && route.get("type").and_then(|v|v.as_str()).is_none_or(|kind|kind=="unicast")
-                && route.get("dst").and_then(|v|v.as_str()).is_some()
+                && route.get("dst").and_then(|v|v.as_str()).is_some_and(|dst|!dst.trim().is_empty())
         });
     }
     Some(observed)
@@ -798,11 +806,37 @@ mod tests {
         mode.set_mode(0o700);
         std::fs::set_permissions(&tool,mode).unwrap();
         let deadline=||Instant::now()+Duration::from_secs(3);
-        assert_eq!(route_on_device_with_tool(&tool,"wg0",deadline()),Some(true));
-        assert_eq!(route_on_device_with_tool(&tool,"wg1",deadline()),Some(false));
-        assert_eq!(route_on_device_with_tool(&tool,"--help",deadline()),None);
-        assert_eq!(route_on_device_with_tool(&tool,"wg0\nother",deadline()),None);
-        assert_eq!(route_on_device_with_tool(std::path::Path::new("/missing/ip"),"wg0",deadline()),None);
+        assert_eq!(route_on_device_with_tool(&tool,"wg0",true,false,deadline()),Some(true));
+        assert_eq!(route_on_device_with_tool(&tool,"wg0",false,true,deadline()),Some(false));
+        assert_eq!(route_on_device_with_tool(&tool,"wg0",true,true,deadline()),Some(true));
+        assert_eq!(route_on_device_with_tool(&tool,"wg0",false,false,deadline()),Some(false));
+        assert_eq!(route_on_device_with_tool(&tool,"wg1",true,false,deadline()),Some(false));
+        assert_eq!(route_on_device_with_tool(&tool,"--help",true,false,deadline()),None);
+        assert_eq!(route_on_device_with_tool(&tool,"wg0\nother",true,false,deadline()),None);
+        assert_eq!(route_on_device_with_tool(std::path::Path::new("/missing/ip"),"wg0",true,false,deadline()),None);
+    }
+    #[cfg(target_os="linux")]
+    #[test]
+    fn kernel_route_family_must_match_network_manager_family() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let tool=dir.path().join("ip-route-fixture");
+        let script=r#"#!/bin/sh
+if [ "$1" != "-j" ] || [ "$3" != "route" ] || [ "$4" != "show" ] || [ "$5" != "dev" ]; then exit 11; fi
+case "$2" in
+ -4) printf '%s' '[]';;
+ -6) printf '%s' '[{"dst":"2001:db8::/64","dev":"wg-test","type":"unicast"}]';;
+esac
+"#;
+        std::fs::write(&tool,script).unwrap();
+        let mut permissions=std::fs::metadata(&tool).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&tool,permissions).unwrap();
+        let deadline=||Instant::now()+Duration::from_secs(3);
+        assert_eq!(route_on_device_with_tool(&tool,"wg-test",true,false,deadline()),Some(false));
+        assert_eq!(route_on_device_with_tool(&tool,"wg-test",false,true,deadline()),Some(true));
+        assert_eq!(route_on_device_with_tool(&tool,"wg-test",true,true,deadline()),Some(true));
+        assert_eq!(route_on_device_with_tool(&tool,"other",false,true,deadline()),Some(false));
     }
     #[cfg(target_os="linux")]
     #[test]

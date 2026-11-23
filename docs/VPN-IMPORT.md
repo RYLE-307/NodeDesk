@@ -79,3 +79,9 @@ The post-check reduces stale-state windows but **cannot** guarantee
 that VPN traffic follows the expected route, that DNS queries remain on
 the interface, or that the OS won't change immediately afterward.
 Native Windows/Arch operator acceptance is still **NOT TESTED**.
+
+## 2026-11-23 — exact resolver DNS matching on Linux
+
+An active NetworkManager profile's IPv4/IPv6 DNS addresses now must match the full set reported by systemd-resolved on the exact link. A different address, a missing one or an additional link DNS address yields a false indicator, not a positive DNS presence claim. If NetworkManager reports no DNS, its indicator is false. Unsupported or malformed output, ambiguous device names and unavailable tools still return unknown. Addresses are not sent to WebView and no OS configuration is modified.
+
+This verifies configuration agreement only, not actual DNS query routing, split DNS, leak resistance or encryption. Rust tests exercise synthetic mixed IPv4/IPv6, wrong-link, mismatch, extra-address and malformed-output scenarios through a fake read-only resolver command. Native Windows/Arch manual acceptance remains NOT TESTED.

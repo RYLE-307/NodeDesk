@@ -6,6 +6,14 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-23 P0 VPN exact DNS-link matching — exact-head CI pending
+
+- Starting HEAD 0781239900613a9016127d8dfb64307761896402 passed [CI 44514986300](https://github.com/RYLE-307/NodeDesk/actions/runs/44514986300) 6/6, including disposable real second-hop SSH agent authentication on Linux.
+- Fixed Linux VPN DNS false positive: the system resolver must report exactly the same IPv4/IPv6 DNS set on the NetworkManager profile's device, not merely any IP address on that link. Extra or missing DNS addresses yield false, unsupported/malformed formats yield unknown. No traffic or configuration is changed.
+- Rust unit and fake-resolvectl tests cover reorderings, valid dual-stack, mismatches, extra DNS, malformed data and unsafe device names. This does NOT prove DNS leak prevention, real query routing or OS-specific native acceptance.
+- Exact-head CI pending; native Windows/Arch manual QA NOT TESTED. PR #13 remains Draft, no main changes, merge or release.
+
+
 ### 2026-11-19 SSH forwarded-agent actual second-hop authentication — CI pending
 
 - Parent HEAD `b1b1a305493a78bb3e50c8e60975325d6d41f4cd`

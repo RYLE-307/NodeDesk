@@ -6,6 +6,16 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+### 2026-11-26 desktop rendering, pending-start cancellation and dependency repair
+
+- Verified parent `35b10ef9a383358e37e3a846badc61c56333430f`: [CI 45812083613](https://github.com/RYLE-307/NodeDesk/actions/runs/45812083613) passed 6/6.
+- A replacement Linux runtime is available. Checkout clean at that parent before edits. Local frontend 87 unit tests and production build passed; five standalone Rust registry tests passed. Full Tauri Rust needs unavailable GTK/WebKit development packages. Local browser launch is unavailable (Playwright download 403; system Chromium wrapper has no binary). CI must verify browser and full desktop.
+- Fixed ordered RDP/VNC rendering, including resize ordering and invalidation of pending decodes on close/reconnect. Queue bounds cause a visible disconnect instead of unbounded retention or silently corrupting rectangles. Removed RDP elapsed-time final-frame dropping.
+- Native pending-start permits now serialize publication with disconnect/shutdown: a cancelled saved-credential lookup cannot later start a session. Tests cover cancel during lookup, retry, shutdown, and failed start. SSH reader cleanup now checks worker ownership before removing a reused ID.
+- Updated Vite 7.3.7 to 7.3.8 for GHSA-p4f5-76q4-ffq7; local npm audit reports zero vulnerabilities. Added committed-lockfile npm/RustSec CI checks (no ignores) and Windows portable SHA256 manifest.
+- New exact-head CI PENDING. Native Windows/Arch QA NOT TESTED; still NOT READY. Next: verify this CI, then complete protocol credential lifetime, isolated Secret Service and VPN lifecycle/import review and update the consolidated handoff documents. No real infrastructure, merge, tags or release.
+
+
 ## 2026-11-26 autonomous audit and session lifecycle repair
 
 - Verified GitHub HEAD `1e031234900af38abb8ac6ebc72f2138b33c58cd`; PR #13 open and Draft.

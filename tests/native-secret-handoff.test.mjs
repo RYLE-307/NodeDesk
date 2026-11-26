@@ -17,7 +17,7 @@ for(const [name,source,connectName] of sources){
     assert.ok(!saved.includes("secret.to_string()"),"no unmanaged Vault secret copy");
     assert.ok(saved.includes(connectName+"_guarded("),"moves native Vault secret directly");
 
-    const guarded=rust.indexOf("async fn "+connectName+"_guarded(");
+    const guarded=rust.indexOf("fn "+connectName+"_guarded(");
     assert.ok(guarded>=0,"private guarded entrypoint exists");
     const guardedSignature=rust.slice(guarded,guarded+350);
     assert.match(guardedSignature,/mut password:\s*(?:zeroize::)?Zeroizing<String>/);

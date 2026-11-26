@@ -14,7 +14,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, State};
 use zeroize::Zeroizing;
@@ -66,14 +65,16 @@ struct Session {
     dimensions: Mutex<(u16,u16)>,
 }
 #[derive(Default)]
-pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Session>>>>);
+pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Session>>>>, crate::session_registry::PendingStarts);
 impl Sessions {
     pub fn shutdown(&self) {
+        self.1.shutdown_with(|| {
         if let Ok(mut sessions) = self.0.lock() {
             for (_, session) in sessions.drain() {
                 session.sender.request_close();
             }
         }
+        });
     }
 }
 
@@ -263,6 +264,7 @@ pub async fn rdp_direct_connect_saved(
             return Err("RDP connection already active".into());
         }
     }
+    let permit = sessions.1.begin(&target.id)?;
     let store = vault.inner().clone();
     let identity = target.clone();
     let secret = tauri::async_runtime::spawn_blocking(move || {
@@ -277,7 +279,7 @@ pub async fn rdp_direct_connect_saved(
     .await
     .map_err(|_| "Vault worker failed".to_string())??
     .ok_or("Saved RDP credential not found")?;
-    rdp_direct_connect_guarded(
+    permit.publish(|| rdp_direct_connect_guarded(
         sessions,
         target,
         secret,
@@ -286,8 +288,7 @@ pub async fn rdp_direct_connect_saved(
         clipboard,
         certificate_sha256,
         events,
-    )
-    .await
+    ))
 }
 
 #[tauri::command]
@@ -301,15 +302,17 @@ pub async fn rdp_direct_connect(
     certificate_sha256: Option<String>,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    rdp_direct_connect_guarded(
-        sessions, target, Zeroizing::new(password), width, height,
+    let password = Zeroizing::new(password);
+    let permit = sessions.1.begin(&target.id)?;
+    permit.publish(|| rdp_direct_connect_guarded(
+        sessions, target, password, width, height,
         clipboard, certificate_sha256, events,
-    ).await
+    ))
 }
 
 // The saved-secret path moves the Vault's Zeroizing<String> here unchanged.
 // Only the explicit-password IPC wraps its incoming String at this boundary.
-async fn rdp_direct_connect_guarded(
+fn rdp_direct_connect_guarded(
     sessions: State<'_, Sessions>,
     target: Target,
     mut password: Zeroizing<String>,
@@ -405,7 +408,6 @@ async fn rdp_direct_connect_guarded(
                 let _ = events.send(Event::Status {
                     phase: "connecting",
                 });
-                let mut last_frame = Instant::now() - Duration::from_secs(1);
                 while let Some(event) = receiver.recv().await {
                     let terminal_error = matches!(
                         &event,
@@ -427,10 +429,8 @@ async fn rdp_direct_connect_guarded(
                             width,
                             height,
                         } => {
-                            if last_frame.elapsed() < Duration::from_millis(80) {
-                                continue;
-                            }
-                            last_frame = Instant::now();
+                            // The next image may be the final update before idle.
+                            // Never discard it based only on elapsed time.
                             match encode_frame(buffer, width.get(), height.get()) {
                                 Ok(png) => events.send(Event::Frame {
                                     width: width.get(),
@@ -473,13 +473,11 @@ async fn rdp_direct_connect_guarded(
 
 #[tauri::command]
 pub fn rdp_direct_disconnect(sessions: State<'_, Sessions>, id: String) -> Result<(), String> {
-    let all = sessions
-        .0
-        .lock()
-        .map_err(|_| "RDP session state unavailable")?;
-    let session = all.get(&id).ok_or("RDP session closed")?;
-    session.sender.request_close();
-    Ok(())
+    sessions.1.cancel_with(&id, || {
+        let all = sessions.0.lock().map_err(|_| "RDP session state unavailable")?;
+        if let Some(session) = all.get(&id) { session.sender.request_close(); }
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -715,6 +713,7 @@ pub fn rdp_direct_release_input(sessions: State<'_, Sessions>, id: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     #[test]
     fn rdp_pointer_is_bounded_by_session_viewport_and_resize_dimensions() {
         assert!(valid_pointer_for_display(0,0,(800,600)));

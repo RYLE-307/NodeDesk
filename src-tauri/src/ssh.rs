@@ -393,7 +393,8 @@ pub fn ssh_connect(id: String, host: String, port: u16, username: String, auth: 
             Err(_) => break, // Unix PTYs report EIO at normal child exit.
         }}
         let outcome = child.lock().unwrap().wait();
-        app.state::<Sessions>().0.lock().unwrap().remove(&id);
+        crate::session_registry::remove_matching(&app.state::<Sessions>().0, &id,
+            |current| Arc::ptr_eq(&current.child, &child));
         match outcome { Ok(status) => { let _ = events.send(Event::Exit(status.exit_code())); }, Err(_) => { let _ = events.send(Event::Error("SSH process wait failed".into())); } };
     });
     Ok(())

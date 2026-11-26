@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState,type MouseEvent} from "react";
 import {Channel,invoke,isTauri} from "@tauri-apps/api/core";
 import type {Connection} from "./catalog";
+import {createFrameQueue} from "./frameQueue";
 import {vncKeysym} from "./vncKeysym";
 
 type NativeEvent={type:"status";phase:string}|{type:"error";message:string}|
@@ -23,6 +24,7 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
   const surface=useRef<HTMLDivElement>(null);
   const remoteClipboard=useRef("");
   const generation=useRef(0);
+  const frames=useRef(createFrameQueue());
   const started=useRef(false);
   const connected=useRef(false);
   const buttons=useRef(0);
@@ -33,13 +35,14 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
     void invoke("vnc_direct_input",{id,input}).catch(()=>{});
   }
   function close(){
+    frames.current.reset();
     generation.current++;connected.current=false;setPhase("idle");
     remoteClipboard.current="";buttons.current=0;
     if(password.current)password.current.value="";
     if(started.current&&isTauri())void invoke("vnc_direct_disconnect",{id}).catch(()=>{});
     started.current=false;
   }
-  useEffect(()=>()=>{generation.current++;connected.current=false;
+  useEffect(()=>()=>{frames.current.reset();generation.current++;connected.current=false;
     if(started.current&&isTauri())void invoke("vnc_direct_disconnect",{id}).catch(()=>{});
     started.current=false;remoteClipboard.current="";},[id]);
   useEffect(()=>{
@@ -58,15 +61,15 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
     return ()=>{observer.disconnect();clearTimeout(timer);};
   },[phase,id]);
 
-  async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number){
+  async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number,current:()=>boolean){
     if(event.width<1||event.height<1||event.png.length>24*1024*1024)return;
     try{
       const bytes=Uint8Array.from(atob(event.png),char=>char.charCodeAt(0));
       const bitmap=await createImageBitmap(new Blob([bytes],{type:"image/png"}));
-      if(token===generation.current&&canvas.current)
+      if(current()&&token===generation.current&&canvas.current)
         canvas.current.getContext("2d",{alpha:false})?.drawImage(bitmap,event.x,event.y);
       bitmap.close();
-    }catch{if(token===generation.current)setError(ru?"Ошибка кадра VNC.":"VNC frame decode failed.");}
+    }catch{if(current()&&token===generation.current)setError(ru?"Ошибка кадра VNC.":"VNC frame decode failed.");}
   }
   async function open(){
     if(phase!=="idle"||!isTauri())return;
@@ -82,9 +85,15 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
     const events=new Channel<NativeEvent>();
     events.onmessage=event=>{
       if(token!==generation.current)return;
-      if(event.type==="frame")void draw(event,token);
+      if(event.type==="frame"){
+        if(!frames.current.enqueue(current=>draw(event,token,current),event.png.length*2)){
+          close();setError(ru?"Очередь кадров переполнена. Подключитесь повторно.":"Frame queue overloaded. Reconnect.");
+        }
+      }
       else if(event.type==="resize"){
-        if(canvas.current){canvas.current.width=event.width;canvas.current.height=event.height;}
+        if(!frames.current.enqueue(()=>{
+          if(canvas.current){canvas.current.width=event.width;canvas.current.height=event.height;}
+        })){close();setError(ru?"Очередь кадров переполнена. Подключитесь повторно.":"Frame queue overloaded. Reconnect.");}
       }else if(event.type==="clipboard"){
         if(clipboard&&event.text.length<=65536)remoteClipboard.current=event.text;
       }else if(event.type==="error"){
@@ -93,6 +102,7 @@ export function DirectVnc({connection,language}:{connection:Connection;language:
       }else if(event.phase==="connected"){
         connected.current=true;setPhase("connected");
       }else if(event.phase==="reconnecting"){
+        frames.current.reset();
         connected.current=false;setPhase("reconnecting");
       }else if(event.phase==="closed")close();
     };

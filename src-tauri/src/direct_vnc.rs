@@ -60,15 +60,17 @@ struct Active {
 }
 
 #[derive(Default)]
-pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Active>>>>);
+pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Active>>>>, crate::session_registry::PendingStarts);
 impl Sessions {
     pub fn shutdown(&self) {
+        self.1.shutdown_with(|| {
         if let Ok(mut sessions) = self.0.lock() {
             for session in sessions.values() {
                 session.handle.shutdown();
             }
             sessions.clear();
         }
+        });
     }
 }
 
@@ -223,6 +225,7 @@ pub async fn vnc_direct_connect_saved(
     }
     // The vault binds its record to this entire public identity. The secret
     // stays in the native process and is never returned to WebView.
+    let permit = sessions.1.begin(&target.id)?;
     let store = vault.inner().clone();
     let identity = target.clone();
     let secret = tauri::async_runtime::spawn_blocking(move || {
@@ -237,15 +240,14 @@ pub async fn vnc_direct_connect_saved(
     .await
     .map_err(|_| "Vault worker failed".to_string())??
     .ok_or("Saved VNC credential not found")?;
-    vnc_direct_connect_guarded(
+    permit.publish(|| vnc_direct_connect_guarded(
         sessions,
         target,
         secret,
         spki_sha256,
         clipboard,
         events,
-    )
-    .await
+    ))
 }
 
 #[tauri::command]
@@ -257,14 +259,16 @@ pub async fn vnc_direct_connect(
     clipboard: bool,
     events: Channel<Event>,
 ) -> Result<(), String> {
-    vnc_direct_connect_guarded(
-        sessions, target, zeroize::Zeroizing::new(password), spki_sha256, clipboard, events,
-    ).await
+    let password = zeroize::Zeroizing::new(password);
+    let permit = sessions.1.begin(&target.id)?;
+    permit.publish(|| vnc_direct_connect_guarded(
+        sessions, target, password, spki_sha256, clipboard, events,
+    ))
 }
 
 // Move a saved credential directly out of Vault. Never clone it into another
 // unprotected String just to call the public Tauri IPC command.
-async fn vnc_direct_connect_guarded(
+fn vnc_direct_connect_guarded(
     sessions: State<'_, Sessions>,
     target: Target,
     mut password: zeroize::Zeroizing<String>,
@@ -406,11 +410,11 @@ async fn vnc_direct_connect_guarded(
 
 #[tauri::command]
 pub fn vnc_direct_disconnect(sessions: State<'_, Sessions>, id: String) {
-    if let Ok(mut active) = sessions.0.lock() {
-        if let Some(session) = active.remove(&id) {
-            session.handle.shutdown();
+    sessions.1.cancel_with(&id, || {
+        if let Ok(mut active) = sessions.0.lock() {
+            if let Some(session) = active.remove(&id) { session.handle.shutdown(); }
         }
-    }
+    });
 }
 
 #[derive(Deserialize)]

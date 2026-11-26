@@ -6,6 +6,23 @@ on:
 permissions:
   contents: read
 jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Audit npm lockfile
+        run: npm audit --audit-level=low
+      - name: Install RustSec auditor
+        if: success() || failure()
+        run: cargo install cargo-audit --version 0.23.0 --locked
+      - name: Audit Rust lockfile
+        if: success() || failure()
+        run: cargo audit --file src-tauri/Cargo.lock
   arch-preview:
     runs-on: ubuntu-latest
     container: archlinux:latest
@@ -173,12 +190,21 @@ jobs:
       - name: Checksum Linux package
         if: runner.os == 'Linux'
         run: cd src-tauri/target/release/bundle/deb && sha256sum ./*.deb > SHA256SUMS.txt
+      - name: Checksum Windows portable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $portable = 'src-tauri/target/release/nodedesk.exe'
+          $digest = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  nodedesk.exe" | Set-Content -LiteralPath 'src-tauri/target/release/SHA256SUMS-portable.txt'
       - name: Windows preview for read-only desktop QA
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: nodedesk-windows-preview
-          path: src-tauri/target/release/nodedesk.exe
+          path: |
+            src-tauri/target/release/nodedesk.exe
+            src-tauri/target/release/SHA256SUMS-portable.txt
           if-no-files-found: error
       - name: Windows installer preview
         if: runner.os == 'Windows'

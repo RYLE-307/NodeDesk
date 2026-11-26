@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState,type MouseEvent} from "react";
 import {Channel,invoke,isTauri} from "@tauri-apps/api/core";
 import type {Connection} from "./catalog";
+import {createFrameQueue} from "./frameQueue";
 
 type NativeEvent={type:"status";phase:string}|{type:"error";message:string}|
   {type:"frame";width:number;height:number;png:string};
@@ -18,26 +19,28 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
   const surface=useRef<HTMLDivElement>(null);
   const canvas=useRef<HTMLCanvasElement>(null);
   const generation=useRef(0);
+  const frames=useRef(createFrameQueue());
   const lastMouse=useRef(0);
   const connected=useRef(false);
   const started=useRef(false);
   const id=connection.id;
 
-  async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number){
+  async function draw(event:Extract<NativeEvent,{type:"frame"}>,token:number,current:()=>boolean){
     if(event.width<1||event.height<1||event.width>4096||event.height>2160||
-        event.png.length>16*1024*1024)return;
+        event.png.length>48*1024*1024)return;
     try{
       const bytes=Uint8Array.from(atob(event.png),char=>char.charCodeAt(0));
       const bitmap=await createImageBitmap(new Blob([bytes],{type:"image/png"}));
-      if(token===generation.current&&canvas.current){
+      if(current()&&token===generation.current&&canvas.current){
         const element=canvas.current;
         element.width=event.width;element.height=event.height;
         element.getContext("2d",{alpha:false})?.drawImage(bitmap,0,0);
       }
       bitmap.close();
-    }catch{if(token===generation.current)setError(ru?"Ошибка кадра RDP.":"RDP frame decode failed.");}
+    }catch{if(current()&&token===generation.current)setError(ru?"Ошибка кадра RDP.":"RDP frame decode failed.");}
   }
   function close(){
+    frames.current.reset();
     generation.current++;
     connected.current=false;
     setPhase("idle");
@@ -45,7 +48,7 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     if(started.current&&isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
     started.current=false;
   }
-  useEffect(()=>()=>{generation.current++;connected.current=false;
+  useEffect(()=>()=>{frames.current.reset();generation.current++;connected.current=false;
     if(started.current&&isTauri())void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
     started.current=false;},[id]);
   useEffect(()=>{
@@ -74,16 +77,23 @@ export function DirectRdp({connection,language}:{connection:Connection;language:
     const events=new Channel<NativeEvent>();
     events.onmessage=event=>{
       if(token!==generation.current)return;
-      if(event.type==="frame")void draw(event,token);
+      if(event.type==="frame"){
+        if(!frames.current.enqueue(current=>draw(event,token,current),event.png.length*2)){
+          close();setError(ru?"Очередь кадров переполнена. Подключитесь повторно.":"Frame queue overloaded. Reconnect.");
+        }
+      }
       else if(event.type==="error"){
+        frames.current.reset();
         setError(ru?"RDP-соединение или авторизация не удались.":event.message);
         if(started.current)void invoke("rdp_direct_disconnect",{id}).catch(()=>{});
         connected.current=false;started.current=false;setPhase("idle");generation.current++;
       }else if(event.phase==="connected"){
         connected.current=true;setPhase("connected");
       }else if(event.phase==="reconnecting"){
+        frames.current.reset();
         connected.current=false;setPhase("reconnecting");
       }else if(event.phase==="closed"){
+        frames.current.reset();
         connected.current=false;started.current=false;setPhase("idle");generation.current++;
       }
     };

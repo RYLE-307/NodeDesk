@@ -5,6 +5,7 @@ mod native_auth;
 mod rdp;
 mod direct_rdp;
 mod direct_vnc;
+mod session_registry;
 mod vnc;
 mod vpn;
 mod network;

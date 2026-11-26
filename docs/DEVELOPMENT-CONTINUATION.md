@@ -6,6 +6,19 @@ existing `NodeDesk` checkout has unrelated uncommitted work. Do not alter it.
 
 ## Current checkpoint
 
+## 2026-11-26 autonomous audit and session lifecycle repair
+
+- Verified GitHub HEAD `1e031234900af38abb8ac6ebc72f2138b33c58cd`; PR #13 open and Draft.
+- Baseline CI [45222040289](https://github.com/RYLE-307/NodeDesk/actions/runs/45222040289) passed all six jobs, including Windows NSIS install/uninstall and Arch package/portable smoke checks.
+- Corrected a VNC registry race: an old disconnected worker must not remove a replacement connection under the same catalog ID. RDP cleanup now follows the same ownership rule and releases its reservation if spawning its worker fails.
+- Added deterministic positive/negative registry tests for replacement, repeated cleanup, unrelated sessions and failed-start reservation release. New exact-head CI is PENDING.
+- Local execution unavailable: PowerShell commands produced no output, and Node runtime returned `Managed execution requires a usable CODEX_CLI_PATH`. Local checkout status and tests are NOT TESTED. Changes made through GitHub API, only on the authorized branch.
+- NOT READY. Further confirmed defects to address: RDP time-based frame dropping can lose the last image; asynchronous WebView frame decoding can reorder RDP frames/VNC rectangles. Continue code audit of SSH/SFTP, VPN, vault and dependencies.
+- Existing memory-lifecycle gate remains open: IronRDP owns ordinary credential Strings. Do not relabel it as passed. Native Windows/Arch GUI and protocol acceptance remains NOT TESTED.
+- Older appended entries below are history, not current verification status. Do not interpret their old PENDING statements as overriding the verified baseline above.
+- Next: check CI for this commit, fix failures, then address ordered frame delivery and finish the P0 audit. Keep Draft; no merge, tag, release or real infrastructure.
+
+
 ### 2026-11-23 P0 VNC pointer bounds follow live server framebuffer — CI pending
 
 - Latest verified parent 1bfdbfa91b7cf1fb903410a1b5b920ee634a15e4

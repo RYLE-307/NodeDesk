@@ -60,7 +60,7 @@ struct Active {
 }
 
 #[derive(Default)]
-pub struct Sessions(Arc<Mutex<HashMap<String, Active>>>);
+pub struct Sessions(Arc<Mutex<HashMap<String, Arc<Active>>>>);
 impl Sessions {
     pub fn shutdown(&self) {
         if let Ok(mut sessions) = self.0.lock() {
@@ -287,17 +287,15 @@ async fn vnc_direct_connect_guarded(
         let config = options(&target, std::mem::take(&mut *password), spki_sha256)?;
         let handle = Arc::new(Session::spawn(target.id.clone(), config, tx));
         let display=Arc::new(Mutex::new((0,0)));
-        active.insert(
-            target.id.clone(),
-            Active {
-                handle: Arc::clone(&handle),
-                clipboard,
-                display:Arc::clone(&display),
-            },
-        );
-        (handle,display)
+        let owner = Arc::new(Active {
+            handle: Arc::clone(&handle),
+            clipboard,
+            display: Arc::clone(&display),
+        });
+        active.insert(target.id.clone(), Arc::clone(&owner));
+        (handle, display, owner)
     };
-    let (handle,display_state)=handle;
+    let (handle,display_state,owner)=handle;
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
     tauri::async_runtime::spawn(async move {
@@ -401,9 +399,7 @@ async fn vnc_direct_connect_guarded(
             }
         }
         handle.shutdown();
-        if let Ok(mut active) = registry.lock() {
-            active.remove(&id);
-        }
+        crate::session_registry::remove_owned(&registry, &id, &owner);
     });
     Ok(())
 }

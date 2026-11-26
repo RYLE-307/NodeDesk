@@ -352,6 +352,9 @@ async fn rdp_direct_connect_guarded(
     };
     let registry = Arc::clone(&sessions.0);
     let id = target.id;
+    let start_registry = Arc::clone(&registry);
+    let start_id = id.clone();
+    let start_session = Arc::clone(&session);
     std::thread::Builder::new()
         .name("nodedesk-rdp".into())
         .spawn(move || {
@@ -364,9 +367,7 @@ async fn rdp_direct_connect_guarded(
                     let _ = events.send(Event::Error {
                         message: "RDP runtime unavailable",
                     });
-                    if let Ok(mut all) = registry.lock() {
-                        all.remove(&id);
-                    }
+                    crate::session_registry::remove_owned(&registry, &id, &session);
                     return;
                 }
             };
@@ -383,9 +384,7 @@ async fn rdp_direct_connect_guarded(
                         let _ = events.send(Event::Error {
                             message: "RDP clipboard unavailable",
                         });
-                        if let Ok(mut all) = registry.lock() {
-                            all.remove(&id);
-                        }
+                        crate::session_registry::remove_owned(&registry, &id, &session);
                         return;
                     }
                 }
@@ -462,12 +461,13 @@ async fn rdp_direct_connect_guarded(
                     }
                 }
                 session.sender.request_close();
-                if let Ok(mut all) = registry.lock() {
-                    all.remove(&id);
-                }
+                crate::session_registry::remove_owned(&registry, &id, &session);
             }));
         })
-        .map_err(|_| "Cannot start RDP worker".to_string())?;
+        .map_err(|_| {
+            crate::session_registry::remove_owned(&start_registry, &start_id, &start_session);
+            "Cannot start RDP worker".to_string()
+        })?;
     Ok(())
 }
 

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NodeDesk Preview
+Comment=Infrastructure workspace development preview
+Exec=nodedesk
+Icon=nodedesk
+Terminal=false
+Categories=Network;Utility;

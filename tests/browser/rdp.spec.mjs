@@ -2,12 +2,13 @@ import {test,expect} from "@playwright/test";
 
 // Contract-only UI fixture. Does NOT spawn an OS RDP client.
 // Native Rust argument tests check the actual launcher's safety.
-async function open(page,language="en",launchError=false) {
-  await page.addInitScript(({language,launchError}) => {
+async function open(page,language="en",launchError=false,pin=null) {
+  await page.addInitScript(({language,launchError,pin}) => {
     localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({
       version:1,groups:[],
       connections:[{id:"rdp-fixture",name:"Fixture RDP",host:"rdp.example.test",port:3390,
-        username:"LAB\\alice",protocol:"RDP",groupId:null,favorite:false}],
+        username:"LAB\\alice",protocol:"RDP",groupId:null,favorite:false,
+        ...(pin?{rdpSha256Fingerprint:pin}:{})}],
       language,theme:"dark",monitoring:false
     }));
     window.__TAURI__={};
@@ -19,12 +20,15 @@ async function open(page,language="en",launchError=false) {
       unregisterCallback(){},
       async invoke(cmd,args) {
         window.fixture.calls.push({cmd,args});
+        if(cmd==="rdp_direct_connect"||cmd==="rdp_direct_connect_saved"||cmd==="rdp_direct_disconnect"||
+            cmd==="rdp_direct_resize"||cmd==="rdp_direct_input"||
+            cmd==="rdp_direct_release_input")return;
         if(cmd!=="rdp_launch") throw new Error("Unexpected command");
         if(launchError) throw new Error("RDP client unavailable");
         return {client:"sdl-freerdp3",externalWindow:true};
       }
     };
-  },{language,launchError});
+  },{language,launchError,pin});
   await page.goto("/");
   await page.locator(".connection-open").filter({hasText:"Fixture RDP"}).dblclick();
   return page.getByRole("region",{name:language==="en"?"RDP remote desktop":"Удалённый рабочий стол RDP"});
@@ -42,6 +46,70 @@ test("RDP never autoconnects; explicit launch sends only catalog target",async({
   }});
   await expect(workspace).toContainText("embedded viewer above requires a separately configured Guacamole/WSS gateway");
   await expect(workspace).toContainText("Verify the server certificate");
+});
+test("direct RDP requires explicit credentials, forwards only catalog endpoint and clears input",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await expect(direct).toBeVisible();
+  expect(await page.evaluate(()=>window.fixture.calls)).toEqual([]);
+  await direct.getByLabel("RDP password for this session").fill("disposable-only-password");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  await expect(direct.getByLabel("RDP password for this session")).toHaveValue("");
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect")
+    .map(c=>({cmd:c.cmd,target:c.args.target,password:c.args.password,
+      width:c.args.width,height:c.args.height,clipboard:c.args.clipboard})));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].target).toEqual({id:"rdp-fixture",host:"rdp.example.test",
+    port:3390,username:"LAB\\alice"});
+  expect(calls[0].password).toBe("disposable-only-password");
+  expect(calls[0].width).toBeGreaterThanOrEqual(320);
+  expect(calls[0].clipboard).toBe(false);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
+  expect(await page.evaluate(()=>JSON.stringify(localStorage)+JSON.stringify(sessionStorage)))
+    .not.toContain("disposable-only-password");
+  await direct.getByRole("button",{name:"Disconnect"}).click();
+  expect(await page.evaluate(()=>window.fixture.calls.some(c=>
+    c.cmd==="rdp_direct_disconnect"&&c.args.id==="rdp-fixture"))).toBe(true);
+});
+
+test("direct RDP forwards a saved certificate pin for native enforcement",async({page})=>{
+  const pin="ab".repeat(32);
+  const workspace=await open(page,"en",false,pin);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await direct.getByLabel("RDP password for this session").fill("fixture-only");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.certificateSha256).toBe(pin);
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("fixture-only");
+});
+test("saved RDP credential is requested only by identity and never enters WebView storage",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  await direct.getByRole("checkbox",{name:"Use credential from unlocked OS vault"}).check();
+  await expect(direct.getByLabel("RDP password for this session")).toHaveCount(0);
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect_saved"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.target).toEqual({id:"rdp-fixture",host:"rdp.example.test",
+    port:3390,username:"LAB\\alice"});
+  expect(calls[0].args).not.toHaveProperty("password");
+  expect(JSON.stringify(await page.evaluate(()=>localStorage))).not.toContain("password");
+});
+test("direct RDP OS clipboard requires explicit per-session opt-in",async({page})=>{
+  const workspace=await open(page);
+  const direct=workspace.getByRole("region",{name:"Direct RDP"});
+  const consent=direct.getByRole("checkbox",{name:"Sync OS clipboard"});
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await direct.getByLabel("RDP password for this session").fill("fixture-only");
+  await direct.getByRole("button",{name:"Connect directly"}).click();
+  await expect(consent).toBeDisabled();
+  const calls=await page.evaluate(()=>window.fixture.calls.filter(c=>c.cmd==="rdp_direct_connect"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.clipboard).toBe(true);
+  await direct.getByRole("button",{name:"Disconnect"}).click();
+  await expect(consent).toBeEnabled();
 });
 test("saved SHA256 pin reaches the launcher and invalid edits are refused",async({page})=>{
   const workspace=await open(page);
@@ -179,4 +247,60 @@ test("explicit RDP connection uses only a server-authorized Guacamole profile",a
   expect(parsed.searchParams.has("password")).toBe(false);
   expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
   await expect(embedded).not.toContainText("opaque-qa-token");
+});
+
+test("RDP clipboard is opt-in, bounded, and cleared on disconnect",async({page})=>{
+  await page.addInitScript(()=>{
+    const NativeWebSocket=window.WebSocket;
+    window.fixtureGuac={sent:[],sockets:[],encode:(...parts)=>parts.map(
+      part=>`${part.length}.${part}`).join(",")+";"};
+    window.WebSocket=function(url,protocol){
+      if(!String(url).startsWith("wss://guacamole.example.org/"))
+        return new NativeWebSocket(url,protocol);
+      const socket={readyState:1,send(data){window.fixtureGuac.sent.push(data);},
+        close(){this.readyState=3;}};
+      window.fixtureGuac.sockets.push(socket);
+      setTimeout(()=>{
+        socket.onopen?.({});
+        socket.onmessage?.({data:window.fixtureGuac.encode("","fixture-tunnel")+
+          window.fixtureGuac.encode("sync","1")});
+      },0);
+      return socket;
+    };
+  });
+  await mockGuac(page);
+  const workspace=await open(page);
+  const embedded=workspace.getByRole("region",{name:"Embedded RDP"});
+  await embedded.getByRole("textbox",{name:"Guacamole HTTPS URL"}).fill(
+    "https://guacamole.example.org/guacamole/");
+  await embedded.getByRole("textbox",{name:"Guacamole username"}).fill("qa");
+  await embedded.getByRole("textbox",{name:"Guacamole password"}).fill("fixture-only");
+  await embedded.getByRole("checkbox").check();
+  await embedded.getByRole("button",{name:"Sign in to Guacamole"}).click();
+  await embedded.getByRole("button",{name:"Connect embedded"}).click();
+  const optIn=embedded.getByRole("checkbox",{name:"Clipboard in this session"});
+  await expect(optIn).toBeVisible();
+  await expect(optIn).not.toBeChecked();
+  const copy=embedded.getByRole("button",{name:"Copy remote text"});
+  await expect(copy).toBeDisabled();
+  const deliver=async value=>page.evaluate(value=>{
+    const fixture=window.fixtureGuac,socket=fixture.sockets.at(-1);
+    const data=btoa(unescape(encodeURIComponent(value)));
+    socket.onmessage({data:fixture.encode("clipboard","7","text/plain")+
+      fixture.encode("blob","7",data)+fixture.encode("end","7")});
+  },value);
+  await deliver("private fixture");
+  await expect(copy).toBeDisabled();
+  await optIn.check();
+  await deliver("private fixture");
+  await expect(copy).toBeEnabled();
+  await optIn.uncheck();
+  await expect(copy).toBeDisabled();
+  await optIn.check();
+  await deliver("x".repeat(65537));
+  await expect(copy).toBeDisabled();
+  await expect(embedded.getByRole("alert")).toContainText("too large");
+  await embedded.getByRole("button",{name:"Disconnect"}).click();
+  await expect(optIn).toHaveCount(0);
+  expect(await page.evaluate(()=>localStorage.getItem("GUAC_AUTH"))).toBeNull();
 });

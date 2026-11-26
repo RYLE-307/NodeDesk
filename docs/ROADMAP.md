@@ -1,5 +1,8 @@
 # План разработки
 
+> Current cross-version P0/P1 assessment: [FUNCTIONAL-GAP-AUDIT.md](FUNCTIONAL-GAP-AUDIT.md).
+> v0.9 is an integrated QA candidate, not completion of the full parity scope.
+
 > The automated v0.7 engineering gate is tracked in [V0.7-RELEASE.md](V0.7-RELEASE.md).
 > It focuses on safe, recoverable multi-queue SFTP and validation of the
 > existing desktop/workspace slice. The long-tail parity matrix is not a

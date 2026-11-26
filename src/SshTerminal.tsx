@@ -7,6 +7,10 @@ import "@xterm/xterm/css/xterm.css";
 import type { Connection } from "./catalog";
 import { FileBrowser } from "./FileBrowser";
 import { TunnelWorkspace } from "./TunnelWorkspace";
+import { decideTerminalPaste } from "./terminalPaste";
+import {prepareTerminalSnippet} from "./terminalSnippet";
+import {collectTerminalScrollback} from "./terminalLog";
+import {queueTerminalWrite} from "./terminalWriteQueue";
 
 type AuthMode = "auto" | "key" | "password";
 export type TerminalKind = "ssh" | "sftp" | "filesauth" | "local" | "localcmd";
@@ -22,12 +26,22 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState(""), [busy, setBusy] = useState(false);
   const [auth, setAuth] = useState<AuthMode>(passwordOnly ? "password" : "auto");
+  // Opt-in for this tab only. Never saved in catalog/recovery preferences.
+  const [agentForwarding,setAgentForwarding]=useState(false);
   const [jumpEnabled,setJumpEnabled]=useState(false);
   const [jumpHost,setJumpHost]=useState("");
   const [jumpUser,setJumpUser]=useState("");
   const [jumpPort,setJumpPort]=useState("22");
+  const [secondHop,setSecondHop]=useState(false);
+  const [secondHost,setSecondHost]=useState("");
+  const [secondUser,setSecondUser]=useState("");
+  const [secondPort,setSecondPort]=useState("22");
+  const [identity,setIdentity]=useState("");
   const [query,setQuery]=useState("");
   const [fontSize,setFontSize]=useState(13);
+  const [snippet,setSnippet]=useState("");
+  const [sessionLaunched,setSessionLaunched]=useState(false);
+  const [snippetSending,setSnippetSending]=useState(false);
   const ru = language === "ru";
   useEffect(() => {
     const term = new Terminal({ cursorBlink: true, scrollback: 2000, fontSize: 13, theme: { background: "#11151b", foreground: "#e2e8f0" } });
@@ -36,7 +50,14 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     term.open(container.current!); terminal.current = term;
     const input = term.onData(data => {
       const id = session.current;
-      if (id) pending.current = pending.current.then(() => invoke("ssh_write", { id, data })).catch(() => { setStatus("Terminal input failed"); });
+      if (!id)return;
+      // The ID is checked when the queued write actually starts, not just
+      // when xterm produces its input; Stop/reconnect invalidates old chunks.
+      pending.current=queueTerminalWrite(pending.current,id,data,
+        ()=>session.current,
+        (writeId,value)=>invoke("ssh_write",{id:writeId,data:value}))
+        .catch(()=>{if(session.current===id)setStatus(currentLanguage.current==="ru"?
+          "Ошибка ввода терминала":"Terminal input failed");});
     });
     const observer = new ResizeObserver(() => {
       if (!container.current?.clientWidth || !container.current.clientHeight) return;
@@ -47,8 +68,15 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     const screen=container.current!;
     const guardPaste=(event:ClipboardEvent)=>{
       const value=event.clipboardData?.getData("text/plain")??"";
-      if (!value.includes("\n") && !value.includes("\r")) return;
-      if (!window.confirm(currentLanguage.current==="ru"
+      const decision=decideTerminalPaste(value);
+      if (decision==="reject-size" || decision==="reject-control") {
+        event.preventDefault();
+        setStatus(currentLanguage.current==="ru"
+          ? (decision==="reject-size" ? "Вставка заблокирована: слишком большой текст" : "Вставка заблокирована: управляющие символы")
+          : (decision==="reject-size" ? "Paste blocked: text too large" : "Paste blocked: control characters"));
+        return;
+      }
+      if (decision==="confirm" && !window.confirm(currentLanguage.current==="ru"
         ? "Вставить несколько строк в терминал? Команды могут выполниться сразу."
         : "Paste multiple lines into the terminal? Commands may run immediately.")) event.preventDefault();
     };
@@ -64,33 +92,129 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
   async function stop() {
     const id = session.current; session.current = null;
     sessionCallback.current?.(null);
-    setBusy(false); setStatus(ru ? "Отключено" : "Disconnected");
+    setBusy(false); setSessionLaunched(false); setStatus(ru ? "Отключено" : "Disconnected");
     if (id) await invoke("ssh_disconnect", { id }).catch(e => setStatus(String(e)));
   }
   async function connect() {
+    const canForwardAgent=kind==="ssh" && !local && auth==="key" && !jumpEnabled && !passwordOnly;
+    if(agentForwarding && !canForwardAgent){
+      setStatus(ru?"Проброс агента доступен только для прямого SSH с входом по ключу":
+        "Agent forwarding requires direct key-only SSH");return;
+    }
+    if(agentForwarding && !window.confirm(ru
+      ?"Разрешить удалённому SSH-серверу использовать ваш локальный SSH-agent для подписей? Администратор удалённого сервера сможет запрашивать аутентификацию от вашего имени, пока сессия открыта. Включайте только для полностью доверенного сервера."
+      :"Allow the remote SSH server to use your local SSH agent for signatures? Remote administrators may request authentication on your behalf while this session is open. Enable only for a fully trusted server."))return;
     if (!isTauri()) { setStatus(ru ? "Терминал доступен в настольном приложении" : "Terminal requires the desktop app"); return; }
     const term = terminal.current!;
     const id = crypto.randomUUID(); session.current = id;
-    setBusy(true); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
+    setBusy(true); setSessionLaunched(false); setStatus(local ? (ru ? "Локальная оболочка запущена" : "Local shell started") : kind === "sftp"
       ? (ru ? "SFTP запущен; ожидайте приглашение sftp>" : "SFTP started; waiting for sftp> prompt")
       : (ru ? "SSH запущен; ожидайте приглашение сервера" : "SSH started; waiting for server prompt")); term.reset(); term.focus();
     const jump = !local && (kind==="ssh"||kind==="sftp") && jumpEnabled
-      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort)} : null;
+      ? {host:jumpHost,username:jumpUser,port:Number(jumpPort),
+          ...(secondHop?{next:{host:secondHost,username:secondUser,port:Number(secondPort)}}:{})} : null;
     const events = new Channel<Event>();
     events.onmessage = event => {
       if (session.current !== id) return;
       if (event.kind === "data") term.write(new Uint8Array(event.value));
       else {
-        session.current = null; sessionCallback.current?.(null); setBusy(false);
+        session.current = null; sessionCallback.current?.(null); setBusy(false); setSessionLaunched(false);
         setStatus(event.kind === "exit" ? `${ru ? "Сессия завершена, код" : "Session exited, code"} ${event.value}` : event.value);
         void invoke("ssh_disconnect", { id });
       }
     };
     try {
-      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
+      await invoke("ssh_connect", { id, host: local ? "" : c.host, port: local ? 0 : c.port, username: local ? "" : c.username, auth, kind, jump, agentForwarding:agentForwarding && canForwardAgent, identity: !local && (kind==="ssh" || kind==="sftp") && auth==="key" && identity.trim() ? identity.trim() : null, cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(2, term.rows)), events });
       if (session.current !== id) await invoke("ssh_disconnect", { id });
-      else sessionCallback.current?.(id);
-    } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setStatus(String(e)); } }
+      else { setSessionLaunched(true); sessionCallback.current?.(id); }
+    } catch (e) { if (session.current === id) { session.current = null; setBusy(false); setSessionLaunched(false); setStatus(String(e)); } }
+  }
+  async function insertSnippet() {
+    if (!(local || kind === "ssh") || !sessionLaunched || snippetSending) return;
+    let value: string;
+    try { value = prepareTerminalSnippet(snippet); }
+    catch {
+      setStatus(ru ? "Недопустимый сниппет: одна строка без управляющих символов, до 4 КиБ" :
+        "Invalid snippet: one line, no control characters, up to 4 KiB");
+      return;
+    }
+    const id = session.current;
+    if (!id) return;
+    if (!window.confirm(ru
+      ? "Вставить текст БЕЗ Enter? Убедитесь, что открыт командный prompt, а не запрос пароля."
+      : "Insert text WITHOUT Enter? Check that this is a shell prompt, not a password prompt.")) return;
+    if (session.current !== id) return;
+    setSnippetSending(true);
+    const task = pending.current.then(async () => {
+      if (session.current !== id) throw new Error("session changed");
+      await invoke("ssh_write", { id, data: value });
+    });
+    pending.current = task.catch(() => {});
+    try {
+      await task;
+      if (session.current === id) {
+        setSnippet("");
+        terminal.current?.focus();
+        setStatus(ru ? "Сниппет вставлен без Enter; проверьте строку" :
+          "Snippet inserted without Enter; review the line before executing");
+      }
+    } catch {
+      setStatus(ru ? "Ошибка вставки сниппета" : "Could not insert snippet into this session");
+    } finally {
+      setSnippetSending(false);
+    }
+  }
+  function exportScrollback() {
+    try {
+      const term = terminal.current;
+      if (!term) return;
+      const log = collectTerminalScrollback(term.buffer.active);
+      if (!log.text) {
+        setStatus(ru ? "В терминале пока нет истории для экспорта" :
+          "No terminal scrollback to export");
+        return;
+      }
+      if (!window.confirm(ru
+        ? "Экспортировать видимую историю терминала в TXT? Она может содержать адреса, команды и секреты. Проверьте файл перед передачей. Логи не сохраняются автоматически."
+        : "Export rendered terminal scrollback as TXT? It may contain addresses, commands and secrets. Review the file before sharing. Logs are never saved automatically.")) return;
+      const prefix = log.truncated ? "[NodeDesk: older terminal output omitted]\n" : "";
+      const url = URL.createObjectURL(new Blob([prefix, log.text, "\n"], {type:"text/plain;charset=utf-8"}));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "nodedesk-terminal-" + new Date().toISOString().replace(/[:.]/g,"-") + ".txt";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+      setStatus(log.truncated ?
+        (ru ? "Запрошен ограниченный экспорт истории (не более 512 КиБ)" :
+          "Bounded scrollback export requested (up to 512 KiB)") :
+        (ru ? "Запрошен экспорт истории терминала" : "Terminal scrollback export requested"));
+    } catch {
+      setStatus(ru ? "Не удалось подготовить экспорт терминала" :
+        "Could not prepare terminal scrollback export");
+    }
+  }
+  async function copySelection() {
+    const selection=terminal.current?.getSelection()??"";
+    if (!selection) {
+      setStatus(ru?"Сначала выделите текст в терминале":"Select terminal output to copy");
+      return;
+    }
+    if (selection.length>65536 || new TextEncoder().encode(selection).length>65536) {
+      setStatus(ru?"Выделение слишком большое для копирования":"Selection too large to copy");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatus(ru?"Буфер обмена недоступен":"Clipboard unavailable");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      setStatus(ru?"Выделенный текст скопирован":"Selected text copied");
+    } catch {
+      setStatus(ru?"Копирование отклонено системой":"Clipboard write denied");
+    }
   }
   function changeFont(delta:number) {
     setFontSize(current=>{
@@ -103,7 +227,7 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
     <div className="ssh-toolbar"><strong>{local ? (kind === "localcmd" ? "CMD" : navigator.userAgent.includes("Windows") ? "PowerShell" : (ru ? "Локальная оболочка" : "Local shell")) : kind === "filesauth" ? (ru ? "Вход для файлов" : "Files login") : kind === "sftp" ? "SFTP" : "SSH"} · {c.name}</strong>{!local && <span>{c.username}@{c.host}:{c.port}</span>}
       {!local && <label className="ssh-auth">
         <span>{ru ? "Вход" : "Authentication"}</span>
-        <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => setAuth(e.target.value as AuthMode)}>
+        <select aria-label={ru ? "Способ SSH-авторизации" : "SSH authentication method"} disabled={busy} value={auth} onChange={e => {const next=e.target.value as AuthMode;setAuth(next);if(next!=="key")setAgentForwarding(false);}}>
           <option value="auto">{ru ? "Авто" : "Auto"}</option>
           <option value="key" disabled={passwordOnly}>{ru ? "SSH-ключ / агент" : "SSH key / agent"}</option>
           <option value="password">{ru ? "Пароль / PAM" : "Password / PAM"}</option>
@@ -111,13 +235,31 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
       </label>}
       <button disabled={busy || (jumpEnabled && (kind==="ssh"||kind==="sftp") &&
           (!jumpHost || !jumpUser || !Number.isInteger(Number(jumpPort)) ||
-            Number(jumpPort)<1 || Number(jumpPort)>65535))}
+            Number(jumpPort)<1 || Number(jumpPort)>65535 ||
+            (secondHop && (!secondHost || !secondUser ||
+              !Number.isInteger(Number(secondPort)) || Number(secondPort)<1 ||
+              Number(secondPort)>65535))))}
         onClick={() => void connect()}>{local ? (ru ? "Запустить" : "Start") : (ru ? "Подключить / повторить" : "Connect / reconnect")}</button>
       <button disabled={!busy} onClick={() => void stop()}>{local ? (ru ? "Остановить" : "Stop") : (ru ? "Отключить / отменить" : "Disconnect / cancel")}</button>
     </div>
     {!local && (kind==="ssh" || kind==="sftp") && <div className="ssh-jump-options">
+      {auth==="key" && <label>{ru?"Путь к файлу SSH-ключа (необязательно)":"SSH identity file path (optional)"}
+        <input aria-label="SSH identity file path" value={identity} disabled={busy} maxLength={4096}
+          autoComplete="off" spellCheck={false} onChange={e=>setIdentity(e.target.value)}/></label>}
+      {kind==="ssh" && <label>
+        <input type="checkbox" aria-label={ru?"Проброс SSH-agent":"Forward SSH agent"}
+          checked={agentForwarding} disabled={busy || auth!=="key" || jumpEnabled}
+          onChange={e=>setAgentForwarding(e.target.checked)}/>
+        {ru?"Разрешить SSH-agent forwarding для этой сессии":"Enable SSH agent forwarding for this session"}
+      </label>}
+      {kind==="ssh" && <p className="ssh-help">{ru
+        ?"По умолчанию отключено. Прямое SSH-подключение с ключом, без ProxyJump. Сервер может использовать ваш агент для аутентификации от вашего имени; подтверждение требуется при каждом подключении."
+        :"Off by default. Direct key-only SSH without ProxyJump. A remote server can use your agent to authenticate on your behalf; confirmation is required on every connection."}</p>}
+      {auth==="key" && <p className="ssh-help">{ru
+        ?"Укажите абсолютный путь к локальному приватному ключу. Путь не сохраняется; OpenSSH проверяет права файла и запрашивает passphrase в терминале. При использовании шлюза этот файл применяется только к конечному серверу; шлюз использует собственный агент или стандартные ключи."
+        :"Enter an absolute path to a local private key. The path is not saved; OpenSSH checks file permissions and prompts for its passphrase in the terminal. With a jump host, this file applies only to the target; the gateway uses its own agent or default keys."}</p>}
       <label><input type="checkbox" checked={jumpEnabled} disabled={busy}
-        onChange={e=>setJumpEnabled(e.target.checked)}/>
+        onChange={e=>{setJumpEnabled(e.target.checked);if(e.target.checked)setAgentForwarding(false);if(!e.target.checked)setSecondHop(false);}}/>
         {ru?"Через промежуточный SSH-хост (ProxyJump)":"Via SSH jump host (ProxyJump)"}
       </label>
       {jumpEnabled && <>
@@ -130,9 +272,23 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         <label>{ru?"Порт шлюза":"Jump port"}<input type="number" min="1" max="65535"
           value={jumpPort} aria-label="Jump port" disabled={busy}
           onChange={e=>setJumpPort(e.target.value)}/></label>
+        <label><input type="checkbox" checked={secondHop} disabled={busy}
+          onChange={e=>setSecondHop(e.target.checked)}/>
+          {ru?"Добавить второй SSH-шлюз":"Add second SSH jump host"}</label>
+        {secondHop && <>
+          <label>{ru?"Хост второго шлюза":"Second jump host"}<input aria-label="Second jump host"
+            value={secondHost} maxLength={253} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondHost(e.target.value)}/></label>
+          <label>{ru?"Пользователь второго шлюза":"Second jump username"}<input aria-label="Second jump username"
+            value={secondUser} maxLength={200} disabled={busy} autoComplete="off"
+            onChange={e=>setSecondUser(e.target.value)}/></label>
+          <label>{ru?"Порт второго шлюза":"Second jump port"}<input aria-label="Second jump port"
+            type="number" min="1" max="65535" value={secondPort} disabled={busy}
+            onChange={e=>setSecondPort(e.target.value)}/></label>
+        </>}
         <p className="ssh-help">{ru
-          ?"Только один явно заданный шлюз, только SSH/SFTP-консоль. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. Для GUI Files шлюз пока не поддерживается."
-          :"One explicit jump host, SSH/SFTP console only. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Not supported for Files GUI."}</p>
+          ?"Не более двух явно заданных SSH-шлюзов. Требуется заранее доверенный ключ шлюза и ключ/агент; параметры перехода не сохраняются. OpenSSH может учитывать локальный ssh_config для шлюза — проверь его самостоятельно. GUI Files также поддерживает шлюзы."
+          :"At most two explicit SSH jump hosts. Requires a trusted gateway host key and key/agent authentication. Jump settings are not stored. OpenSSH may consult your local ssh_config for the jump host — review it separately. Also available in GUI Files."}</p>
       </>}
     </div>}
     <div className="ssh-toolbar terminal-tools">
@@ -141,10 +297,24 @@ export function SshTerminal({ connection: c, language, kind = "ssh", passwordOnl
         onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();searchAddon.current?.findNext(query);}}}/></label>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findPrevious(query)} aria-label={ru?"Предыдущее совпадение":"Previous match"}>↑</button>
       <button type="button" disabled={!query} onClick={()=>searchAddon.current?.findNext(query)} aria-label={ru?"Следующее совпадение":"Next match"}>↓</button>
+      <button type="button" onClick={()=>void copySelection()} aria-label={ru?"Копировать выделение":"Copy selected text"}>{ru?"Копировать":"Copy selection"}</button>
+      <button type="button" onClick={exportScrollback} aria-label={ru?"Экспорт истории терминала":"Export terminal scrollback"}>{ru?"Экспорт TXT":"Export TXT"}</button>
       <button type="button" onClick={()=>changeFont(-1)} aria-label={ru?"Уменьшить шрифт":"Decrease font size"}>−</button>
       <span aria-label={ru?"Размер шрифта":"Font size"}>{fontSize}px</span>
       <button type="button" onClick={()=>changeFont(1)} aria-label={ru?"Увеличить шрифт":"Increase font size"}>+</button>
     </div>
+    {(local || kind === "ssh") && <div className="ssh-toolbar terminal-snippet">
+      <label>{ru ? "Временный командный сниппет" : "Temporary command snippet"}
+        <input type="text" aria-label={ru ? "Командный сниппет" : "Command snippet"}
+          value={snippet} maxLength={4096} autoComplete="off" spellCheck={false}
+          onChange={event=>setSnippet(event.target.value)}
+          onKeyDown={event=>{if(event.key==="Enter")event.preventDefault();}}/>
+      </label>
+      <button type="button" disabled={!sessionLaunched || snippetSending || !snippet.trim()}
+        onClick={()=>void insertSnippet()}>{ru ? "Вставить (без Enter)" : "Insert (no Enter)"}</button>
+      <small>{ru ? "Не сохраняется и не выполняется автоматически. Сверьте приглашение." :
+        "Not saved or auto-executed. Check the terminal prompt first."}</small>
+    </div>}
     <p className="ssh-help">{local ? (ru ? "Оболочка запускается только по нажатию. Команды выполняются на этом компьютере с вашими правами; закрытие вкладки завершает процесс. PowerShell запускается без профиля." : "The shell starts only when you click Start. Commands run on this computer with your permissions; closing the tab ends the process. PowerShell starts without a profile.") : kind === "filesauth" ? (ru ? "Войдите здесь, затем используйте панели ниже. Ввод пароля/PAM скрыт. Linux использует OpenSSH; Windows — встроенный адаптер с заранее доверенным host key. На Windows режим Авто также использует пароль/PAM; для ключа/агента снимите галочку интерактивного входа. Отключение завершает доступ к файлам." : "Log in here, then use the panels below. Password/PAM input is hidden. Linux uses OpenSSH; Windows uses the native adapter with a previously trusted host key. On Windows Auto also uses password/PAM; for key/agent uncheck interactive login. Disconnect closes Files access.") : kind === "sftp"
       ? (ru
         ? "Настоящий OpenSSH SFTP. После входа используйте pwd, ls, cd, get, put и help. Сначала проверьте SHA256 ключа сервера; пароли не сохраняются. Локальный каталог передачи задавайте командой lcd — по умолчанию он зависит от запуска NodeDesk. Для графического управления файлами откройте вкладку «Файлы»."

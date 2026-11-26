@@ -4,9 +4,16 @@ import { LocalWorkspace, SshWorkspace } from "./SshTerminal";
 import { RdpWorkspace } from "./RdpWorkspace";
 import { VncWorkspace } from "./VncWorkspace";
 import { VpnWorkspace } from "./VpnWorkspace";
+import { VaultWorkspace } from "./VaultWorkspace";
 import { NetworkWorkspace } from "./NetworkWorkspace";
+import { MonitorPanel } from "./MonitorPanel";
 import { Icon } from "./Icon";
 import logo from "./assets/nodedesk-logo.svg";
+import {parseMobaSessions} from "./mobaImport";
+import {sshConfigPreviewToCatalog} from "./sshConfigImport";
+import {bulkUpdateConnections,MAX_BULK_CONNECTIONS} from "./catalogBulk";
+import {exportSelectedCatalog} from "./catalogSelectionExport";
+import type {BulkConnectionAction} from "./catalogBulk";
 import {
   Catalog,
   Connection,
@@ -17,6 +24,7 @@ import {
   load,
   removeGroup,
   moveConnection,
+  mergeCatalog,
   save,
 } from "./catalog";
 
@@ -28,8 +36,37 @@ const labels = {
     quickConnect: "Быстрое подключение",
     exportCatalog: "Экспорт каталога",
     importCatalog: "Импорт каталога",
+    mergeCatalog: "Добавить из каталога",
+    importMoba: "Импорт MobaXterm",
+    importSshConfig: "Импорт SSH config",
+    bulkToggle: "Массовое изменение",
+    bulkSelect: "Выбрать подключение",
+    bulkSelected: "Выбрано",
+    bulkDestination: "Группа назначения",
+    bulkMove: "Переместить выбранные",
+    bulkFavorite: "Добавить в избранное",
+    bulkUnfavorite: "Убрать из избранного",
+    bulkClear: "Снять выделение",
+    bulkExport: "Экспорт выбранных",
+    bulkExportConfirm: "Сохранить выбранные подключения в JSON? Адреса, имена пользователей и названия групп могут быть конфиденциальными. Пароли, ключи и закреплённые сертификаты НЕ экспортируются. При новом импорте потребуется заново подтвердить доверие к серверу.",
+    bulkExportDone: "Выбранные подключения экспортированы",
+    bulkExportFailed: "Не удалось экспортировать выбранные подключения",
+    bulkConfirm: "Применить изменение к выбранным подключениям? Текущие вкладки, адреса и учётные записи не изменятся. Сетевые подключения не запускаются.",
+    bulkDone: "Массовое изменение сохранено",
+    bulkUnchanged: "Выбранные подключения уже имеют эти настройки",
+    bulkInvalid: "Некорректный список или группа; каталог не изменён.",
+
+    importSshConfirm: "Добавить Host-записи из локального OpenSSH config? Переносятся только псевдоним, адрес, порт и пользователь. Ключи, команды, ProxyCommand и настройки аутентификации НЕ переносятся. Записи без User потребуют ручного заполнения. Существующий каталог сохраняется, все новые ID изменяются. Повторный импорт создаст дубликаты.",
+    importSshDone: "Записи SSH config добавлены",
+    importSshEmpty: "Нет поддерживаемых Host-записей SSH config",
+    importSshFailed: "Не удалось импортировать SSH config; каталог не изменён.",
+    mobaConfirm: "Добавить поддерживаемые SSH/RDP/VNC-сессии из MobaXterm? Переносим только имя, адрес, порт, пользователя и группы. Пароли, ключи, команды и прокси НЕ переносятся. Ничего не подключается автоматически.",
+    mobaDone: "Сессии MobaXterm добавлены",
+    mobaFailed: "Не удалось прочитать поддерживаемые сессии MobaXterm; каталог не изменён.",
+    mergeConfirm: "Добавить группы и подключения из файла, не удаляя текущие? Все импортированные ID будут заменены новыми, чтобы не связывать записи с сохранёнными секретами. Повторный импорт создаст дубликаты. Настройки и открытые сессии сохранятся.",
+    mergeDone: "Подключения добавлены в каталог",
     importFailed: "Файл каталога не прошёл проверку; данные не изменены.",
-    importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты.",
+    importConfirm: "Заменить текущий каталог данными из файла? Открытые сессии будут закрыты. Системные секреты не импортируются, но записи с тем же ID и адресом могут использовать уже сохранённый секрет после разблокировки хранилища.",
     importDone: "Каталог импортирован",
     openConnection: "Открыть вкладку",
     duplicate: "Дублировать",
@@ -94,8 +131,37 @@ const labels = {
     quickConnect: "Quick Connect",
     exportCatalog: "Export catalog",
     importCatalog: "Import catalog",
+    mergeCatalog: "Merge catalog",
+    importMoba: "Import MobaXterm",
+    importSshConfig: "Import SSH config",
+    bulkToggle: "Bulk edit",
+    bulkSelect: "Select connection",
+    bulkSelected: "Selected",
+    bulkDestination: "Destination group",
+    bulkMove: "Move selected",
+    bulkFavorite: "Favorite selected",
+    bulkUnfavorite: "Unfavorite selected",
+    bulkClear: "Clear selection",
+    bulkExport: "Export selected",
+    bulkExportConfirm: "Save selected connections as JSON? Host addresses, usernames and group names can be sensitive. Passwords, keys and pinned certificates are NOT exported. Imported connections require new trust verification.",
+    bulkExportDone: "Selected connections exported",
+    bulkExportFailed: "Could not export selected connections",
+    bulkConfirm: "Apply this change to the selected connections? Current tabs, addresses and credentials stay unchanged. No network connection starts.",
+    bulkDone: "Bulk update saved",
+    bulkUnchanged: "Selected connections already have these settings",
+    bulkInvalid: "Invalid selection or group; catalog unchanged.",
+
+    importSshConfirm: "Append Host entries from local OpenSSH config? Only aliases, hosts, ports and users are transferred. Keys, commands, ProxyCommand and authentication settings are NOT imported. Entries without User must be edited manually. Existing entries are preserved and imported IDs are replaced. Repeated import creates duplicates.",
+    importSshDone: "SSH config entries added",
+    importSshEmpty: "No supported SSH config Host entries",
+    importSshFailed: "SSH config could not be imported; catalog unchanged.",
+    mobaConfirm: "Append supported SSH/RDP/VNC sessions from MobaXterm? Only names, hosts, ports, users and folders are imported. Passwords, keys, commands and proxies are NOT imported. Nothing is connected automatically.",
+    mobaDone: "MobaXterm sessions added",
+    mobaFailed: "No supported MobaXterm sessions could be imported; catalog unchanged.",
+    mergeConfirm: "Append groups and connections without replacing current entries? All imported IDs will be regenerated to avoid linking existing OS-vault credentials. Importing twice creates duplicates. Settings and open tabs are preserved.",
+    mergeDone: "Catalog merged",
     importFailed: "Catalog file failed validation; nothing changed.",
-    importConfirm: "Replace the current catalog with this file? Open sessions will close.",
+    importConfirm: "Replace the current catalog with this file? Open sessions will close. OS credentials are not imported, but entries with the same ID and endpoint may access an existing saved credential after vault unlock.",
     importDone: "Catalog imported",
     openConnection: "Open tab",
     duplicate: "Duplicate",
@@ -174,6 +240,7 @@ function readSidebarWidth(): number {
   } catch { return 310; }
 }
 const SYSTEM_VPN_TAB = "__nodedesk_system_vpn__";
+const VAULT_TAB = "__nodedesk_vault__";
 const LOCAL_SHELL_TAB = "__nodedesk_local_shell__";
 const NETWORK_TAB = "__nodedesk_network__";
 type Editor =
@@ -215,10 +282,17 @@ export default function App() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [bulkMode,setBulkMode] = useState(false);
+  const [bulkSelection,setBulkSelection] = useState<Set<string>>(new Set());
+  const [bulkGroup,setBulkGroup] = useState("");
+
   const [sshConfigHosts,setSshConfigHosts]=useState<{alias:string;host:string;port:number;username:string}[]|null>(null);
   const [sshConfigError,setSshConfigError]=useState("");
   const [sshConfigBusy,setSshConfigBusy]=useState(false);
+  const [sshBulkImportBusy,setSshBulkImportBusy]=useState(false);
   const importInput=useRef<HTMLInputElement>(null);
+  const importMode=useRef<"replace"|"merge">("replace");
+  const mobaInput=useRef<HTMLInputElement>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragActive = useRef(false);
   function showMenu(id: string, x: number, y: number) {
@@ -281,14 +355,76 @@ export default function App() {
     try {
       if(file.size>2_000_000)throw new Error("Catalog too large");
       const imported=decode(await file.text());
-      if(!window.confirm(t.importConfirm))return;
-      if(commit(imported)) {
-        setTabs([]);setActive("");setSecondary("");setQuickConnections({});
-        setLayout(1);setExtraPanes(["",""]);
-        setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
-        setNotice(t.importDone);
+      const merge=importMode.current==="merge";
+      if(!window.confirm(merge?t.mergeConfirm:t.importConfirm))return;
+      const next=merge?mergeCatalog(data,imported):imported;
+      if(commit(next)) {
+        if(!merge) {
+          setTabs([]);setActive("");setSecondary("");setQuickConnections({});
+          setLayout(1);setExtraPanes(["",""]);
+          setRecentIds([]);try{window.localStorage.removeItem(RECENT_KEY);}catch{/* preference only */}
+        }
+        setNotice(merge?t.mergeDone:t.importDone);
       }
     } catch {setNotice(t.importFailed);}
+  }
+  async function importMoba(file:File|undefined) {
+    if(!file)return;
+    try {
+      if(file.size>2_000_000)throw new Error("MobaXterm file too large");
+      const raw=new TextDecoder("windows-1252").decode(await file.arrayBuffer());
+      const parsed=parseMobaSessions(raw);
+      if(!window.confirm(`${t.mobaConfirm} (${parsed.imported} imported, ${parsed.skipped} skipped)`))return;
+      if(commit(mergeCatalog(data,parsed.catalog)))setNotice(t.mobaDone);
+    } catch {setNotice(t.mobaFailed);}
+  }
+  async function importLocalSshConfig() {
+    if(blocked || sshBulkImportBusy)return;
+    if(!isTauri()){
+      setNotice(t.importSshFailed);
+      return;
+    }
+    setSshBulkImportBusy(true);
+    try {
+      const preview=await invoke<unknown>("ssh_config_preview");
+      const incoming=sshConfigPreviewToCatalog(preview);
+      if(!incoming.connections.length){setNotice(t.importSshEmpty);return;}
+      if(!window.confirm(`${t.importSshConfirm} (${incoming.connections.length})`))return;
+      if(commit(mergeCatalog(data,incoming)))setNotice(t.importSshDone);
+    }catch{setNotice(t.importSshFailed);}
+    finally{setSshBulkImportBusy(false);}
+  }
+  function exportBulkSelected(){
+    if(blocked || !bulkMode || !bulkSelection.size)return;
+    if(!window.confirm(`${t.bulkExportConfirm} (${bulkSelection.size})`))return;
+    try{
+      const selected=exportSelectedCatalog(data,[...bulkSelection]);
+      const content=JSON.stringify(selected,null,2);
+      const url=URL.createObjectURL(new Blob([content],{type:"application/json"}));
+      const link=document.createElement("a");
+      link.href=url;link.download="nodedesk-selected-catalog.json";
+      document.body.append(link);link.click();link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+      setNotice(t.bulkExportDone);
+    }catch{setNotice(t.bulkExportFailed);}
+  }
+  function performBulkUpdate(action:BulkConnectionAction){
+    if(blocked || !bulkMode || !bulkSelection.size)return;
+    const ids=[...bulkSelection];
+    if(!window.confirm(`${t.bulkConfirm} (${ids.length})`))return;
+    try{
+      const next=bulkUpdateConnections(data,ids,action);
+      if(next===data){setNotice(t.bulkUnchanged);return;}
+      if(commit(next)){setBulkSelection(new Set());setNotice(t.bulkDone);}
+    }catch{setNotice(t.bulkInvalid);}
+  }
+  function toggleBulkSelection(id:string,checked:boolean){
+    setBulkSelection(previous=>{
+      const next=new Set(previous);
+      if(checked && next.size<MAX_BULK_CONNECTIONS)next.add(id);
+      else if(!checked)next.delete(id);
+      return next;
+    });
   }
   function createGroup(parentId: string | null) {
     edit({kind:"group",value:{id:crypto.randomUUID(),name:"",parentId}});
@@ -529,6 +665,10 @@ export default function App() {
         e.dataTransfer.effectAllowed = "move"; dragActive.current = true; setDragId(c.id); setMenu(null);
       }} onDragEnd={clearDrag}
       onContextMenu={e => contextMenu(e,c.id)} onKeyDown={e => keyboardMenu(e,c.id)}>
+      {bulkMode && <input type="checkbox" aria-label={`${t.bulkSelect}: ${c.name}`}
+        checked={bulkSelection.has(c.id)} disabled={blocked || (!bulkSelection.has(c.id) && bulkSelection.size>=MAX_BULK_CONNECTIONS)}
+        onClick={event=>event.stopPropagation()}
+        onChange={event=>toggleBulkSelection(c.id,event.target.checked)}/>}
       <button className="connection-open" title={`${c.name} — ${c.username ? c.username + "@" : ""}${c.host}:${c.port}`} onClick={() => { if (!dragActive.current) open(c.id); }}>
         <Icon name={c.protocol}/><span className="row-name">{c.name}</span><small>{c.protocol}</small>{c.favorite && <Icon name="star"/>}
       </button>
@@ -563,14 +703,16 @@ export default function App() {
   }
   function tabTitle(id: string) {
     return id === SYSTEM_VPN_TAB ? (data.language === "ru" ? "Системные VPN" : "System VPN") :
+      id === VAULT_TAB ? (data.language === "ru" ? "Защищённое хранилище" : "Credential vault") :
       id === LOCAL_SHELL_TAB ? (data.language === "ru" ? "Локальный терминал" : "Local terminal") :
       id === NETWORK_TAB ? (data.language === "ru" ? "Диагностика сети" : "Network diagnostics") :
       (data.connections.find((c) => c.id === id)?.name ?? quickConnections[id]?.name ?? id);
   }
   function pane(id: string) {
     if (id === SYSTEM_VPN_TAB) return <VpnWorkspace language={data.language}/>;
+    if (id === VAULT_TAB) return <VaultWorkspace connections={data.connections} language={data.language}/>;
     if (id === LOCAL_SHELL_TAB) return <LocalWorkspace language={data.language}/>;
-    if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language}/>;
+    if (id === NETWORK_TAB) return <NetworkWorkspace language={data.language} connections={data.connections}/>;
     const c = data.connections.find((c) => c.id === id) ?? quickConnections[id];
     return c?.protocol === "SSH" ? <SshWorkspace connection={c} language={data.language}/> :
       c?.protocol === "RDP" ? <RdpWorkspace connection={c} language={data.language}/> :
@@ -664,12 +806,43 @@ export default function App() {
                 </button>
               </div>
               <button type="button" onClick={quickConnect}><Icon name="plus"/> {t.quickConnect}</button>
+              <button type="button" aria-pressed={bulkMode} disabled={blocked}
+                onClick={()=>{setBulkMode(mode=>!mode);setBulkSelection(new Set());}}>
+                {t.bulkToggle}
+              </button>
+              {bulkMode && <fieldset className="catalog-bulk" aria-label={t.bulkToggle} disabled={blocked}>
+                <legend>{t.bulkSelected}: {bulkSelection.size}/{MAX_BULK_CONNECTIONS}</legend>
+                <label>{t.bulkDestination}
+                  <select aria-label={t.bulkDestination} value={bulkGroup}
+                    onChange={event=>setBulkGroup(event.target.value)}>
+                    <option value="">{t.root}</option>
+                    {data.groups.map(group=><option key={group.id} value={group.id}>{path(group.id)}</option>)}
+                  </select>
+                </label>
+                <div className="actions">
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"move",groupId:bulkGroup||null})}>{t.bulkMove}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"favorite",favorite:true})}>{t.bulkFavorite}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>performBulkUpdate({kind:"favorite",favorite:false})}>{t.bulkUnfavorite}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={exportBulkSelected}>{t.bulkExport}</button>
+                  <button type="button" disabled={!bulkSelection.size}
+                    onClick={()=>setBulkSelection(new Set())}>{t.bulkClear}</button>
+                </div>
+              </fieldset>}
               <div className="actions">
                 <button type="button" onClick={exportCatalog} disabled={blocked}>{t.exportCatalog}</button>
-                <button type="button" onClick={()=>importInput.current?.click()} disabled={blocked}>{t.importCatalog}</button>
+                <button type="button" onClick={()=>{importMode.current="replace";importInput.current?.click();}} disabled={blocked}>{t.importCatalog}</button>
+                <button type="button" onClick={()=>{importMode.current="merge";importInput.current?.click();}} disabled={blocked}>{t.mergeCatalog}</button>
+                <button type="button" onClick={()=>mobaInput.current?.click()} disabled={blocked}>{t.importMoba}</button>
+                <button type="button" disabled={blocked || sshBulkImportBusy} onClick={()=>void importLocalSshConfig()}>{t.importSshConfig}</button>
               </div>
               <input ref={importInput} type="file" accept=".json,application/json" hidden
                 onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importCatalog(file);}}/>
+              <input ref={mobaInput} type="file" accept=".mxtsessions" hidden
+                onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";void importMoba(file);}}/>
               <input
                 type="search"
                 aria-label={t.search}
@@ -695,6 +868,11 @@ export default function App() {
                 className={active === SYSTEM_VPN_TAB ? "selected" : ""}
                 onClick={() => open(SYSTEM_VPN_TAB)}>
                 <Icon name="VPN"/> {data.language === "ru" ? "Системные VPN" : "System VPN"}
+              </button>
+              <button type="button" aria-label={data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
+                className={active === VAULT_TAB ? "selected" : ""}
+                onClick={() => open(VAULT_TAB)}>
+                {data.language === "ru" ? "Защищённое хранилище" : "Credential vault"}
               </button>
               <button type="button" aria-label={data.language === "ru" ? "Локальный терминал" : "Local terminal"}
                 className={active === LOCAL_SHELL_TAB ? "selected" : ""}
@@ -859,12 +1037,7 @@ export default function App() {
             onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);savePaneRatio("row");}}
             onKeyDown={e=>paneResizeKey(e,"row")}/>}
         </div>
-        {data.monitoring && (
-          <section className="monitor">
-            <strong>{t.monitoring}</strong>
-            <p>{t.unavailable}</p>
-          </section>
-        )}
+        {data.monitoring && <MonitorPanel language={data.language}/>}
         <div className="status">{t.stage}<span role="status"> {notice}</span></div>
       </main>
       <dialog

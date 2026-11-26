@@ -1,0 +1,12 @@
+[Unit]
+Description=Repeat NodeDesk development, including after a failed cycle
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/10
+Persistent=true
+AccuracySec=1min
+Unit=nodedesk-autodev.service
+
+[Install]
+WantedBy=timers.target

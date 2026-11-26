@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {RECOVERY_KEY, validateRecovery, loadRecovery, listRecoveries, recoverySlotsAvailable, saveRecovery,
   forgetRecovery} from "../src/queueRecovery.ts";
 
-const now=Date.UTC(2026,10,7,19,0,0);
+// Use a fresh anchor: forgetRecovery deliberately compares against Date.now().
+// A fixed historical timestamp makes these tests fail after the 7-day TTL.
+const now=Date.now();
 const endpoint={host:"example.internal",port:2222,username:"operator"};
 const fakeStorage=()=> {
   const map=new Map();
@@ -106,4 +108,20 @@ test("separate queue checkpoints on one endpoint are independently restored and 
   forgetRecovery(store,endpoint,first);
   assert.deepEqual(listRecoveries(store,endpoint,now).map(item=>item.queueId),[second]);
   assert.equal(saveRecovery(store,record({queueId:"bad-id"}),now),false);
+});
+
+test("verified queue checkpoint retains opt-in but rejects tampered values",()=>{
+  const store=fakeStorage();
+  const checked=record({verify:true});
+  assert.equal(validateRecovery(checked,now)?.verify,true);
+  assert.equal(saveRecovery(store,checked,now),true);
+  const stored=loadRecovery(store,endpoint,now);
+  assert.equal(stored?.verify,true);
+  assert.equal(JSON.parse(store.getItem(RECOVERY_KEY)).records[0].verify,true);
+  assert.equal(validateRecovery(record(),now)?.verify,false);
+  assert.equal(validateRecovery(record({verify:false}),now)?.verify,false);
+  for(const invalid of ["true",1,null,[],{}]){
+    assert.equal(validateRecovery(record({verify:invalid}),now),null);
+  }
+  assert.equal(JSON.stringify(stored).includes("password"),false);
 });

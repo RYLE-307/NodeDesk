@@ -17,7 +17,7 @@ test("network diagnostics make no request until click and show bounded result",a
   await pane.getByRole("spinbutton",{name:"Port",exact:true}).fill("8080");
   await pane.getByRole("button",{name:"Check TCP"}).click();
   await expect(pane.getByRole("status")).toContainText("TCP port 8080: reachable");
-  expect(await page.evaluate(()=>window.calls)).toEqual([{cmd:"network_probe",args:{target:{host:"localhost",port:8080}}}]);
+  expect(await page.evaluate(()=>window.calls)).toEqual([{cmd:"network_probe",args:{id:expect.any(String),target:{host:"localhost",port:8080}}}]);
 });
 
 
@@ -38,7 +38,7 @@ test("ICMP ping is explicit, bounded and does not use a port",async({page})=>{
   await expect(pane.getByRole("status",{name:"Ping result"})).toContainText("reply received");
   await expect(pane.locator(".network-ping-output")).toContainText("2 packets transmitted");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_ping",args:{target:{host:"localhost"}}}
+    {cmd:"network_ping",args:{id:expect.any(String),target:{host:"localhost"}}}
   ]);
 });
 
@@ -60,8 +60,32 @@ test("traceroute is manual and displays bounded route output",async({page})=>{
   await expect(pane.getByRole("status",{name:"Traceroute result"})).toContainText("Traceroute finished");
   await expect(pane.locator(".network-ping-output")).toContainText("127.0.0.1");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_trace",args:{target:{host:"localhost"}}}
+    {cmd:"network_trace",args:{id:expect.any(String),target:{host:"localhost"}}}
   ]);
+});
+
+test("running ping can be cancelled and its late result stays hidden",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      invoke(cmd,args){window.calls.push({cmd,args});
+        if(cmd==="network_ping")return new Promise(resolve=>{window.completePing=resolve;});
+        if(cmd==="network_cancel")return Promise.resolve();
+        throw Error("Unexpected command");}}
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByLabel("Host").fill("localhost");
+  await pane.getByRole("button",{name:"Ping",exact:true}).click();
+  await pane.getByRole("button",{name:"Cancel ping"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Ping cancelled");
+  await page.evaluate(()=>window.completePing({reachable:true,elapsedMs:1,output:"late"}));
+  await expect(pane.getByRole("status",{name:"Ping result"})).toHaveCount(0);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls[0]).toMatchObject({cmd:"network_ping",args:{target:{host:"localhost"}}});
+  expect(calls[1]).toEqual({cmd:"network_cancel",args:{id:calls[0].args.id}});
 });
 
 
@@ -91,7 +115,7 @@ test("explicit TCP port list runs only on click and rejects ranges and duplicate
   await expect(pane.getByRole("status",{name:"Port check result"})).toContainText("TCP 443: reachable");
   await expect(pane.getByRole("status",{name:"Port check result"})).toContainText("TCP 22: no response");
   expect(await page.evaluate(()=>window.calls)).toEqual([
-    {cmd:"network_scan_ports",args:{target:{host:"localhost",ports:[22,443]}}}
+    {cmd:"network_scan_ports",args:{id:expect.any(String),target:{host:"localhost",ports:[22,443]}}}
   ]);
 });
 
@@ -106,6 +130,7 @@ test("changing diagnostic target invalidates in-flight results and does not star
       transformCallback(){return 1;},unregisterCallback(){},
       invoke(cmd,args){
         window.calls.push({cmd,args});
+        if(cmd==="network_cancel")return Promise.resolve();
         if(cmd!=="network_probe")throw Error("Unexpected diagnostics command");
         return new Promise(resolve=>{window.completeOldProbe=resolve;});
       }
@@ -123,6 +148,148 @@ test("changing diagnostic target invalidates in-flight results and does not star
   }));
   await expect(pane.getByRole("button",{name:"Check TCP"})).toBeEnabled();
   await expect(pane.getByRole("status")).toHaveCount(0);
-  expect(await page.evaluate(()=>window.calls.map(x=>x.args.target.host)))
-    .toEqual(["test-old.local"]);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls[0]).toMatchObject({cmd:"network_probe",args:{target:{host:"test-old.local"}}});
+  expect(calls[1]).toEqual({cmd:"network_cancel",args:{id:calls[0].args.id}});
+});
+
+test("network report downloads only completed results for the current target",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){window.calls.push({cmd,args});
+        if(cmd==="network_probe")return {addresses:["127.0.0.1"],tcpReachable:true,elapsedMs:3};
+        throw Error("Unexpected command");}}
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  const downloadButton=pane.getByRole("button",{name:"Download report"});
+  await expect(downloadButton).toBeDisabled();
+  await pane.getByLabel("Host").fill("localhost");
+  await pane.getByRole("spinbutton",{name:"Port",exact:true}).fill("8080");
+  await pane.getByRole("button",{name:"Check TCP"}).click();
+  await expect(downloadButton).toBeEnabled();
+  const event=page.waitForEvent("download");
+  await downloadButton.click();
+  const download=await event;
+  expect(download.suggestedFilename()).toBe("nodedesk-network-report.json");
+  const fs=await import("node:fs/promises");
+  const report=JSON.parse(await fs.readFile(await download.path(),"utf8"));
+  expect(report).toMatchObject({version:2,redacted:true,target:null,
+    tcp:{port:8080,tcpReachable:true,elapsedMs:3},
+    ping:null,trace:null,ports:null});
+  expect(JSON.stringify(report)).not.toContain("localhost");
+  expect(JSON.stringify(report)).not.toContain("127.0.0.1");
+  await pane.getByLabel("Host").fill("another.local");
+  await expect(downloadButton).toBeDisabled();
+  expect(await page.evaluate(()=>window.calls)).toHaveLength(1);
+});
+
+test("network report includes sensitive output only with explicit opt-in and consent",async({page})=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify({version:1,groups:[],connections:[],language:"en",theme:"dark",monitoring:false}));
+    window.__TAURI__={};window.isTauri=true;
+    window.__TAURI_INTERNALS__={transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd){if(cmd==="network_ping")return {reachable:true,elapsedMs:7,output:"PING PRIVATE 10.90.1.7"};
+        throw Error("Unexpected network command");}};
+  });
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByLabel("Host").fill("private.example.internal");
+  await pane.getByRole("button",{name:"Ping",exact:true}).click();
+  await expect(pane.getByRole("status",{name:"Ping result"})).toBeVisible();
+  await pane.getByRole("checkbox",{name:"Include target addresses and tool output (sensitive)"}).check();
+  const button=pane.getByRole("button",{name:"Download report"});
+  page.once("dialog",dialog=>dialog.accept());
+  const download=page.waitForEvent("download");
+  await button.click();
+  const file=await download;
+  const fs=await import("node:fs/promises");
+  const report=JSON.parse(await fs.readFile(await file.path(),"utf8"));
+  expect(report).toMatchObject({version:2,redacted:false,target:{host:"private.example.internal"},
+    ping:{reachable:true,elapsedMs:7,output:"PING PRIVATE 10.90.1.7"}});
+});
+
+
+test("catalog TCP batch is opt-in, sequential and never sends stored credentials",async({page})=>{
+  const input={version:1,groups:[],language:"en",theme:"dark",monitoring:false,
+    connections:[
+      {id:"a",name:"SSH fixture",host:"ssh.example.test",port:22,username:"admin",
+       protocol:"SSH",groupId:null,favorite:false,password:"never-send"},
+      {id:"b",name:"RDP fixture",host:"rdp.example.test",port:3389,username:"user",
+       protocol:"RDP",groupId:null,favorite:false},
+    ]};
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      async invoke(cmd,args){
+        window.calls.push({cmd,args});
+        if(cmd!=="network_probe")throw Error("Unexpected network command");
+        return {addresses:["127.0.0.1"],tcpReachable:args.target.port===22,elapsedMs:1};
+      },
+    };
+  },input);
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByText("Catalog TCP batch checks").click();
+  const button=pane.getByRole("button",{name:"Check selected TCP ports"});
+  await expect(button).toBeDisabled();
+  await pane.getByRole("checkbox",{name:"Probe: SSH fixture"}).check();
+  await pane.getByRole("checkbox",{name:"Probe: RDP fixture"}).check();
+  expect(await page.evaluate(()=>window.calls)).toEqual([]);
+  page.once("dialog",d=>d.dismiss());
+  await button.click();
+  expect(await page.evaluate(()=>window.calls)).toEqual([]);
+  page.once("dialog",d=>{expect(d.message()).toContain("2 selected connections");d.accept();});
+  await button.click();
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toContainText("SSH fixture · TCP 22: reachable");
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toContainText("RDP fixture · TCP 3389: no response");
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toMatchObject({cmd:"network_probe",args:{target:{host:"ssh.example.test",port:22}}});
+  expect(calls[1]).toMatchObject({cmd:"network_probe",args:{target:{host:"rdp.example.test",port:3389}}});
+  expect(JSON.stringify(calls)).not.toContain("never-send");
+  expect(JSON.stringify(calls)).not.toContain("username");
+});
+test("catalog batch cancel prevents starting the next target and hides late results",async({page})=>{
+  const input={version:1,groups:[],language:"en",theme:"dark",monitoring:false,
+    connections:[
+      {id:"a",name:"SSH fixture",host:"ssh.example.test",port:22,username:"admin",protocol:"SSH",groupId:null,favorite:false},
+      {id:"b",name:"RDP fixture",host:"rdp.example.test",port:3389,username:"user",protocol:"RDP",groupId:null,favorite:false},
+    ]};
+  await page.addInitScript(value=>{
+    localStorage.setItem("nodedesk.catalog.v1",JSON.stringify(value));
+    window.__TAURI__={};window.isTauri=true;window.calls=[];
+    window.__TAURI_INTERNALS__={
+      transformCallback(){return 1;},unregisterCallback(){},
+      invoke(cmd,args){
+        window.calls.push({cmd,args});
+        if(cmd==="network_probe")return new Promise(resolve=>{window.resolveBatch=resolve;});
+        if(cmd==="network_cancel")return Promise.resolve();
+        throw Error("Unexpected command");
+      }
+    };
+  },input);
+  await page.goto("/");
+  await page.locator(".catalog-tools").getByRole("button",{name:"Network diagnostics"}).click();
+  const pane=page.getByRole("region",{name:"Network diagnostics"});
+  await pane.getByText("Catalog TCP batch checks").click();
+  await pane.getByRole("checkbox",{name:"Probe: SSH fixture"}).check();
+  await pane.getByRole("checkbox",{name:"Probe: RDP fixture"}).check();
+  page.once("dialog",d=>d.accept());
+  await pane.getByRole("button",{name:"Check selected TCP ports"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.calls.length)).toBe(1);
+  const initial=await page.evaluate(()=>window.calls[0]);
+  await pane.getByRole("button",{name:"Cancel batch checks"}).click();
+  await expect(pane.getByRole("alert")).toContainText("Batch check cancelled");
+  await page.evaluate(()=>window.resolveBatch({addresses:["192.0.2.1"],tcpReachable:true,elapsedMs:1}));
+  await expect(pane.getByRole("status",{name:"Catalog batch results"})).toHaveCount(0);
+  const calls=await page.evaluate(()=>window.calls);
+  expect(calls).toEqual([initial,{cmd:"network_cancel",args:{id:initial.args.id}}]);
 });
